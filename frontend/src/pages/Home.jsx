@@ -7,13 +7,61 @@ import MacroProgressBar from "../components/summary/MacroProgressBar";
 import Spinner from "../components/shared/Spinner";
 import EmptyState from "../components/shared/EmptyState";
 import MealCard from "../components/meal/MealCard";
+import GroupedMealCard from "../components/meal/GroupedMealCard";
+import MealDetailModal from "../components/meal/MealDetailModal";
+
+function buildDisplayItems(meals) {
+  const items = [];
+  const groupMap = {};
+
+  for (const meal of meals) {
+    if (meal.group_id) {
+      if (!groupMap[meal.group_id]) {
+        const group = {
+          item_type: "group",
+          group_id: meal.group_id,
+          logged_at: meal.logged_at,
+          sub_meals: [],
+          total_macros: { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sodium_mg: 0 },
+        };
+        groupMap[meal.group_id] = group;
+        items.push(group);
+      }
+      const g = groupMap[meal.group_id];
+      g.sub_meals.push({
+        id: meal.id,
+        meal_name: meal.meal_name,
+        meal_type: meal.meal_type,
+        logged_at: meal.logged_at,
+        macros: {
+          calories: meal.calories, protein_g: meal.protein_g, carbs_g: meal.carbs_g,
+          fat_g: meal.fat_g, fiber_g: meal.fiber_g, sugar_g: meal.sugar_g, sodium_mg: meal.sodium_mg,
+        },
+      });
+      const t = g.total_macros;
+      g.total_macros = {
+        calories: t.calories + meal.calories,
+        protein_g: t.protein_g + meal.protein_g,
+        carbs_g: t.carbs_g + meal.carbs_g,
+        fat_g: t.fat_g + meal.fat_g,
+        fiber_g: t.fiber_g + (meal.fiber_g || 0),
+        sugar_g: t.sugar_g + (meal.sugar_g || 0),
+        sodium_mg: t.sodium_mg + (meal.sodium_mg || 0),
+      };
+    } else {
+      items.push({ item_type: "meal", ...meal });
+    }
+  }
+  return items;
+}
 
 export default function Home() {
   const { profile } = useProfile();
   const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [mealMicros, setMealMicros] = useState({});
+  const [mealDetails, setMealDetails] = useState({});
+  const [modalData, setModalData] = useState(null);
 
   const today = new Date().toISOString().slice(0, 10);
 
@@ -31,22 +79,32 @@ export default function Home() {
 
   useEffect(() => { load(); }, [profile.id]);
 
-  const loadMicros = async (mealId) => {
-    if (mealMicros[mealId]) return;
+  const openMealModal = async (mealId) => {
+    const cached = mealDetails[mealId];
+    if (cached) { setModalData({ type: "meal", meal: cached }); return; }
     try {
       const { data } = await client.get(`/meals/${mealId}`);
-      setMealMicros((prev) => ({ ...prev, [mealId]: data.micros }));
+      setMealDetails((prev) => ({ ...prev, [mealId]: data }));
+      setModalData({ type: "meal", meal: data });
     } catch {}
   };
 
-  const handleDelete = (id) => {
-    setSummary((s) => s ? { ...s, meals: s.meals.filter((m) => m.id !== id), meal_count: s.meal_count - 1 } : s);
+  const openGroupModal = (group) => setModalData({ type: "group", group });
+
+  const handleDelete = (mealId, groupId = null) => {
+    setSummary((s) => {
+      if (!s) return s;
+      const newMeals = s.meals.filter((m) => m.id !== mealId);
+      return { ...s, meals: newMeals, meal_count: newMeals.length };
+    });
+    setModalData(null);
     load();
   };
 
   if (loading) return <Spinner text="Loading today's summary..." />;
 
   const totals = summary?.totals || {};
+  const displayItems = buildDisplayItems(summary?.meals || []);
 
   return (
     <div className="pt-4 space-y-4">
@@ -88,7 +146,7 @@ export default function Home() {
           )}
         </div>
 
-        {!summary?.meals?.length ? (
+        {!displayItems.length ? (
           <EmptyState
             icon="🍽️"
             title="No meals yet today"
@@ -104,20 +162,32 @@ export default function Home() {
           />
         ) : (
           <div className="space-y-3">
-            {summary.meals.map((m) => {
-              if (!mealMicros[m.id]) loadMicros(m.id);
-              return (
-                <MealCard
-                  key={m.id}
-                  meal={m}
-                  micros={mealMicros[m.id]}
-                  onDelete={handleDelete}
+            {displayItems.map((item) =>
+              item.item_type === "group" ? (
+                <GroupedMealCard
+                  key={item.group_id}
+                  group={item}
+                  onOpenDetail={() => openGroupModal(item)}
                 />
-              );
-            })}
+              ) : (
+                <MealCard
+                  key={item.id}
+                  meal={item}
+                  onOpenDetail={() => openMealModal(item.id)}
+                  onDelete={(id) => handleDelete(id)}
+                />
+              )
+            )}
           </div>
         )}
       </div>
+
+      <MealDetailModal
+        isOpen={!!modalData}
+        onClose={() => setModalData(null)}
+        data={modalData}
+        onDelete={handleDelete}
+      />
     </div>
   );
 }

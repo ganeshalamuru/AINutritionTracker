@@ -27,7 +27,11 @@ def _meal_to_summary(m: Meal) -> MealSummary:
         protein_g=macros.protein_g if macros else 0,
         carbs_g=macros.carbs_g if macros else 0,
         fat_g=macros.fat_g if macros else 0,
+        fiber_g=macros.fiber_g if macros else 0,
+        sugar_g=macros.sugar_g if macros else 0,
+        sodium_mg=macros.sodium_mg if macros else 0,
         has_image=m.image_path is not None,
+        group_id=m.group_id,
     )
 
 

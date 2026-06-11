@@ -25,6 +25,7 @@ class Meal(Base):
     meal_name = Column(String, nullable=False)
     meal_type = Column(String, default="snack")
     image_path = Column(String, nullable=True)
+    group_id = Column(String, nullable=True, index=True)
     logged_at = Column(DateTime, default=datetime.utcnow)
     notes = Column(Text, nullable=True)
 

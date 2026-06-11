@@ -24,6 +24,14 @@ async def lifespan(app: FastAPI):
     Base.metadata.create_all(bind=engine)
     os.makedirs(UPLOADS_DIR, exist_ok=True)
 
+    from sqlalchemy import text
+    with engine.connect() as conn:
+        try:
+            conn.execute(text("ALTER TABLE meals ADD COLUMN group_id TEXT"))
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+
     from database import SessionLocal
     db = SessionLocal()
     try:

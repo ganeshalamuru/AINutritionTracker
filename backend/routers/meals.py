@@ -4,13 +4,12 @@ from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
-from sqlalchemy import func
 from database import get_db
 from models import Meal, Macros, Micros, AppConfig
 from schemas import (
-    AnalyzeResponse, MealLogRequest, MealLogResponse,
-    MealPatch, MealDetail, MealSummary, TimelineResponse,
-    MacrosData, MicrosData
+    AnalyzeResponse, MealLogRequest, MealLogResponse, LogGroupRequest,
+    MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
+    TimelineResponse, MacrosData, MicrosData
 )
 from services.gemini_service import analyze_meal_image
 
@@ -27,6 +26,20 @@ def get_api_key(db: Session) -> str:
             detail="Gemini API key not configured. Go to Settings to add your key."
         )
     return config.value
+
+
+def _macros_data(macros) -> MacrosData:
+    if not macros:
+        return MacrosData()
+    return MacrosData(
+        calories=macros.calories or 0,
+        protein_g=macros.protein_g or 0,
+        carbs_g=macros.carbs_g or 0,
+        fat_g=macros.fat_g or 0,
+        fiber_g=macros.fiber_g or 0,
+        sugar_g=macros.sugar_g or 0,
+        sodium_mg=macros.sodium_mg or 0,
+    )
 
 
 @router.post("/analyze", response_model=AnalyzeResponse)
@@ -67,11 +80,7 @@ async def analyze_meal(
     )
 
 
-@router.post("/log", response_model=MealLogResponse)
-def log_meal(data: MealLogRequest, db: Session = Depends(get_db)):
-    if data.profile_id == 0:
-        raise HTTPException(status_code=400, detail="Guest cannot log meals")
-
+def _create_meal_record(db: Session, data: MealLogRequest, group_id: Optional[str] = None) -> Meal:
     image_path = None
     if data.temp_image_token and data.keep_image:
         temp_path = os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg")
@@ -84,23 +93,53 @@ def log_meal(data: MealLogRequest, db: Session = Depends(get_db)):
         meal_type=data.meal_type,
         image_path=image_path,
         notes=data.notes,
+        group_id=group_id,
     )
     db.add(meal)
     db.flush()
 
-    macros = Macros(meal_id=meal.id, **data.macros.model_dump())
-    micros = Micros(meal_id=meal.id, **data.micros.model_dump())
-    db.add(macros)
-    db.add(micros)
-    db.commit()
+    db.add(Macros(meal_id=meal.id, **data.macros.model_dump()))
+    db.add(Micros(meal_id=meal.id, **data.micros.model_dump()))
+    return meal
 
+
+def _cleanup_temp(data: MealLogRequest):
     if data.temp_image_token and not data.keep_image:
         temp_path = os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg")
         if os.path.exists(temp_path):
             os.remove(temp_path)
 
+
+@router.post("/log", response_model=MealLogResponse)
+def log_meal(data: MealLogRequest, db: Session = Depends(get_db)):
+    if data.profile_id == 0:
+        raise HTTPException(status_code=400, detail="Guest cannot log meals")
+    meal = _create_meal_record(db, data)
+    db.commit()
+    _cleanup_temp(data)
     db.refresh(meal)
     return MealLogResponse(id=meal.id, logged_at=meal.logged_at)
+
+
+@router.post("/log-group")
+def log_group(data: LogGroupRequest, db: Session = Depends(get_db)):
+    if not data.meals:
+        raise HTTPException(status_code=400, detail="No meals provided")
+    for m in data.meals:
+        if m.profile_id == 0:
+            raise HTTPException(status_code=400, detail="Guest cannot log meals")
+
+    meal_ids = []
+    for meal_data in data.meals:
+        meal = _create_meal_record(db, meal_data, group_id=data.group_id)
+        meal_ids.append(meal.id)
+
+    db.commit()
+
+    for meal_data in data.meals:
+        _cleanup_temp(meal_data)
+
+    return {"group_id": data.group_id, "meal_ids": meal_ids}
 
 
 @router.get("/timeline", response_model=TimelineResponse)
@@ -126,19 +165,56 @@ def get_timeline(
     meals = query.offset((page - 1) * limit).limit(limit).all()
 
     items = []
+    group_index = {}
+
     for m in meals:
-        macros = m.macros
-        items.append(MealSummary(
-            id=m.id,
-            meal_name=m.meal_name,
-            meal_type=m.meal_type,
-            logged_at=m.logged_at,
-            calories=macros.calories if macros else 0,
-            protein_g=macros.protein_g if macros else 0,
-            carbs_g=macros.carbs_g if macros else 0,
-            fat_g=macros.fat_g if macros else 0,
-            has_image=m.image_path is not None,
-        ))
+        md = _macros_data(m.macros)
+
+        if m.group_id:
+            if m.group_id in group_index:
+                group = items[group_index[m.group_id]]
+                group.sub_meals.append(MealSubSummary(
+                    id=m.id, meal_name=m.meal_name, meal_type=m.meal_type,
+                    logged_at=m.logged_at, macros=md,
+                ))
+                t = group.total_macros
+                group.total_macros = MacrosData(
+                    calories=t.calories + md.calories,
+                    protein_g=t.protein_g + md.protein_g,
+                    carbs_g=t.carbs_g + md.carbs_g,
+                    fat_g=t.fat_g + md.fat_g,
+                    fiber_g=t.fiber_g + md.fiber_g,
+                    sugar_g=t.sugar_g + md.sugar_g,
+                    sodium_mg=t.sodium_mg + md.sodium_mg,
+                )
+            else:
+                group = MealGroupSummary(
+                    group_id=m.group_id,
+                    logged_at=m.logged_at,
+                    sub_meals=[MealSubSummary(
+                        id=m.id, meal_name=m.meal_name, meal_type=m.meal_type,
+                        logged_at=m.logged_at, macros=md,
+                    )],
+                    total_macros=md,
+                )
+                group_index[m.group_id] = len(items)
+                items.append(group)
+        else:
+            items.append(MealSummary(
+                id=m.id,
+                meal_name=m.meal_name,
+                meal_type=m.meal_type,
+                logged_at=m.logged_at,
+                calories=md.calories,
+                protein_g=md.protein_g,
+                carbs_g=md.carbs_g,
+                fat_g=md.fat_g,
+                fiber_g=md.fiber_g,
+                sugar_g=md.sugar_g,
+                sodium_mg=md.sodium_mg,
+                has_image=m.image_path is not None,
+                group_id=None,
+            ))
 
     return TimelineResponse(items=items, total=total, page=page, limit=limit)
 

@@ -1,6 +1,6 @@
 from datetime import datetime
-from typing import Optional, List
-from pydantic import BaseModel
+from typing import Annotated, List, Literal, Optional, Union
+from pydantic import BaseModel, Field
 
 
 # --- Profiles ---
@@ -82,6 +82,11 @@ class MealLogRequest(BaseModel):
     micros: MicrosData
 
 
+class LogGroupRequest(BaseModel):
+    group_id: str
+    meals: List[MealLogRequest]
+
+
 class MealLogResponse(BaseModel):
     id: int
     logged_at: datetime
@@ -94,6 +99,7 @@ class MealPatch(BaseModel):
 
 
 class MealSummary(BaseModel):
+    item_type: Literal["meal"] = "meal"
     id: int
     meal_name: str
     meal_type: str
@@ -102,9 +108,35 @@ class MealSummary(BaseModel):
     protein_g: float
     carbs_g: float
     fat_g: float
+    fiber_g: float = 0
+    sugar_g: float = 0
+    sodium_mg: float = 0
     has_image: bool
+    group_id: Optional[str] = None
 
     model_config = {"from_attributes": True}
+
+
+class MealSubSummary(BaseModel):
+    id: int
+    meal_name: str
+    meal_type: str
+    logged_at: datetime
+    macros: MacrosData
+
+
+class MealGroupSummary(BaseModel):
+    item_type: Literal["group"] = "group"
+    group_id: str
+    logged_at: datetime
+    sub_meals: List[MealSubSummary]
+    total_macros: MacrosData
+
+
+TimelineItem = Annotated[
+    Union[MealGroupSummary, MealSummary],
+    Field(discriminator="item_type")
+]
 
 
 class MealDetail(BaseModel):
@@ -121,7 +153,7 @@ class MealDetail(BaseModel):
 
 
 class TimelineResponse(BaseModel):
-    items: List[MealSummary]
+    items: List[TimelineItem]
     total: int
     page: int
     limit: int

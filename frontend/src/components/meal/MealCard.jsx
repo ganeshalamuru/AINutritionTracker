@@ -1,5 +1,4 @@
 import { useState } from "react";
-import MicroGrid from "./MicroGrid";
 import client from "../../api/client";
 
 const TYPE_COLORS = {
@@ -9,13 +8,13 @@ const TYPE_COLORS = {
   snack: "bg-purple-100 text-purple-700",
 };
 
-export default function MealCard({ meal, micros, onDelete }) {
-  const [expanded, setExpanded] = useState(false);
+export default function MealCard({ meal, onOpenDetail, onDelete }) {
   const [deleting, setDeleting] = useState(false);
 
   const time = new Date(meal.logged_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-  const handleDelete = async () => {
+  const handleDelete = async (e) => {
+    e.stopPropagation();
     if (!confirm("Remove this meal?")) return;
     setDeleting(true);
     await client.delete(`/meals/${meal.id}`);
@@ -23,7 +22,10 @@ export default function MealCard({ meal, micros, onDelete }) {
   };
 
   return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
+    <div
+      className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
+      onClick={onOpenDetail}
+    >
       <div className="flex items-start justify-between gap-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1">
@@ -46,16 +48,14 @@ export default function MealCard({ meal, micros, onDelete }) {
         <span><span className="text-purple-500 font-semibold">{Math.round(meal.fat_g)}g</span> fat</span>
       </div>
 
+      <div className="flex gap-4 mt-1 text-xs text-gray-400">
+        <span>Fiber {Math.round(meal.fiber_g || 0)}g</span>
+        <span>Sugar {Math.round(meal.sugar_g || 0)}g</span>
+        <span>Sodium {Math.round(meal.sodium_mg || 0)}mg</span>
+      </div>
+
       <div className="flex items-center justify-between mt-3">
-        <button
-          onClick={() => setExpanded((e) => !e)}
-          className="text-xs text-green-600 font-medium flex items-center gap-1"
-        >
-          {expanded ? "Less" : "Micros"}
-          <svg xmlns="http://www.w3.org/2000/svg" className={`w-3 h-3 transition-transform ${expanded ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-          </svg>
-        </button>
+        <span className="text-xs text-green-600 font-medium">Tap for details →</span>
         <button
           onClick={handleDelete}
           disabled={deleting}
@@ -64,8 +64,6 @@ export default function MealCard({ meal, micros, onDelete }) {
           {deleting ? "..." : "Remove"}
         </button>
       </div>
-
-      {expanded && micros && <MicroGrid micros={micros} />}
     </div>
   );
 }
