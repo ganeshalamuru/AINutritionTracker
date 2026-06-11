@@ -1,3 +1,4 @@
+import asyncio
 import os
 import uuid
 from datetime import datetime
@@ -73,7 +74,7 @@ async def analyze_meal(
         f.write(image_bytes)
 
     try:
-        result = analyze_meal_image(image_bytes, api_key)
+        result = await asyncio.to_thread(analyze_meal_image, image_bytes, api_key)
     except Exception as e:
         os.remove(temp_path)
         print(f"[Gemini error] {type(e).__name__}: {e}")
