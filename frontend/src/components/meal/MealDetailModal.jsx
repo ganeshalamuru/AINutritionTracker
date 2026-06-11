@@ -51,7 +51,7 @@ function MacroRow({ macros }) {
 function SingleMealView({ meal, onDelete }) {
   const [deleting, setDeleting] = useState(false);
 
-  const time = new Date(meal.logged_at).toLocaleString("en-US", {
+  const time = new Date(meal.logged_at + "Z").toLocaleString("en-US", {
     weekday: "short", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });
@@ -124,7 +124,7 @@ function GroupMealView({ group, onDelete }) {
     }
   };
 
-  const time = new Date(group.logged_at).toLocaleString("en-US", {
+  const time = new Date(group.logged_at + "Z").toLocaleString("en-US", {
     weekday: "short", month: "short", day: "numeric",
     hour: "2-digit", minute: "2-digit",
   });

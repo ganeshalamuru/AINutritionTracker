@@ -6,7 +6,7 @@ const TYPE_COLORS = {
 };
 
 export default function GroupedMealCard({ group, onOpenDetail }) {
-  const time = new Date(group.logged_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const time = new Date(group.logged_at + "Z").toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
   const t = group.total_macros;
 
   const mealTypes = [...new Set(group.sub_meals.map((s) => s.meal_type))];

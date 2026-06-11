@@ -10,7 +10,7 @@ import EmptyState from "../components/shared/EmptyState";
 function groupByDate(items) {
   const groups = {};
   for (const item of items) {
-    const d = new Date(item.logged_at).toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const d = new Date(item.logged_at + "Z").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
     if (!groups[d]) groups[d] = [];
     groups[d].push(item);
   }

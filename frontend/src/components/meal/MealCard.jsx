@@ -11,7 +11,7 @@ const TYPE_COLORS = {
 export default function MealCard({ meal, onOpenDetail, onDelete }) {
   const [deleting, setDeleting] = useState(false);
 
-  const time = new Date(meal.logged_at).toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const time = new Date(meal.logged_at + "Z").toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
   const handleDelete = async (e) => {
     e.stopPropagation();
