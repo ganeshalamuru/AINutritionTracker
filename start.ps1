@@ -9,15 +9,6 @@ Write-Host "     NutriAI - Nutrition Tracker  " -ForegroundColor Green
 Write-Host "==================================" -ForegroundColor Green
 Write-Host ""
 
-# Copy .env if missing
-$envFile = Join-Path $ROOT "backend\.env"
-if (-not (Test-Path $envFile)) {
-    Copy-Item (Join-Path $ROOT ".env.example") $envFile
-    Write-Host "NOTE: Created backend\.env" -ForegroundColor Yellow
-    Write-Host "      You can add your GEMINI_API_KEY there, OR enter it in the app Settings." -ForegroundColor Yellow
-    Write-Host ""
-}
-
 # Install Python dependencies
 Write-Host "Installing Python dependencies..." -ForegroundColor Cyan
 Set-Location (Join-Path $ROOT "backend")
