@@ -42,6 +42,22 @@ def _macros_data(macros) -> MacrosData:
     )
 
 
+def _micros_data(micros) -> MicrosData:
+    if not micros:
+        return MicrosData()
+    return MicrosData(**{
+        c.name: getattr(micros, c.name) or 0
+        for c in Micros.__table__.columns if c.name not in ("id", "meal_id")
+    })
+
+
+def _sum_micros(a: MicrosData, b: MicrosData) -> MicrosData:
+    return MicrosData(**{
+        field: getattr(a, field) + getattr(b, field)
+        for field in MicrosData.model_fields
+    })
+
+
 @router.post("/analyze", response_model=AnalyzeResponse)
 async def analyze_meal(
     image: UploadFile = File(...),
@@ -60,10 +76,14 @@ async def analyze_meal(
         result = analyze_meal_image(image_bytes, api_key)
     except Exception as e:
         os.remove(temp_path)
+        print(f"[Gemini error] {type(e).__name__}: {e}")
         err = str(e).lower()
-        if "quota" in err or "429" in err or "rate" in err:
-            raise HTTPException(status_code=429, detail="Gemini free quota hit — wait 60 seconds and try again.")
-        raise HTTPException(status_code=502, detail=f"AI analysis failed: {str(e)}")
+        raw = str(e)
+        if "429" in err or "rate" in err or "per_minute" in err or "requests_per_minute" in err:
+            raise HTTPException(status_code=429, detail=f"Rate limit hit — wait 60 seconds and try again. (Gemini: {raw})")
+        if "quota" in err or "daily" in err or "resource_exhausted" in err or "per_day" in err:
+            raise HTTPException(status_code=429, detail=f"Daily quota exhausted — resets at UTC midnight or upgrade to a paid Gemini API key. (Gemini: {raw})")
+        raise HTTPException(status_code=502, detail=f"AI analysis failed: {raw}")
 
     macros = MacrosData(**result.get("macros", {}))
     micros = MicrosData(**result.get("micros", {}))
@@ -169,6 +189,7 @@ def get_timeline(
 
     for m in meals:
         md = _macros_data(m.macros)
+        mic = _micros_data(m.micros)
 
         if m.group_id:
             if m.group_id in group_index:
@@ -187,6 +208,7 @@ def get_timeline(
                     sugar_g=t.sugar_g + md.sugar_g,
                     sodium_mg=t.sodium_mg + md.sodium_mg,
                 )
+                group.total_micros = _sum_micros(group.total_micros, mic)
             else:
                 group = MealGroupSummary(
                     group_id=m.group_id,
@@ -196,6 +218,7 @@ def get_timeline(
                         logged_at=m.logged_at, macros=md,
                     )],
                     total_macros=md,
+                    total_micros=mic,
                 )
                 group_index[m.group_id] = len(items)
                 items.append(group)
@@ -217,6 +240,52 @@ def get_timeline(
             ))
 
     return TimelineResponse(items=items, total=total, page=page, limit=limit)
+
+
+@router.get("/group/{group_id}", response_model=MealGroupSummary)
+def get_group(group_id: str, db: Session = Depends(get_db)):
+    meals = db.query(Meal).filter(Meal.group_id == group_id).order_by(Meal.logged_at).all()
+    if not meals:
+        raise HTTPException(status_code=404, detail="Group not found")
+    sub_meals = []
+    total_macros = MacrosData()
+    total_micros = MicrosData()
+    for m in meals:
+        md = _macros_data(m.macros)
+        mic = _micros_data(m.micros)
+        sub_meals.append(MealSubSummary(id=m.id, meal_name=m.meal_name, meal_type=m.meal_type, logged_at=m.logged_at, macros=md))
+        total_macros = MacrosData(
+            calories=total_macros.calories + md.calories,
+            protein_g=total_macros.protein_g + md.protein_g,
+            carbs_g=total_macros.carbs_g + md.carbs_g,
+            fat_g=total_macros.fat_g + md.fat_g,
+            fiber_g=total_macros.fiber_g + md.fiber_g,
+            sugar_g=total_macros.sugar_g + md.sugar_g,
+            sodium_mg=total_macros.sodium_mg + md.sodium_mg,
+        )
+        total_micros = _sum_micros(total_micros, mic)
+    return MealGroupSummary(
+        group_id=group_id,
+        logged_at=meals[0].logged_at,
+        sub_meals=sub_meals,
+        total_macros=total_macros,
+        total_micros=total_micros,
+    )
+
+
+@router.delete("/group/{group_id}")
+def delete_group(group_id: str, db: Session = Depends(get_db)):
+    meals = db.query(Meal).filter(Meal.group_id == group_id).all()
+    if not meals:
+        raise HTTPException(status_code=404, detail="Group not found")
+    for meal in meals:
+        if meal.image_path:
+            full_path = os.path.join(os.path.dirname(__file__), "..", meal.image_path)
+            if os.path.exists(full_path):
+                os.remove(full_path)
+        db.delete(meal)
+    db.commit()
+    return {"ok": True}
 
 
 @router.get("/{meal_id}", response_model=MealDetail)

@@ -61,6 +61,7 @@ export default function Home() {
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [mealDetails, setMealDetails] = useState({});
+  const [groupDetails, setGroupDetails] = useState({});
   const [modalData, setModalData] = useState(null);
 
   const today = new Date().toISOString().slice(0, 10);
@@ -89,12 +90,27 @@ export default function Home() {
     } catch {}
   };
 
-  const openGroupModal = (group) => setModalData({ type: "group", group });
+  const openGroupModal = async (group) => {
+    const cached = groupDetails[group.group_id];
+    if (cached) { setModalData({ type: "group", group: cached }); return; }
+    try {
+      const { data } = await client.get(`/meals/group/${group.group_id}`);
+      setGroupDetails((prev) => ({ ...prev, [group.group_id]: data }));
+      setModalData({ type: "group", group: data });
+    } catch {
+      setModalData({ type: "group", group });
+    }
+  };
 
   const handleDelete = (mealId, groupId = null) => {
+    if (groupId) {
+      setGroupDetails((prev) => { const n = { ...prev }; delete n[groupId]; return n; });
+    }
     setSummary((s) => {
       if (!s) return s;
-      const newMeals = s.meals.filter((m) => m.id !== mealId);
+      const newMeals = groupId
+        ? s.meals.filter((m) => m.group_id !== groupId)
+        : s.meals.filter((m) => m.id !== mealId);
       return { ...s, meals: newMeals, meal_count: newMeals.length };
     });
     setModalData(null);
@@ -168,6 +184,7 @@ export default function Home() {
                   key={item.group_id}
                   group={item}
                   onOpenDetail={() => openGroupModal(item)}
+                  onDelete={handleDelete}
                 />
               ) : (
                 <MealCard

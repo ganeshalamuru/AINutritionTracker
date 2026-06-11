@@ -66,6 +66,9 @@ export default function Timeline() {
       if (!groupId) {
         return prev.filter((item) => item.item_type !== "meal" || item.id !== mealId);
       }
+      if (mealId === null) {
+        return prev.filter((item) => item.item_type !== "group" || item.group_id !== groupId);
+      }
       return prev
         .map((item) => {
           if (item.item_type !== "group" || item.group_id !== groupId) return item;
@@ -116,6 +119,7 @@ export default function Timeline() {
                   key={item.group_id}
                   group={item}
                   onOpenDetail={() => openGroupModal(item)}
+                  onDelete={handleDelete}
                 />
               ) : (
                 <MealCard

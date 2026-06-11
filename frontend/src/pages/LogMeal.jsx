@@ -208,7 +208,6 @@ export default function LogMeal() {
 }
 
 function PhotoCard({ photo, onUpdate, onRemove }) {
-  const [showMicros, setShowMicros] = useState(false);
 
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -289,16 +288,7 @@ function PhotoCard({ photo, onUpdate, onRemove }) {
               </div>
             </div>
 
-            <button
-              onClick={() => setShowMicros((v) => !v)}
-              className="text-xs text-green-600 font-medium flex items-center gap-1"
-            >
-              {showMicros ? "Hide micronutrients" : "Show micronutrients"}
-              <svg xmlns="http://www.w3.org/2000/svg" className={`w-3 h-3 transition-transform ${showMicros ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-              </svg>
-            </button>
-            {showMicros && <MicroGrid micros={photo.analysis.micros} />}
+            <MicroGrid micros={photo.analysis.micros} />
 
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Notes (optional)</label>

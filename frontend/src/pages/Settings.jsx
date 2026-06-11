@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { useProfile } from "../context/ProfileContext";
 import client from "../api/client";
 import Toast from "../components/shared/Toast";
+import ConfirmModal from "../components/shared/ConfirmModal";
 
 export default function Settings() {
   const { profile, logout } = useProfile();
@@ -13,6 +14,7 @@ export default function Settings() {
   const [testing, setTesting] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [toast, setToast] = useState(null);
+  const [confirmDelete, setConfirmDelete] = useState(null);
 
   useEffect(() => {
     client.get("/config").then((r) => setKeySet(r.data.gemini_api_key_set));
@@ -35,7 +37,6 @@ export default function Settings() {
   };
 
   const deleteProfile = async (id) => {
-    if (!confirm("Delete this profile and all its meals?")) return;
     await client.delete(`/profiles/${id}`);
     setProfiles((p) => p.filter((x) => x.id !== id));
     if (profile.id === id) { logout(); navigate("/"); }
@@ -44,6 +45,13 @@ export default function Settings() {
   return (
     <div className="pt-4 space-y-6 pb-4">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
+      <ConfirmModal
+        isOpen={!!confirmDelete}
+        message="Delete this profile and all its meals?"
+        confirmLabel="Delete"
+        onConfirm={() => { const id = confirmDelete; setConfirmDelete(null); deleteProfile(id); }}
+        onCancel={() => setConfirmDelete(null)}
+      />
 
       <h2 className="text-xl font-bold text-gray-900">Settings</h2>
 
@@ -90,7 +98,7 @@ export default function Settings() {
               {p.name} {p.id === profile.id && <span className="text-xs text-green-500">(you)</span>}
             </span>
             <button
-              onClick={() => deleteProfile(p.id)}
+              onClick={() => setConfirmDelete(p.id)}
               className="text-xs text-red-400 hover:text-red-500 px-2 py-1"
             >
               Delete

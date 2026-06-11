@@ -1,6 +1,7 @@
 import { useState } from "react";
 import client from "../../api/client";
 import MicroGrid from "./MicroGrid";
+import ConfirmModal from "../shared/ConfirmModal";
 
 const TYPE_COLORS = {
   breakfast: "bg-yellow-100 text-yellow-700",
@@ -50,6 +51,7 @@ function MacroRow({ macros }) {
 
 function SingleMealView({ meal, onDelete }) {
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const time = new Date(meal.logged_at + "Z").toLocaleString("en-US", {
     weekday: "short", month: "short", day: "numeric",
@@ -57,7 +59,7 @@ function SingleMealView({ meal, onDelete }) {
   });
 
   const handleDelete = async () => {
-    if (!confirm("Remove this meal?")) return;
+    setConfirming(false);
     setDeleting(true);
     try {
       await client.delete(`/meals/${meal.id}`);
@@ -98,8 +100,14 @@ function SingleMealView({ meal, onDelete }) {
         </div>
       )}
 
+      <ConfirmModal
+        isOpen={confirming}
+        message="Remove this meal?"
+        onConfirm={handleDelete}
+        onCancel={() => setConfirming(false)}
+      />
       <button
-        onClick={handleDelete}
+        onClick={() => setConfirming(true)}
         disabled={deleting}
         className="w-full py-3 rounded-xl border border-red-200 text-red-500 text-sm font-medium hover:bg-red-50 disabled:opacity-50"
       >
@@ -109,19 +117,42 @@ function SingleMealView({ meal, onDelete }) {
   );
 }
 
-function GroupMealView({ group, onDelete }) {
+function GroupMealView({ group, onDelete, onClose }) {
   const [activeTab, setActiveTab] = useState("totals");
   const [deleting, setDeleting] = useState(null);
+  const [deletingGroup, setDeletingGroup] = useState(false);
+  const [pendingConfirm, setPendingConfirm] = useState(null);
 
   const handleDeleteSub = async (mealId) => {
-    if (!confirm("Remove this item?")) return;
-    setDeleting(mealId);
-    try {
-      await client.delete(`/meals/${mealId}`);
-      onDelete?.(mealId, group.group_id);
-    } finally {
-      setDeleting(null);
-    }
+    setPendingConfirm({
+      message: "Remove this item?",
+      action: async () => {
+        setDeleting(mealId);
+        try {
+          await client.delete(`/meals/${mealId}`);
+          onDelete?.(mealId, group.group_id);
+        } finally {
+          setDeleting(null);
+        }
+      },
+    });
+  };
+
+  const handleDeleteGroup = async () => {
+    setPendingConfirm({
+      message: "Remove entire meal session?",
+      confirmLabel: "Remove session",
+      action: async () => {
+        setDeletingGroup(true);
+        try {
+          await client.delete(`/meals/group/${group.group_id}`);
+          onDelete?.(null, group.group_id);
+          onClose?.();
+        } finally {
+          setDeletingGroup(false);
+        }
+      },
+    });
   };
 
   const time = new Date(group.logged_at + "Z").toLocaleString("en-US", {
@@ -131,11 +162,27 @@ function GroupMealView({ group, onDelete }) {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-bold text-gray-900">
-          Meal Session · {group.sub_meals.length} items
-        </h2>
-        <p className="text-xs text-gray-400 mt-0.5">{time}</p>
+      <ConfirmModal
+        isOpen={!!pendingConfirm}
+        message={pendingConfirm?.message}
+        confirmLabel={pendingConfirm?.confirmLabel || "Remove"}
+        onConfirm={() => { const a = pendingConfirm?.action; setPendingConfirm(null); a?.(); }}
+        onCancel={() => setPendingConfirm(null)}
+      />
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-lg font-bold text-gray-900">
+            Meal Session · {group.sub_meals.length} items
+          </h2>
+          <p className="text-xs text-gray-400 mt-0.5">{time}</p>
+        </div>
+        <button
+          onClick={handleDeleteGroup}
+          disabled={deletingGroup}
+          className="shrink-0 px-3 py-1.5 rounded-xl border border-red-200 text-red-500 text-xs font-medium hover:bg-red-50 disabled:opacity-50"
+        >
+          {deletingGroup ? "Removing..." : "Remove session"}
+        </button>
       </div>
 
       <div className="flex gap-1 bg-gray-100 rounded-xl p-1">
@@ -153,9 +200,16 @@ function GroupMealView({ group, onDelete }) {
       </div>
 
       {activeTab === "totals" && (
-        <div className="bg-gray-50 rounded-2xl p-4">
-          <MacroRow macros={group.total_macros} />
-        </div>
+        <>
+          <div className="bg-gray-50 rounded-2xl p-4">
+            <MacroRow macros={group.total_macros} />
+          </div>
+          {group.total_micros && (
+            <div className="bg-gray-50 rounded-2xl p-4">
+              <MicroGrid micros={group.total_micros} />
+            </div>
+          )}
+        </>
       )}
 
       {activeTab === "breakdown" && (
@@ -211,7 +265,7 @@ export default function MealDetailModal({ isOpen, onClose, data, onDelete }) {
             <SingleMealView meal={data.meal} onDelete={onDelete} />
           )}
           {data.type === "group" && (
-            <GroupMealView group={data.group} onDelete={onDelete} />
+            <GroupMealView group={data.group} onDelete={onDelete} onClose={onClose} />
           )}
         </div>
       </div>

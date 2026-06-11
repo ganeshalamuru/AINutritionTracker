@@ -1,5 +1,6 @@
 import { useState } from "react";
 import client from "../../api/client";
+import ConfirmModal from "../shared/ConfirmModal";
 
 const TYPE_COLORS = {
   breakfast: "bg-yellow-100 text-yellow-700",
@@ -10,18 +11,25 @@ const TYPE_COLORS = {
 
 export default function MealCard({ meal, onOpenDetail, onDelete }) {
   const [deleting, setDeleting] = useState(false);
+  const [confirming, setConfirming] = useState(false);
 
   const time = new Date(meal.logged_at + "Z").toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
 
-  const handleDelete = async (e) => {
-    e.stopPropagation();
-    if (!confirm("Remove this meal?")) return;
+  const handleDelete = async () => {
+    setConfirming(false);
     setDeleting(true);
     await client.delete(`/meals/${meal.id}`);
     onDelete?.(meal.id);
   };
 
   return (
+    <>
+    <ConfirmModal
+      isOpen={confirming}
+      message="Remove this meal?"
+      onConfirm={handleDelete}
+      onCancel={() => setConfirming(false)}
+    />
     <div
       className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
       onClick={onOpenDetail}
@@ -57,7 +65,7 @@ export default function MealCard({ meal, onOpenDetail, onDelete }) {
       <div className="flex items-center justify-between mt-3">
         <span className="text-xs text-green-600 font-medium">Tap for details →</span>
         <button
-          onClick={handleDelete}
+          onClick={(e) => { e.stopPropagation(); setConfirming(true); }}
           disabled={deleting}
           className="text-xs text-red-400 hover:text-red-500"
         >
@@ -65,5 +73,6 @@ export default function MealCard({ meal, onOpenDetail, onDelete }) {
         </button>
       </div>
     </div>
+    </>
   );
 }

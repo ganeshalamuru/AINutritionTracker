@@ -131,6 +131,7 @@ class MealGroupSummary(BaseModel):
     logged_at: datetime
     sub_meals: List[MealSubSummary]
     total_macros: MacrosData
+    total_micros: MicrosData = Field(default_factory=MicrosData)
 
 
 TimelineItem = Annotated[
