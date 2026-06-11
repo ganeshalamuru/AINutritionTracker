@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timezone
 from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
 from sqlalchemy.orm import relationship
 from database import Base
@@ -11,7 +11,7 @@ class Profile(Base):
     name = Column(String, nullable=False)
     pin = Column(String(4), nullable=False)
     avatar_color = Column(String, default="#22c55e")
-    created_at = Column(DateTime, default=datetime.utcnow)
+    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     is_active = Column(Boolean, default=True)
 
     meals = relationship("Meal", back_populates="profile", cascade="all, delete-orphan")
@@ -26,7 +26,7 @@ class Meal(Base):
     meal_type = Column(String, default="snack")
     image_path = Column(String, nullable=True)
     group_id = Column(String, nullable=True, index=True)
-    logged_at = Column(DateTime, default=datetime.utcnow)
+    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
     notes = Column(Text, nullable=True)
 
     profile = relationship("Profile", back_populates="meals")

@@ -124,8 +124,10 @@ All destructive actions use a custom `ConfirmModal` component (`components/share
 ### DB Migration (group_id)
 `group_id TEXT` column added to `meals` table on server startup via idempotent `ALTER TABLE` wrapped in try/except in `main.py` lifespan. Safe for existing databases.
 
-### Datetime Display
-Backend stores UTC datetimes without timezone suffix. Frontend appends `"Z"` before parsing: `new Date(x.logged_at + "Z")` — tells the browser it's UTC so `toLocaleTimeString` converts to device local time correctly.
+### Datetime Display & Timezone-Correct Day Filtering
+Backend stores UTC datetimes without timezone suffix (naive UTC strings). Frontend appends `"Z"` before parsing: `new Date(x.logged_at + "Z")` — tells the browser it's UTC so `toLocaleTimeString` converts to device local time correctly.
+
+For the daily summary, `Home.jsx` computes the user's local midnight using `new Date(year, month, day)` (JS Date constructor uses local timezone), then calls `.toISOString()` to get the UTC equivalent. It sends `date_from` and `date_to` as UTC ISO strings via axios `params` (auto URL-encoded). The backend filters with a range comparison (`logged_at >= date_from AND logged_at < date_to`) rather than `func.date()`, which ensures meals near midnight are always included regardless of the user's timezone offset.
 
 ### PIN Auth (scoped)
 `POST /profiles/verify` requires `{ profile_id, pin }`. Backend fetches profile by ID first, then checks PIN — prevents entering Profile B's PIN on Profile A's screen to log in as B.
@@ -181,6 +183,9 @@ Raw Gemini error is appended to the message so the user can diagnose. All errors
 | No micros for individual meals in group breakdown | `SubMealCard` lazy-fetches `GET /meals/{id}` on "Show micros" toggle; cached per session |
 | Two clicks to see sub-meal micros (Show micros + MicroGrid toggle) | Added `alwaysOpen` prop to `MicroGrid`; `SubMealCard` passes it so grid opens immediately |
 | No hot reload during frontend development | Added `-Dev` / `--dev` mode to start scripts: Vite on :8000, FastAPI on :8001 |
+| Stored dates had `+00:00` suffix (broke frontend `+ "Z"` parsing) | Stripped timezone suffix from all existing DB rows via SQL UPDATE |
+| Daily summary fetched wrong day for non-UTC timezones | `Home.jsx` sends local midnight as UTC ISO range (`date_from`/`date_to`) via axios `params`; backend filters `logged_at >= date_from AND logged_at < date_to` instead of `func.date()` |
+| Deprecated `datetime.utcnow()` / `datetime.utcfromtimestamp()` calls | Replaced with `datetime.now(timezone.utc)` / `datetime.fromtimestamp(..., tz=timezone.utc)` across `main.py`, `models.py`, `nutrition.py` |
 
 ---
 

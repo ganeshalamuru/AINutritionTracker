@@ -1,6 +1,6 @@
 import os
 from contextlib import asynccontextmanager
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import FastAPI, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -48,11 +48,11 @@ async def lifespan(app: FastAPI):
 
 
 def _purge_old_uploads():
-    cutoff = datetime.utcnow() - timedelta(hours=1)
+    cutoff = datetime.now(timezone.utc) - timedelta(hours=1)
     for fname in os.listdir(UPLOADS_DIR):
         fpath = os.path.join(UPLOADS_DIR, fname)
         if os.path.isfile(fpath):
-            mtime = datetime.utcfromtimestamp(os.path.getmtime(fpath))
+            mtime = datetime.fromtimestamp(os.path.getmtime(fpath), tz=timezone.utc)
             if mtime < cutoff:
                 os.remove(fpath)
 

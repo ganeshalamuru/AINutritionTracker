@@ -1,4 +1,4 @@
-from datetime import date, datetime
+from datetime import date, datetime, timezone
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 from sqlalchemy import func, extract
@@ -36,14 +36,18 @@ def _meal_to_summary(m: Meal) -> MealSummary:
 
 
 @router.get("/daily", response_model=DailySummary)
-def daily_summary(profile_id: int, date: str = None, db: Session = Depends(get_db)):
-    target_date = date or datetime.utcnow().strftime("%Y-%m-%d")
+def daily_summary(profile_id: int, date_from: str = None, date_to: str = None, db: Session = Depends(get_db)):
+    if not date_from:
+        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        date_from = today + "T00:00:00"
+        date_to = today + "T23:59:59.999999"
 
     meals = (
         db.query(Meal)
         .filter(
             Meal.profile_id == profile_id,
-            func.date(Meal.logged_at) == target_date,
+            Meal.logged_at >= date_from,
+            Meal.logged_at < date_to,
         )
         .order_by(Meal.logged_at.desc())
         .all()
@@ -59,7 +63,7 @@ def daily_summary(profile_id: int, date: str = None, db: Session = Depends(get_d
                 totals[f] += getattr(m.micros, f) or 0
 
     return DailySummary(
-        date=target_date,
+        date=date_from[:10],
         meal_count=len(meals),
         totals=totals,
         meals=[_meal_to_summary(m) for m in meals],

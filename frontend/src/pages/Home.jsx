@@ -64,12 +64,19 @@ export default function Home() {
   const [groupDetails, setGroupDetails] = useState({});
   const [modalData, setModalData] = useState(null);
 
-  const today = new Date().toISOString().slice(0, 10);
-
   const load = async () => {
     setLoading(true);
     try {
-      const { data } = await client.get(`/nutrition/daily?profile_id=${profile.id}&date=${today}`);
+      const now = new Date();
+      const localMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate());
+      const localNextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
+      const { data } = await client.get("/nutrition/daily", {
+        params: {
+          profile_id: profile.id,
+          date_from: localMidnight.toISOString(),
+          date_to: localNextMidnight.toISOString(),
+        },
+      });
       setSummary(data);
     } catch {
       setSummary(null);
