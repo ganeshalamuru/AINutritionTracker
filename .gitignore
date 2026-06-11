@@ -1,0 +1,43 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+venv/
+.venv/
+env/
+
+# Environment & secrets
+.env
+.env.example
+backend/.env
+
+# Database
+backend/nutrition.db
+
+# Uploaded images (temp staging)
+backend/uploads/
+
+# Frontend build output
+frontend/dist/
+
+# Node dependencies
+frontend/node_modules/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+npm-debug.log*
+
+# Editor
+.vscode/
+.idea/
+*.swp
+*.swo
