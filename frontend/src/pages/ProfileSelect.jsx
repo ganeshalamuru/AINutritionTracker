@@ -25,7 +25,7 @@ export default function ProfileSelect() {
   const handlePinSubmit = async (pin) => {
     setPinError("");
     try {
-      const { data } = await client.post("/profiles/verify", { pin });
+      const { data } = await client.post("/profiles/verify", { profile_id: selected.id, pin });
       login(data);
       navigate("/home");
     } catch {

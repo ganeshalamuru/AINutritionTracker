@@ -20,6 +20,7 @@ class ProfileOut(BaseModel):
 
 
 class PinVerify(BaseModel):
+    profile_id: int
     pin: str
 
 

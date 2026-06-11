@@ -28,8 +28,8 @@ def create_profile(data: ProfileCreate, db: Session = Depends(get_db)):
 
 @router.post("/verify", response_model=ProfileOut)
 def verify_pin(data: PinVerify, db: Session = Depends(get_db)):
-    profile = db.query(Profile).filter(Profile.pin == data.pin, Profile.is_active == True).first()
-    if not profile:
+    profile = db.query(Profile).filter(Profile.id == data.profile_id, Profile.is_active == True).first()
+    if not profile or profile.pin != data.pin:
         raise HTTPException(status_code=401, detail="Invalid PIN")
     return profile
 
