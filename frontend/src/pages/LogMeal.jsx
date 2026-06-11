@@ -6,8 +6,6 @@ import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
 
-const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"];
-
 const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
 export default function LogMeal() {
@@ -15,10 +13,12 @@ export default function LogMeal() {
   const navigate = useNavigate();
   const fileRef = useRef();
   const [photos, setPhotos] = useState([]);
+  const [hint, setHint] = useState("");
   const [logging, setLogging] = useState(false);
   const [toast, setToast] = useState(null);
 
-  const handleFiles = async (fileList) => {
+  // Just stage photos — no auto-analyze
+  const handleFiles = (fileList) => {
     const newPhotos = Array.from(fileList).map((file) => ({
       id: uid(),
       file,
@@ -31,18 +31,15 @@ export default function LogMeal() {
       notes: "",
     }));
     setPhotos((prev) => [...prev, ...newPhotos]);
-
-    for (const photo of newPhotos) {
-      await analyzePhoto(photo.id, photo.file);
-    }
   };
 
   const analyzePhoto = async (id, file) => {
-    setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, analyzing: true } : p));
+    setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, analyzing: true, error: null } : p));
     try {
       const fd = new FormData();
       fd.append("image", file);
       fd.append("profile_id", profile.id);
+      if (hint.trim()) fd.append("user_note", hint.trim());
       const { data } = await client.post("/meals/analyze", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
@@ -60,21 +57,34 @@ export default function LogMeal() {
     }
   };
 
+  // Analyze all photos that don't have results yet (pending + previously errored)
+  const analyzeAll = async () => {
+    const toAnalyze = photos.filter((p) => !p.analysis && !p.analyzing);
+    for (const photo of toAnalyze) {
+      await analyzePhoto(photo.id, photo.file);
+    }
+  };
+
   const updatePhoto = (id, updates) =>
     setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, ...updates } : p));
 
   const removePhoto = (id) =>
     setPhotos((prev) => prev.filter((p) => p.id !== id));
 
+  const retryPhoto = (id) => {
+    const photo = photos.find((p) => p.id === id);
+    if (photo) analyzePhoto(id, photo.file);
+  };
+
   const reset = () => {
     setPhotos([]);
+    setHint("");
     if (fileRef.current) fileRef.current.value = "";
   };
 
   const handleLog = async () => {
     const ready = photos.filter((p) => p.analysis && !p.analyzing);
     if (!ready.length) return;
-
     setLogging(true);
     try {
       if (ready.length === 1) {
@@ -115,8 +125,12 @@ export default function LogMeal() {
   };
 
   const isAnalyzing = photos.some((p) => p.analyzing);
-  const readyCount = photos.filter((p) => p.analysis && !p.analyzing).length;
+  const unanalyzed = photos.filter((p) => !p.analysis && !p.analyzing);
+  const readyCount = photos.filter((p) => p.analysis).length;
   const hasPhotos = photos.length > 0;
+  // Show analyze section when there are photos without results (pending or previously errored)
+  const showAnalyzeSection = hasPhotos && unanalyzed.length > 0 && !isAnalyzing;
+  const showLogSection = hasPhotos && !isAnalyzing && readyCount > 0 && unanalyzed.length === 0;
 
   return (
     <div className="pt-4 pb-4">
@@ -147,7 +161,9 @@ export default function LogMeal() {
       {hasPhotos && (
         <div className="space-y-4">
           <div className="flex items-center justify-between">
-            <h2 className="text-xl font-bold text-gray-900">Review & Log</h2>
+            <h2 className="text-xl font-bold text-gray-900">
+              {isAnalyzing ? "Analyzing..." : showLogSection ? "Review & Log" : "Add context"}
+            </h2>
             <button onClick={reset} className="text-sm text-gray-400 hover:text-gray-600">Start over</button>
           </div>
 
@@ -156,41 +172,71 @@ export default function LogMeal() {
               key={photo.id}
               photo={photo}
               onUpdate={(updates) => updatePhoto(photo.id, updates)}
-              onRemove={() => removePhoto(photo.id)}
+              onRemove={!isAnalyzing ? () => removePhoto(photo.id) : undefined}
+              onRetry={() => retryPhoto(photo.id)}
             />
           ))}
 
-          <button
-            onClick={() => fileRef.current?.click()}
-            className="w-full py-3 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
-          >
-            + Add another photo
-          </button>
-
-          {profile.isGuest ? (
-            <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-center">
-              <p className="text-sm text-green-800 font-medium mb-2">Create a profile to save meals</p>
+          {/* Hint + Analyze — shown before analysis, hidden once all are done */}
+          {(showAnalyzeSection || isAnalyzing) && (
+            <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
+              <div>
+                <label className="text-xs font-medium text-gray-600 mb-1.5 block">
+                  Hint for AI <span className="font-normal text-gray-400">(optional)</span>
+                </label>
+                <input
+                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-400 bg-white"
+                  placeholder='e.g. "I only ate half", "small portion", "homemade dal rice"'
+                  value={hint}
+                  onChange={(e) => setHint(e.target.value)}
+                  disabled={isAnalyzing}
+                />
+              </div>
               <button
-                onClick={() => navigate("/")}
-                className="bg-green-500 text-white px-6 py-2 rounded-xl text-sm font-medium hover:bg-green-600"
+                onClick={analyzeAll}
+                disabled={isAnalyzing}
+                className="w-full py-3.5 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
               >
-                Create Profile
-              </button>
-            </div>
-          ) : (
-            <button
-              onClick={handleLog}
-              disabled={logging || isAnalyzing || !readyCount}
-              className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
-            >
-              {logging
-                ? "Logging..."
-                : isAnalyzing
+                {isAnalyzing
                   ? "Analyzing..."
+                  : `Analyze ${unanalyzed.length} photo${unanalyzed.length > 1 ? "s" : ""}`}
+              </button>
+              {!isAnalyzing && (
+                <button
+                  onClick={() => fileRef.current?.click()}
+                  className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
+                >
+                  + Add another photo
+                </button>
+              )}
+            </div>
+          )}
+
+          {/* Log section — shown only after all photos are analyzed */}
+          {showLogSection && (
+            profile.isGuest ? (
+              <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-center">
+                <p className="text-sm text-green-800 font-medium mb-2">Create a profile to save meals</p>
+                <button
+                  onClick={() => navigate("/")}
+                  className="bg-green-500 text-white px-6 py-2 rounded-xl text-sm font-medium hover:bg-green-600"
+                >
+                  Create Profile
+                </button>
+              </div>
+            ) : (
+              <button
+                onClick={handleLog}
+                disabled={logging}
+                className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
+              >
+                {logging
+                  ? "Logging..."
                   : readyCount > 1
                     ? `Log ${readyCount} meals as a group`
                     : "Log this Meal"}
-            </button>
+              </button>
+            )
           )}
         </div>
       )}
@@ -207,18 +253,19 @@ export default function LogMeal() {
   );
 }
 
-function PhotoCard({ photo, onUpdate, onRemove }) {
-
+function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
       <div className="relative">
         <img src={photo.previewUrl} alt="meal" className="w-full h-44 object-cover" />
-        <button
-          onClick={onRemove}
-          className="absolute top-2 right-2 bg-black/50 rounded-full w-8 h-8 flex items-center justify-center text-white text-sm"
-        >
-          ✕
-        </button>
+        {onRemove && (
+          <button
+            onClick={onRemove}
+            className="absolute top-2 right-2 bg-black/50 rounded-full w-8 h-8 flex items-center justify-center text-white text-sm"
+          >
+            ✕
+          </button>
+        )}
       </div>
 
       <div className="p-4 space-y-3">
@@ -227,6 +274,7 @@ function PhotoCard({ photo, onUpdate, onRemove }) {
         {photo.error && (
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
             {photo.error}
+            <button onClick={onRetry} className="ml-2 underline text-red-500 hover:text-red-700">Retry</button>
           </div>
         )}
 

@@ -63,6 +63,7 @@ def _sum_micros(a: MicrosData, b: MicrosData) -> MicrosData:
 async def analyze_meal(
     image: UploadFile = File(...),
     profile_id: int = Form(default=0),
+    user_note: Optional[str] = Form(default=None),
     db: Session = Depends(get_db)
 ):
     api_key = get_api_key(db)
@@ -74,7 +75,7 @@ async def analyze_meal(
         f.write(image_bytes)
 
     try:
-        result = await asyncio.to_thread(analyze_meal_image, image_bytes, api_key)
+        result = await asyncio.to_thread(analyze_meal_image, image_bytes, api_key, user_note or "")
     except Exception as e:
         os.remove(temp_path)
         print(f"[Gemini error] {type(e).__name__}: {e}")

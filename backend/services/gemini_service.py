@@ -70,7 +70,7 @@ Rules:
 - confidence: high=clearly identifiable dish, medium=probable, low=unclear"""
 
 
-def analyze_meal_image(image_bytes: bytes, api_key: str) -> dict:
+def analyze_meal_image(image_bytes: bytes, api_key: str, user_note: str = "") -> dict:
     if os.environ.get("MOCK_GEMINI", "").lower() in ("1", "true"):
         print("[mock] Returning mock Gemini response")
         return MOCK_RESPONSE
@@ -78,8 +78,12 @@ def analyze_meal_image(image_bytes: bytes, api_key: str) -> dict:
     genai.configure(api_key=api_key)
     model = genai.GenerativeModel("gemini-3.5-flash")
 
+    prompt = NUTRITION_PROMPT
+    if user_note and user_note.strip():
+        prompt += f"\n\nAdditional context from the user: {user_note.strip()}"
+
     image_part = {"mime_type": "image/jpeg", "data": image_bytes}
-    response = model.generate_content([NUTRITION_PROMPT, image_part])
+    response = model.generate_content([prompt, image_part])
 
     text = response.text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)

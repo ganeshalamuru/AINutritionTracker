@@ -45,7 +45,7 @@ def daily_summary(profile_id: int, date: str = None, db: Session = Depends(get_d
             Meal.profile_id == profile_id,
             func.date(Meal.logged_at) == target_date,
         )
-        .order_by(Meal.logged_at)
+        .order_by(Meal.logged_at.desc())
         .all()
     )
 

@@ -117,6 +117,61 @@ function SingleMealView({ meal, onDelete }) {
   );
 }
 
+function SubMealCard({ sub, isDeleting, onDelete }) {
+  const [expanded, setExpanded] = useState(false);
+  const [micros, setMicros] = useState(null);
+  const [loadingMicros, setLoadingMicros] = useState(false);
+
+  const handleToggle = async () => {
+    if (expanded) { setExpanded(false); return; }
+    setExpanded(true);
+    if (micros) return;
+    setLoadingMicros(true);
+    try {
+      const { data } = await client.get(`/meals/${sub.id}`);
+      setMicros(data.micros);
+    } catch {}
+    setLoadingMicros(false);
+  };
+
+  return (
+    <div className="bg-gray-50 rounded-2xl p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <div>
+          <p className="font-semibold text-gray-800 text-sm">{sub.meal_name}</p>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${TYPE_COLORS[sub.meal_type] || "bg-gray-100 text-gray-600"}`}>
+            {sub.meal_type}
+          </span>
+        </div>
+        <button
+          onClick={onDelete}
+          disabled={isDeleting}
+          className="text-xs text-red-400 hover:text-red-500"
+        >
+          {isDeleting ? "..." : "Remove"}
+        </button>
+      </div>
+      <div className="flex flex-wrap gap-3 text-xs text-gray-600">
+        <span className="font-semibold text-gray-800">{Math.round(sub.macros.calories)} kcal</span>
+        <span><span className="text-blue-500 font-semibold">{Math.round(sub.macros.protein_g)}g</span> protein</span>
+        <span><span className="text-orange-400 font-semibold">{Math.round(sub.macros.carbs_g)}g</span> carbs</span>
+        <span><span className="text-purple-500 font-semibold">{Math.round(sub.macros.fat_g)}g</span> fat</span>
+      </div>
+      <button
+        onClick={handleToggle}
+        className="text-xs text-green-600 font-medium hover:text-green-700"
+      >
+        {expanded ? "Hide micros ▲" : "Show micros ▼"}
+      </button>
+      {expanded && (
+        loadingMicros
+          ? <p className="text-xs text-gray-400 py-1">Loading...</p>
+          : micros && <MicroGrid micros={micros} alwaysOpen />
+      )}
+    </div>
+  );
+}
+
 function GroupMealView({ group, onDelete, onClose }) {
   const [activeTab, setActiveTab] = useState("totals");
   const [deleting, setDeleting] = useState(null);
@@ -215,29 +270,12 @@ function GroupMealView({ group, onDelete, onClose }) {
       {activeTab === "breakdown" && (
         <div className="space-y-3">
           {group.sub_meals.map((sub) => (
-            <div key={sub.id} className="bg-gray-50 rounded-2xl p-4">
-              <div className="flex items-center justify-between mb-2">
-                <div>
-                  <p className="font-semibold text-gray-800 text-sm">{sub.meal_name}</p>
-                  <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${TYPE_COLORS[sub.meal_type] || "bg-gray-100 text-gray-600"}`}>
-                    {sub.meal_type}
-                  </span>
-                </div>
-                <button
-                  onClick={() => handleDeleteSub(sub.id)}
-                  disabled={deleting === sub.id}
-                  className="text-xs text-red-400 hover:text-red-500"
-                >
-                  {deleting === sub.id ? "..." : "Remove"}
-                </button>
-              </div>
-              <div className="flex gap-3 text-xs text-gray-600">
-                <span className="font-semibold text-gray-800">{Math.round(sub.macros.calories)} kcal</span>
-                <span><span className="text-blue-500 font-semibold">{Math.round(sub.macros.protein_g)}g</span> protein</span>
-                <span><span className="text-orange-400 font-semibold">{Math.round(sub.macros.carbs_g)}g</span> carbs</span>
-                <span><span className="text-purple-500 font-semibold">{Math.round(sub.macros.fat_g)}g</span> fat</span>
-              </div>
-            </div>
+            <SubMealCard
+              key={sub.id}
+              sub={sub}
+              isDeleting={deleting === sub.id}
+              onDelete={() => handleDeleteSub(sub.id)}
+            />
           ))}
         </div>
       )}

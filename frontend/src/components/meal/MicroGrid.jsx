@@ -39,20 +39,23 @@ function Section({ title, items, data }) {
   );
 }
 
-export default function MicroGrid({ micros }) {
+export default function MicroGrid({ micros, alwaysOpen = false }) {
   const [open, setOpen] = useState(false);
+  const isOpen = alwaysOpen || open;
   return (
     <div className="mt-3">
-      <button
-        onClick={() => setOpen((o) => !o)}
-        className="flex items-center gap-1 text-sm text-gray-600 font-medium"
-      >
-        <span>Micronutrients</span>
-        <svg xmlns="http://www.w3.org/2000/svg" className={`w-4 h-4 transition-transform ${open ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
-        </svg>
-      </button>
-      {open && (
+      {!alwaysOpen && (
+        <button
+          onClick={() => setOpen((o) => !o)}
+          className="flex items-center gap-1 text-sm text-gray-600 font-medium"
+        >
+          <span>Micronutrients</span>
+          <svg xmlns="http://www.w3.org/2000/svg" className={`w-4 h-4 transition-transform ${isOpen ? "rotate-180" : ""}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 9l-7 7-7-7" />
+          </svg>
+        </button>
+      )}
+      {isOpen && (
         <div className="mt-3 space-y-4">
           <Section title="Vitamins" items={VITAMINS} data={micros} />
           <Section title="Minerals" items={MINERALS} data={micros} />

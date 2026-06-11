@@ -12,7 +12,7 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`) — persists across restarts |
-| AI Vision | Google Gemini 3.5 Flash (`gemini-3.5-flash`) |
+| AI Vision | Google Gemini (`gemini-3.5-flash` default — valid model, confirmed in API) |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
 
@@ -21,22 +21,27 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 ## How to Run
 
 ```powershell
-# First run or after frontend changes (installs deps + builds frontend):
-.\start.ps1
+# Dev mode — hot reload (Vite on :8000, FastAPI on :8001):
+.\start.ps1 -Dev
+$env:MOCK_GEMINI = "1"; .\start.ps1 -Dev
 
-# With mock Gemini (no API calls — saves free quota):
+# Production mode — build then serve via FastAPI on :8000:
+.\start.ps1
+.\start.ps1 -SkipBuild          # skip frontend rebuild (backend-only changes)
 $env:MOCK_GEMINI = "1"; .\start.ps1
 
-# Subsequent runs (skip rebuild, faster):
-.\start.ps1 -SkipBuild
-
-# Git Bash equivalent:
+# Git Bash equivalents:
+bash start.sh --dev
 bash start.sh
 bash start.sh --skip-build
 ```
 
-- Desktop: `http://localhost:8000`
+- Desktop: `http://localhost:8000` (both dev and production)
 - Mobile (same WiFi): run `ipconfig`, find your IPv4 address, open `http://<your-ip>:8000`
+
+> Dev mode: Vite owns :8000 and proxies `/api/*` → FastAPI on :8001. Hot reload works on any `.jsx` / `.css` save. Backend also uses `--reload` so Python changes restart automatically.
+
+> Production mode: `.\start.ps1` (no `-Dev`) builds the React app into `frontend/dist/` and FastAPI serves it as static files on :8000. Use this before sharing with others or testing on mobile with final UI.
 
 > If PowerShell blocks the script: `Set-ExecutionPolicy RemoteSigned -Scope CurrentUser`
 
@@ -169,6 +174,13 @@ Raw Gemini error is appended to the message so the user can diagnose. All errors
 | No way to remove a grouped meal session | "Remove" button on GroupedMealCard + "Remove session" in modal header |
 | Browser `confirm()` popups everywhere | Replaced with `ConfirmModal` component across all 4 files |
 | Two clicks needed to see micros in LogMeal | Removed outer toggle; MicroGrid's own toggle is now the single click |
+| Gemini call blocking FastAPI event loop | Wrapped `analyze_meal_image` in `asyncio.to_thread()` in `/analyze` endpoint |
+| No way to give AI context about a meal | Added `user_note` optional field to `/analyze`; LogMeal shows hint input before analyze |
+| LogMeal auto-analyzed on file pick (wasted quota) | Removed auto-analyze; flow is now: upload → type hint → click Analyze button |
+| Home page meals showed oldest first | Changed `nutrition.py` daily query to `.order_by(Meal.logged_at.desc())` |
+| No micros for individual meals in group breakdown | `SubMealCard` lazy-fetches `GET /meals/{id}` on "Show micros" toggle; cached per session |
+| Two clicks to see sub-meal micros (Show micros + MicroGrid toggle) | Added `alwaysOpen` prop to `MicroGrid`; `SubMealCard` passes it so grid opens immediately |
+| No hot reload during frontend development | Added `-Dev` / `--dev` mode to start scripts: Vite on :8000, FastAPI on :8001 |
 
 ---
 
@@ -210,6 +222,12 @@ Interactive API docs: `http://localhost:8000/docs`
 | Fat | 65 g |
 
 Micros displayed as raw values (no goal bars) in collapsible MicroGrid.
+
+---
+
+## Utility Scripts
+
+- `check_gemini_limits.py` — lists available Gemini models with token limits, tests API key connectivity, shows free-tier RPM/RPD for known models. Run: `python check_gemini_limits.py <api_key>` or no args if `backend/.env` has the key.
 
 ---
 
