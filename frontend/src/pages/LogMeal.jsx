@@ -8,6 +8,8 @@ import MicroGrid from "../components/meal/MicroGrid";
 
 const MEAL_TYPES = ["breakfast", "lunch", "dinner", "snack"];
 
+const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+
 export default function LogMeal() {
   const { profile } = useProfile();
   const navigate = useNavigate();
@@ -18,7 +20,7 @@ export default function LogMeal() {
 
   const handleFiles = async (fileList) => {
     const newPhotos = Array.from(fileList).map((file) => ({
-      id: crypto.randomUUID(),
+      id: uid(),
       file,
       previewUrl: URL.createObjectURL(file),
       analysis: null,
@@ -88,7 +90,7 @@ export default function LogMeal() {
           micros: p.analysis.micros,
         });
       } else {
-        const groupId = crypto.randomUUID();
+        const groupId = uid();
         await client.post("/meals/log-group", {
           group_id: groupId,
           meals: ready.map((p) => ({
