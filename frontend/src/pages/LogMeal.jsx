@@ -358,6 +358,31 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
               </div>
             </div>
 
+            {photo.analysis.items?.length > 0 && (
+              <div className="bg-gray-50 rounded-xl p-3">
+                <span className="text-xs font-semibold text-gray-700 block mb-1.5">
+                  Identified ingredients
+                </span>
+                <div className="flex flex-wrap gap-1.5">
+                  {photo.analysis.items.map((it, i) => (
+                    <span
+                      key={i}
+                      className={`text-xs px-2 py-1 rounded-full ${photo.analysis.unmatched?.includes(it.food) ? "bg-yellow-100 text-yellow-700" : "bg-white text-gray-600"}`}
+                    >
+                      {it.food} · {Math.round(it.grams)}g
+                    </span>
+                  ))}
+                </div>
+                {photo.analysis.unmatched?.length > 0 && (
+                  <p className="text-xs text-yellow-700 mt-2">
+                    Couldn't find {photo.analysis.unmatched.length} item
+                    {photo.analysis.unmatched.length > 1 ? "s" : ""} in the food database —
+                    totals may be undercounted.
+                  </p>
+                )}
+              </div>
+            )}
+
             <MicroGrid micros={photo.analysis.micros} />
 
             <div>

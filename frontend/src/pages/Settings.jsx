@@ -14,6 +14,9 @@ export default function Settings() {
   const [groqKey, setGroqKey] = useState("");
   const [groqSet, setGroqSet] = useState(false);
   const [savingGroq, setSavingGroq] = useState(false);
+  const [usdaKey, setUsdaKey] = useState("");
+  const [usdaSet, setUsdaSet] = useState(false);
+  const [savingUsda, setSavingUsda] = useState(false);
   const [selected, setSelected] = useState("");
   const [savingModel, setSavingModel] = useState(false);
   const [profiles, setProfiles] = useState([]);
@@ -33,6 +36,7 @@ export default function Settings() {
     client.get("/config").then((r) => {
       setKeySet(r.data.gemini_api_key_set);
       setGroqSet(r.data.groq_api_key_set);
+      setUsdaSet(r.data.usda_api_key_set);
       setSelected(keyOf(r.data.vision_provider || "groq", r.data.vision_model || ""));
     });
     client.get("/profiles").then((r) => setProfiles(r.data));
@@ -79,6 +83,21 @@ export default function Settings() {
       setToast({ message: "Failed to save key", type: "error" });
     } finally {
       setSavingGroq(false);
+    }
+  };
+
+  const saveUsdaKey = async () => {
+    if (!usdaKey.trim()) return;
+    setSavingUsda(true);
+    try {
+      await client.put("/config", { usda_api_key: usdaKey.trim() });
+      setUsdaSet(true);
+      setUsdaKey("");
+      setToast({ message: "USDA key saved!", type: "success" });
+    } catch {
+      setToast({ message: "Failed to save key", type: "error" });
+    } finally {
+      setSavingUsda(false);
     }
   };
 
@@ -178,6 +197,38 @@ export default function Settings() {
           className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
         >
           {saving ? "Saving..." : keySet ? "Update Key" : "Save Key"}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <h3 className="font-semibold text-gray-800">USDA Food Database Key</h3>
+        <p className="text-xs text-gray-500">
+          Supplies the real macro/micro numbers. The AI only identifies ingredients;
+          their nutrients are looked up in USDA FoodData Central.{" "}
+          <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
+            Get a free key here
+          </a>.{" "}
+          <span className="text-yellow-700">Recommended:</span> the shared DEMO_KEY is
+          throttled to ~30/hr &amp; 50/day (a few meals exhaust it); a free signed key gives 1,000/hr.
+        </p>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${usdaSet ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
+            {usdaSet ? "Key saved" : "Using DEMO_KEY"}
+          </span>
+        </div>
+        <input
+          type="password"
+          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 font-mono"
+          placeholder="USDA API key"
+          value={usdaKey}
+          onChange={(e) => setUsdaKey(e.target.value)}
+        />
+        <button
+          onClick={saveUsdaKey}
+          disabled={savingUsda || !usdaKey.trim()}
+          className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+        >
+          {savingUsda ? "Saving..." : usdaSet ? "Update Key" : "Save Key"}
         </button>
       </div>
 

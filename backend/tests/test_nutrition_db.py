@@ -1,0 +1,276 @@
+"""Unit tests for the USDA nutrient-lookup stage (services/nutrition_db.py).
+
+No network: every external USDA call is stubbed via `requests.post`. The cache is
+pointed at a throwaway temp SQLite DB so tests never touch the real nutrition.db.
+
+Run from the backend/ directory:
+    python -m unittest tests.test_nutrition_db
+    python -m unittest discover -s tests        # all tests
+"""
+import json
+import os
+import tempfile
+import unittest
+from unittest.mock import patch
+
+from sqlalchemy import create_engine
+
+import services.nutrition_db as nd
+
+
+class FakeResp:
+    """Minimal stand-in for a requests.Response."""
+    def __init__(self, status, body):
+        self.status_code = status
+        self._body = body
+        self.text = json.dumps(body)
+
+    def json(self):
+        return self._body
+
+    def raise_for_status(self):
+        if self.status_code != 200:
+            raise Exception(f"HTTP {self.status_code}")
+
+
+def food(data_type, desc, fdc_id, nutrients=None, score=0):
+    """Build a USDA search-result food record."""
+    return {
+        "dataType": data_type,
+        "description": desc,
+        "fdcId": fdc_id,
+        "score": score,
+        "foodNutrients": [{"nutrientId": nid, "value": v} for nid, v in (nutrients or {}).items()],
+    }
+
+
+class NutritionDbTest(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        # Isolate the cache in a temp DB (see feedback: never write tests to the live DB).
+        cls._tmp = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+        cls._tmp.close()
+        cls._engine = create_engine(f"sqlite:///{cls._tmp.name}", connect_args={"check_same_thread": False})
+
+    @classmethod
+    def tearDownClass(cls):
+        cls._engine.dispose()
+        os.unlink(cls._tmp.name)
+
+    def setUp(self):
+        # Redirect the module's cache engine to the temp DB and reset the table flag.
+        self._engine_patch = patch.object(nd, "engine", self._engine)
+        self._engine_patch.start()
+        nd._cache_ready = False
+        os.environ.pop("MOCK_GEMINI", None)
+        with self._engine.begin() as c:
+            from sqlalchemy import text
+            nd._ensure_cache_table()
+            c.execute(text("DELETE FROM food_cache"))
+
+    def tearDown(self):
+        self._engine_patch.stop()
+
+    # --- query simplification ---
+
+    def test_simplify_strips_qualifier_and_adjective(self):
+        self.assertEqual(nd._simplify("onion, fried"), "onion")
+        self.assertEqual(nd._simplify("chicken breast, cooked"), "chicken breast")
+
+    def test_simplify_returns_empty_when_nothing_to_simplify(self):
+        self.assertEqual(nd._simplify("yogurt"), "")
+        self.assertEqual(nd._simplify("basmati rice"), "")
+
+    # --- best-of-N selection ---
+
+    def test_pick_best_prefers_generic_over_breaded_fndds(self):
+        foods = [
+            food("Survey (FNDDS)", "Chicken breast tenders, breaded, cooked", 1, score=900),
+            food("SR Legacy", "Chicken, broiler, breast, meat only, cooked", 2, score=100),
+        ]
+        self.assertEqual(nd._pick_best(foods, "chicken breast cooked")["fdcId"], 2)
+
+    def test_pick_best_empty(self):
+        self.assertIsNone(nd._pick_best([], "anything"))
+
+    # --- nutrient extraction / scaling ---
+
+    def test_extract_per_100g_maps_ids_and_energy_fallback(self):
+        per = nd._extract_per_100g(food("SR Legacy", "X", 1, {1003: 20, 2047: 250}))
+        self.assertEqual(per["protein_g"], 20)
+        self.assertEqual(per["calories"], 250)  # Atwater fallback when 1008 absent
+
+    # --- query construction / aliasing ---
+
+    def test_alias_rewrites_search_query(self):
+        calls = []
+        hit = food("Foundation", "Rice, white, cooked", 1, {1008: 130})
+
+        def post(url, params=None, json=None, timeout=None):
+            calls.append((json["query"], json["requireAllWords"]))
+            return FakeResp(200, {"foods": [hit]})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            nd.lookup_nutrients("basmati rice", "key")
+        # 'basmati rice' is aliased to the generic cooked-rice query, sent strict.
+        self.assertEqual(calls, [("rice white cooked", True)])
+
+    def test_base_ingredient_aliases(self):
+        # Dish-decomposition base ingredients map to USDA-friendly generic queries.
+        self.assertEqual(nd._aliased("toor dal"), "pigeon peas cooked")
+        self.assertEqual(nd._aliased("urad dal"), "lentils cooked")  # USDA has no urad
+        self.assertEqual(nd._aliased("filter coffee"), "brewed coffee")
+        self.assertEqual(nd._aliased("coconut"), "coconut raw")
+        self.assertEqual(nd._aliased("carrot"), "carrots raw")
+        self.assertEqual(nd._aliased("apple"), "apples raw")
+        self.assertEqual(nd._aliased("banana"), "bananas raw")
+
+    def test_prefers_candidate_with_energy(self):
+        # A 0-calorie record (missing energy data) loses to a populated one even
+        # when it would otherwise rank higher (e.g. preferred data type).
+        cands = [
+            food("Foundation", "Butter, stick, salted", 1, {1003: 0.9}),       # no energy
+            food("SR Legacy", "Butter, salted", 2, {1008: 717, 1004: 81}),     # populated
+        ]
+
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": cands})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            per = nd.lookup_nutrients("butter", "key")
+        self.assertEqual(per["calories"], 717)
+
+    def test_lookup_picks_best_and_caches(self):
+        hit = food("SR Legacy", "Onions, raw", 11, {1008: 40, 1089: 0.2})
+
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": [hit]})
+
+        with patch.object(nd.requests, "post", side_effect=post) as m:
+            per = nd.lookup_nutrients("onion", "key")
+            self.assertEqual(per["calories"], 40)
+            # second call served from cache -> no extra POST
+            nd.lookup_nutrients("onion", "key")
+            self.assertEqual(m.call_count, 1)
+
+    def test_simplified_fallback_relaxes_require_all_words(self):
+        # 'salmon, grilled' isn't aliased -> primary strict miss, then lenient retry.
+        calls = []
+        hit = food("SR Legacy", "Fish, salmon, cooked", 9, {1008: 200})
+
+        def post(url, params=None, json=None, timeout=None):
+            calls.append((json["query"], json["requireAllWords"]))
+            return FakeResp(200, {"foods": [hit]} if json["query"] == "salmon" else {"foods": []})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            per = nd.lookup_nutrients("salmon, grilled", "key")
+        self.assertEqual(calls, [("salmon, grilled", True), ("salmon", False)])
+        self.assertEqual(per["calories"], 200)
+
+    def test_head_noun_gate_rejects_unrelated_results(self):
+        # 'mint leaves' -> alias 'spearmint fresh'; USDA returns only other greens.
+        greens = [
+            food("SR Legacy", "Amaranth leaves, raw", 1, {1008: 23}),
+            food("SR Legacy", "Broccoli, leaves, raw", 2, {1008: 28}),
+        ]
+
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": greens})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            self.assertIsNone(nd.lookup_nutrients("mint leaves", "key"))
+
+    def test_first_word_ranking_beats_data_type(self):
+        # 'yogurt' alias 'yogurt plain whole': generic Yogurt (FNDDS) should beat
+        # 'Tofu yogurt' (SR Legacy) because the food noun is the first word.
+        foods = [
+            food("SR Legacy", "Tofu yogurt", 1, {1008: 94}),
+            food("Survey (FNDDS)", "Yogurt, plain, whole milk", 2, {1008: 61}),
+        ]
+
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": foods})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            per = nd.lookup_nutrients("yogurt", "key")
+        self.assertEqual(per["calories"], 61)
+
+    def test_plural_stem_match(self):
+        hit = food("SR Legacy", "Onions, cooked, boiled", 11, {1008: 44})
+
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": [hit]})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            # alias 'onions cooked' -> noun 'onions' (stem 'onion') matches 'Onions'
+            self.assertIsNotNone(nd.lookup_nutrients("onion", "key"))
+
+    def test_genuine_miss_returns_none(self):
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(200, {"foods": []})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            self.assertIsNone(nd.lookup_nutrients("nonexistent food", "key"))
+
+    def test_clear_cache_empties_table(self):
+        hit = food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})
+        with patch.object(nd.requests, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})) as m:
+            nd.lookup_nutrients("rice", "key")
+            nd.clear_cache()
+            nd.lookup_nutrients("rice", "key")  # cache empty -> hits API again
+            self.assertEqual(m.call_count, 2)
+
+    # --- rate limit must be loud, not silent ---
+
+    def test_rate_limit_raises(self):
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(429, {"error": {"code": "OVER_RATE_LIMIT", "message": "x"}})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            with self.assertRaises(nd.UsdaRateLimitError):
+                nd.lookup_nutrients("anything", "key")
+
+    def test_rate_limit_propagates_through_nutrients_for_items(self):
+        def post(url, params=None, json=None, timeout=None):
+            return FakeResp(429, {"error": {"code": "OVER_RATE_LIMIT"}})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            with self.assertRaises(nd.UsdaRateLimitError):
+                nd.nutrients_for_items([{"food": "rice", "grams": 100}], "key")
+
+    # --- summing across items ---
+
+    def test_nutrients_for_items_scales_dedupes_and_reports_unmatched(self):
+        rice = food("SR Legacy", "Rice, white, cooked", 1, {1008: 100, 1089: 1.0})
+
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            return FakeResp(200, {"foods": [rice]} if "rice" in q else {"foods": []})
+
+        items = [
+            {"food": "white rice, cooked", "grams": 200},  # 2x per-100g
+            {"food": "white rice, cooked", "grams": 50},   # deduped name, +0.5x
+            {"food": "mystery sauce", "grams": 30},         # unmatched
+        ]
+        with patch.object(nd.requests, "post", side_effect=post):
+            macros, micros, unmatched = nd.nutrients_for_items(items, "key")
+
+        self.assertAlmostEqual(macros["calories"], 250.0)   # (200+50)/100 * 100
+        self.assertAlmostEqual(micros["iron_mg"], 2.5)      # (200+50)/100 * 1.0
+        self.assertEqual(unmatched, ["mystery sauce"])
+
+    def test_mock_mode_returns_canned_totals_without_network(self):
+        os.environ["MOCK_GEMINI"] = "1"
+        try:
+            # requests.post is NOT patched — a network call here would error/hang.
+            macros, micros, unmatched = nd.nutrients_for_items(
+                [{"food": "anything", "grams": 100}], "key"
+            )
+        finally:
+            os.environ.pop("MOCK_GEMINI", None)
+        self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
+        self.assertEqual(unmatched, [])
+
+
+if __name__ == "__main__":
+    unittest.main()

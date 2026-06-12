@@ -38,6 +38,26 @@ async def lifespan(app: FastAPI):
             conn.commit()
         except Exception:
             pass  # column already exists
+        # Cache of USDA food-name -> per-100g nutrient lookups (see nutrition_db.py).
+        conn.execute(text(
+            "CREATE TABLE IF NOT EXISTS food_cache ("
+            "query TEXT PRIMARY KEY, fdc_id INTEGER, nutrients_json TEXT, fetched_at REAL)"
+        ))
+        conn.commit()
+        # Purge cached lookups when the matching logic version changes, so improved
+        # matching isn't masked by stale rows from an older algorithm.
+        from services.nutrition_db import CACHE_VERSION
+        stored = conn.execute(
+            text("SELECT value FROM app_config WHERE key = 'food_cache_version'")
+        ).first()
+        if not stored or stored[0] != CACHE_VERSION:
+            conn.execute(text("DELETE FROM food_cache"))
+            conn.execute(text(
+                "INSERT INTO app_config (key, value) VALUES ('food_cache_version', :v) "
+                "ON CONFLICT(key) DO UPDATE SET value = :v"
+            ), {"v": CACHE_VERSION})
+            conn.commit()
+            logger.info("food_cache purged (version -> %s)", CACHE_VERSION)
 
     from database import SessionLocal
     db = SessionLocal()
@@ -45,6 +65,7 @@ async def lifespan(app: FastAPI):
         seeds = {
             "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
             "groq_api_key": os.getenv("GROQ_API_KEY", ""),
+            "usda_api_key": os.getenv("USDA_API_KEY", "DEMO_KEY"),
             "vision_provider": DEFAULT_PROVIDER,
             "vision_model": DEFAULT_MODEL,
         }
@@ -105,6 +126,7 @@ def get_config(db: Session = Depends(get_db)):
     return {
         "gemini_api_key_set": bool(_get_config_value(db, "gemini_api_key")),
         "groq_api_key_set": bool(_get_config_value(db, "groq_api_key")),
+        "usda_api_key_set": bool(_get_config_value(db, "usda_api_key")),
         "vision_provider": _get_config_value(db, "vision_provider", DEFAULT_PROVIDER),
         "vision_model": _get_config_value(db, "vision_model", DEFAULT_MODEL),
     }
@@ -116,6 +138,8 @@ def update_config(data: ConfigUpdate, db: Session = Depends(get_db)):
         _set_config_value(db, "gemini_api_key", data.gemini_api_key)
     if data.groq_api_key is not None:
         _set_config_value(db, "groq_api_key", data.groq_api_key)
+    if data.usda_api_key is not None:
+        _set_config_value(db, "usda_api_key", data.usda_api_key)
     if data.vision_provider is not None:
         _set_config_value(db, "vision_provider", data.vision_provider)
     if data.vision_model is not None:

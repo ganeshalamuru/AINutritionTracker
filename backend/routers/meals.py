@@ -8,11 +8,12 @@ from sqlalchemy.orm import Session
 from database import get_db
 from models import Meal, Macros, Micros, AppConfig
 from schemas import (
-    AnalyzeResponse, MealLogRequest, MealLogResponse, LogGroupRequest,
+    AnalyzeResponse, MealItem, MealLogRequest, MealLogResponse, LogGroupRequest,
     MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
     TimelineResponse, MacrosData, MicrosData
 )
 from services.gemini_service import analyze_meal_image, DEFAULT_MODEL, DEFAULT_PROVIDER
+from services.nutrition_db import nutrients_for_items, UsdaRateLimitError
 
 router = APIRouter(prefix="/meals", tags=["meals"])
 
@@ -106,8 +107,24 @@ async def analyze_meal(
             raise HTTPException(status_code=504, detail=f"AI analysis timed out — the model didn't respond. Try again. ({raw})")
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {raw}")
 
-    macros = MacrosData(**result.get("macros", {}))
-    micros = MicrosData(**result.get("micros", {}))
+    # Stage 2: turn the model's ingredient list into real nutrient numbers via the
+    # USDA food database (the model no longer estimates macros/micros itself).
+    items = result.get("items", [])
+    usda_key = _config_value(db, "usda_api_key", "DEMO_KEY")
+    try:
+        macros_d, micros_d, unmatched = await asyncio.to_thread(
+            nutrients_for_items, items, usda_key
+        )
+    except UsdaRateLimitError as e:
+        raise HTTPException(
+            status_code=429,
+            detail="USDA rate limit reached — add your free FoodData Central key in "
+                   "Settings → USDA Food Database Key. "
+                   f"({e})",
+        )
+
+    macros = MacrosData(**macros_d)
+    micros = MicrosData(**micros_d)
 
     return AnalyzeResponse(
         meal_name=result.get("meal_name", "Unknown meal"),
@@ -116,6 +133,8 @@ async def analyze_meal(
         estimated_serving=result.get("estimated_serving"),
         macros=macros,
         micros=micros,
+        items=[MealItem(food=i.get("food", ""), grams=i.get("grams") or 0) for i in items],
+        unmatched=unmatched,
         temp_image_token=token,
         notes=result.get("notes"),
     )

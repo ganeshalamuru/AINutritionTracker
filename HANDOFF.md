@@ -12,7 +12,8 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`) — persists across restarts |
-| AI Vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`). Gemini/Gemma selectable as fallback. |
+| AI Vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`). Gemini/Gemma selectable as fallback. **Only identifies ingredients** (see Two-Stage Nutrition Architecture). |
+| Nutrient data | **USDA FoodData Central** API (`usda_api_key`, default `DEMO_KEY`) — supplies real macros/micros; cached in SQLite `food_cache`. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
 
@@ -155,13 +156,23 @@ Frontend-only sentinel `{ id: 0, isGuest: true }` — never written to DB. Analy
 
 ---
 
-## Vision Prompt & Compact JSON
-The model returns a **compact JSON** that `_parse_compact()` remaps to the full named schema:
-- `n` (meal_name), `t` (meal_type), `c` (confidence high/medium/low)
-- `m`: fixed-order **array of 7 macros** `[calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg]` → `_arr_to_dict`
-- `u`: **variable object** of the micros notable for THAT meal, keyed by name from the full 17 (`ALL_MICRO_KEYS`) → `_obj_to_micros` (keeps known numeric keys, ignores unknown/junk)
+## Two-Stage Nutrition Architecture (replaced single-shot estimation, 2026-06-12)
+**Problem:** asking one vision-LLM call to both perceive the meal AND recall exact nutrient facts produced fabricated numbers (micros especially) — provider swaps couldn't fix it (structural). **Fix:** split perception from nutrient lookup.
 
-`estimated_serving`/`notes` are no longer requested. Unreported micros default to `0`; the DB keeps all 17 micro columns. Parsing strips markdown fences and tolerates bad arrays/objects (→ 0 / `{}`). `MicroGrid.jsx` renders only the reported (non-zero) micros, grouped Vitamins/Minerals.
+- **Stage 1 — perception** (`gemini_service.py`): the vision model returns ONLY a compact ingredient list, no nutrients:
+  `{"n":meal_name,"t":meal_type,"c":confidence,"i":[{"f":"ingredient","g":grams},...]}`. The prompt has a hard "NEVER output a dish/recipe/beverage name" rule + few-shot decomposition examples (dosa→rice+urad dal+oil, sambar→toor dal+veg+tamarind, coconut chutney→coconut+chana dal, filter coffee→coffee+milk+sugar, palak paneer→spinach+paneer+cream+onion+oil) — early tests showed it left South-Indian dishes undecomposed, which left them `unmatched`. `_parse_compact()` → `{meal_name, meal_type, confidence, items}`; `_parse_items()` drops junk/blank entries (bad grams → 0). Single-provider call, 15s timeout + retry once, MOCK_GEMINI returns a mock item list.
+- **Stage 2 — nutrient lookup** (`backend/services/nutrition_db.py`): `nutrients_for_items(items, usda_api_key)` searches **USDA FoodData Central** per ingredient (`/foods/search`, dataTypes Foundation/SR Legacy/Survey FNDDS, pageSize=1), scales per-100g nutrients by `grams/100`, sums into the full 7-macro + 17-micro schema, and returns `unmatched[]` for foods USDA can't resolve (those contribute 0). `FDC_NUTRIENT_MAP` maps USDA nutrientIds → schema keys; energy falls back to Atwater ids if 1008 absent. Lookups cached in SQLite `food_cache` (created in `main.py` lifespan + lazily in the service) so repeats cost no API calls. MOCK_GEMINI returns canned totals (no network).
+- **Wiring:** `/analyze` runs Stage 1 (`asyncio.to_thread`) then Stage 2 (`asyncio.to_thread`), reads `usda_api_key` from config. `AnalyzeResponse` gained `items[]` + `unmatched[]`. `LogMeal.jsx` shows an "Identified ingredients" panel; unmatched foods are highlighted with an undercount warning. `MicroGrid.jsx` still renders only non-zero micros.
+
+**Stage-2 reliability + matching (2026-06-12):** uses **POST** `/foods/search` (dataType as a JSON array, `pageSize=5`). `_pick_best()` prefers generic data types (Foundation > SR Legacy > FNDDS), then query-token coverage, shortest description, highest score — so "chicken breast, cooked" resolves to a generic breast, not breaded tenders. `_simplify()` retries a miss once with a simpler query ("onion, fried"→"onion", strips text after the comma + cooking adjectives). Lookups are **deduped + parallelized** (`ThreadPoolExecutor`). **Rate limits fail loudly:** `UsdaRateLimitError` (HTTP 429/403 or body `error.code == OVER_RATE_LIMIT`) propagates → `/analyze` returns a **429** "add your USDA key" message instead of silently zeroing the meal. **Every external USDA call logs its request and response** via the `nutriai.nutrition_db` logger. **Key limits:** DEMO_KEY = 30/hr **+ 50/day** (a couple of meals exhaust it); a free signed key = 1,000/hr — paste it in Settings.
+
+**Match quality (alias map + head-noun gate):** the model's ingredient names are normalized through `FOOD_ALIASES` (~34 common/Indian staples → generic cooked USDA queries, e.g. `basmati rice`→`rice white cooked`, `yogurt`→`yogurt plain whole`, `paneer`→`cheese paneer`) before searching. The primary search uses `requireAllWords=True`; a simplified fallback uses `False`. `_pick_best` applies a **head-noun gate** (`_food_noun` = last non-generic token, matched stem-insensitively via `_stem`): a result whose description lacks the food word is rejected → the ingredient is reported `unmatched` (UI warns, contributes 0) rather than guessed (so `mint leaves` no longer becomes "Amaranth leaves"). Survivors rank food-noun-as-first-word > token coverage > data type > shorter desc > score. Cache invalidation: `CACHE_VERSION` (currently `"2"`); the `main.py` lifespan purges `food_cache` when `app_config.food_cache_version` differs, so improved matching isn't masked by stale rows.
+
+**Tests:** `backend/tests/` (stdlib `unittest`, no network — stubs `requests.post`, points the cache at a temp DB so the real `nutrition.db` is never touched). Run from `backend/`: `python -m unittest discover -s tests`.
+
+**Why USDA + decomposition for Indian food:** USDA is weak on composite Indian *dishes* but strong on their *ingredients*; decomposing in Stage 1 sidesteps the dish-coverage gap and works for any cuisine. **Known limitations:** portion grams are LLM-estimated; some specific phrasings may still miss. Future: editable ingredients/grams before logging (re-run Stage 2), single-item LLM fallback for USDA misses, Open Food Facts barcode path, IFCT 2017 for dish-level Indian accuracy.
+
+> Get a free USDA key at https://fdc.nal.usda.gov/api-key-signup (Settings → "USDA Food Database Key"); `DEMO_KEY` works at a low limit out-of-box. Seed via `USDA_API_KEY` env on first launch.
 
 ---
 
@@ -207,6 +218,7 @@ The service retries once on any non-quota error (15s timeout each). **Logging:**
 | Slow / token-heavy analysis | Compact JSON output, **384px** client-side image downscale, `max_tokens` cap, `temperature=0` |
 | App hung forever when the model didn't respond | **15s timeout + retry once** per call; 504 mapped to a clear error; 25s axios safety-net |
 | Same fixed 8 micros reported for every meal | Model now returns a **variable object** of the major micros for that specific meal (from the full 17); `MicroGrid` shows only the reported ones |
+| LLM-estimated macros/micros were inaccurate (esp. fabricated micros) | **Two-stage architecture**: vision model identifies ingredients + grams; **USDA FoodData Central** supplies real nutrient numbers (cached in `food_cache`). See Two-Stage Nutrition Architecture section. |
 | Logs had no timestamps | `logging_config.py` `configure_logging()` timestamps root + uvicorn loggers; `nutriai.vision` logs every request/response with provider, model, latency, raw output |
 
 ---
@@ -231,8 +243,8 @@ DELETE /api/meals/{id}            Delete meal
 GET    /api/nutrition/daily       ?profile_id&date        — today's totals
 GET    /api/nutrition/monthly     ?profile_id&year&month  — monthly breakdown + averages
 
-GET    /api/config                {gemini_api_key_set, groq_api_key_set, vision_provider, vision_model}
-PUT    /api/config                Save any of {gemini_api_key, groq_api_key, vision_provider, vision_model}
+GET    /api/config                {gemini_api_key_set, groq_api_key_set, usda_api_key_set, vision_provider, vision_model}
+PUT    /api/config                Save any of {gemini_api_key, groq_api_key, usda_api_key, vision_provider, vision_model}
 ```
 
 Interactive API docs: `http://localhost:8000/docs`
@@ -255,11 +267,17 @@ Micros displayed as raw values (no goal bars) in collapsible MicroGrid.
 ## Utility Scripts
 
 - `check_gemini_limits.py` — lists available Gemini models with token limits, tests API key connectivity, shows free-tier RPM/RPD for known models. Run: `python check_gemini_limits.py <api_key>` or no args if `backend/.env` has the key.
+- `backend/check_aliases.py` — audits every `FOOD_ALIASES` entry (+ a few common foods) against the **real** USDA API through the production matching path, printing each food's chosen match (description, dataType, cal/100g) or UNMATCHED with the raw candidates. Read-only, bypasses cache. Run from `backend/`: `python check_aliases.py <usda_key>` (or `USDA_API_KEY` env / `backend/.env`). Use it after editing aliases to confirm matches; last audit: **77/79 matched** (misses: `curd rice`, `poha`).
+
+## Tests
+`backend/tests/` — stdlib `unittest`, no network (stubs `requests.post`, temp-DB cache so the real `nutrition.db` is untouched). Run from `backend/`: `python -m unittest discover -s tests` (25 tests).
 
 ---
 
 ## What's Not Built Yet (potential next steps)
 
+- **Editable ingredients/grams before logging (highest-leverage next step).** The data layer (USDA matching) is accurate now; the biggest remaining error source is the LLM's per-ingredient **gram estimates**. A review step in `LogMeal` to adjust each ingredient's grams (and optionally swap the matched food), then re-run Stage 2 via a `POST /meals/recompute` endpoint, would let the user correct portions directly. `AnalyzeResponse` already returns `items[]` + `unmatched[]` to build this on.
+- Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design); Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
 - Custom daily calorie/macro goals per profile
 - Edit meal nutrition values manually after logging
 - Keep-image toggle in the Log Meal UI (backend supports it via `keep_image: true` in `/meals/log`)

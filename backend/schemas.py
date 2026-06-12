@@ -60,6 +60,11 @@ class MicrosData(BaseModel):
 
 # --- Meals ---
 
+class MealItem(BaseModel):
+    food: str
+    grams: float = 0
+
+
 class AnalyzeResponse(BaseModel):
     meal_name: str
     meal_type: str
@@ -67,6 +72,8 @@ class AnalyzeResponse(BaseModel):
     estimated_serving: Optional[str] = None
     macros: MacrosData
     micros: MicrosData
+    items: List[MealItem] = Field(default_factory=list)
+    unmatched: List[str] = Field(default_factory=list)
     temp_image_token: Optional[str] = None
     notes: Optional[str] = None
 
@@ -191,5 +198,6 @@ class MonthlySummary(BaseModel):
 class ConfigUpdate(BaseModel):
     gemini_api_key: Optional[str] = None
     groq_api_key: Optional[str] = None
+    usda_api_key: Optional[str] = None
     vision_provider: Optional[str] = None
     vision_model: Optional[str] = None

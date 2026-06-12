@@ -24,9 +24,9 @@ DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
 
-# Macros are a fixed-order array (always all 7). Micros are a variable object —
-# the model reports only the nutrients notable for THIS meal, keyed by name from
-# the full allowed list. Both remap to the named schema the rest of the app uses.
+# Schema keys shared with the nutrient-lookup stage. The vision model no longer
+# estimates these values directly (it hallucinates them) — it only identifies the
+# meal and its ingredients; nutrition_db.py supplies real per-100g numbers.
 MACRO_KEYS = ["calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "sodium_mg"]
 ALL_MICRO_KEYS = [
     "vitamin_a_mcg", "vitamin_d_mcg", "vitamin_e_mg", "vitamin_k_mcg", "vitamin_c_mg",
@@ -35,38 +35,43 @@ ALL_MICRO_KEYS = [
     "zinc_mg", "phosphorus_mg",
 ]
 
-# Mock is returned in the final NAMED form (bypasses compaction/remap).
+# Mock vision output: the decomposed item list (macros/micros come from the lookup
+# stage, which short-circuits to canned values under MOCK_GEMINI — see nutrition_db).
 MOCK_RESPONSE = {
     "meal_name": "Grilled Chicken with Rice and Vegetables",
     "meal_type": "lunch",
     "confidence": "high",
-    "estimated_serving": "1 plate (~450g)",
-    "macros": {
-        "calories": 520, "protein_g": 42, "carbs_g": 55, "fat_g": 12,
-        "fiber_g": 6, "sugar_g": 4, "sodium_mg": 480
-    },
-    "micros": {
-        "vitamin_c_mg": 18, "vitamin_d_mcg": 1.2, "vitamin_b12_mcg": 0.9,
-        "folate_mcg": 45, "calcium_mg": 55, "iron_mg": 2.8,
-        "magnesium_mg": 62, "potassium_mg": 520,
-    },
-    "notes": "Mock data — model not called"
+    "items": [
+        {"food": "grilled chicken breast", "grams": 150},
+        {"food": "white rice, cooked", "grams": 180},
+        {"food": "mixed vegetables, cooked", "grams": 120},
+    ],
 }
 
-NUTRITION_PROMPT = """Analyze this food/meal image and return ONLY compact JSON. No markdown, no prose.
+NUTRITION_PROMPT = """You identify the foods in a meal photo and break them into base ingredients. Return ONLY compact JSON. No markdown, no prose.
 
 Schema (return exactly this shape):
-{"n":"meal name","t":"breakfast|lunch|dinner|snack","c":"high|medium|low","m":[calories,protein_g,carbs_g,fat_g,fiber_g,sugar_g,sodium_mg],"u":{"micro_key":amount, ...}}
+{"n":"meal name","t":"breakfast|lunch|dinner|snack","c":"high|medium|low","i":[{"f":"ingredient name","g":grams}, ...]}
 
 Rules:
-- "m" is exactly 7 numbers in the order shown above (use 0 if you cannot estimate one).
-- "u" is an OBJECT containing ONLY the micronutrients present in notable amounts for THIS meal
-  (usually 3-8 of them). Omit any that are negligible or zero. Use these EXACT key names:
-  vitamin_a_mcg, vitamin_d_mcg, vitamin_e_mg, vitamin_k_mcg, vitamin_c_mg, vitamin_b1_mg,
-  vitamin_b2_mg, vitamin_b3_mg, vitamin_b6_mg, vitamin_b12_mcg, folate_mcg, calcium_mg,
-  iron_mg, magnesium_mg, potassium_mg, zinc_mg, phosphorus_mg.
-- Base estimates on typical serving sizes visible in the image. If multiple dishes are visible, sum all nutrients.
-- Sodium is in mg. c: high=clearly identifiable dish, medium=probable, low=unclear."""
+- DO NOT estimate calories or nutrients. Only identify base ingredients and their weights.
+- CRITICAL: NEVER output a dish, recipe, or beverage name as an ingredient. Break EVERY
+  dish down into the base raw/cooked foods it is made from: grains, flours, legumes/dals,
+  vegetables, dairy, meats, nuts, oils, sugar, spices.
+- "f" must be a plain single-food name a nutrition database lists (e.g. "rice, cooked",
+  "urad dal", "spinach, cooked", "paneer", "coconut", "vegetable oil", "milk", "sugar").
+  No dish names, no brand names.
+- "g" is the estimated edible weight in grams of that base food in the visible portion.
+- If multiple dishes are visible, decompose and list the base ingredients across all of them.
+
+How to decompose (examples):
+- dosa -> [{"f":"rice","g":60},{"f":"urad dal","g":20},{"f":"vegetable oil","g":5}]
+- sambar -> [{"f":"toor dal","g":30},{"f":"mixed vegetables","g":60},{"f":"tamarind","g":5},{"f":"vegetable oil","g":5}]
+- coconut chutney -> [{"f":"coconut","g":25},{"f":"chana dal","g":5},{"f":"green chili","g":2}]
+- filter coffee -> [{"f":"brewed coffee","g":80},{"f":"milk","g":60},{"f":"sugar","g":5}]
+- palak paneer -> [{"f":"spinach, cooked","g":120},{"f":"paneer","g":80},{"f":"cream","g":20},{"f":"onion","g":15},{"f":"vegetable oil","g":10}]
+
+c: high=ingredients clearly identifiable, medium=probable, low=unclear."""
 
 
 def _is_quota_error(err: str) -> bool:
@@ -80,27 +85,27 @@ def _is_number(v) -> bool:
     return isinstance(v, (int, float)) and not isinstance(v, bool)
 
 
-def _arr_to_dict(arr, keys) -> dict:
-    """Map a fixed-order numeric array back to named keys. Tolerant of a wrong
-    length or non-numeric entries — missing/invalid values default to 0."""
-    out = {k: 0 for k in keys}
-    if isinstance(arr, list):
-        for i, key in enumerate(keys):
-            if i < len(arr) and _is_number(arr[i]):
-                out[key] = arr[i]
+def _parse_items(arr) -> list[dict]:
+    """Keep well-formed {food, grams} entries from the model's ingredient list.
+    Tolerant of junk: non-dict entries, missing/blank names, or bad weights are
+    dropped; a non-numeric weight defaults to 0 (contributes nothing downstream)."""
+    out = []
+    if not isinstance(arr, list):
+        return out
+    for entry in arr:
+        if not isinstance(entry, dict):
+            continue
+        food = (entry.get("f") or "").strip()
+        if not food:
+            continue
+        grams = entry.get("g")
+        out.append({"food": food, "grams": grams if _is_number(grams) else 0})
     return out
 
 
-def _obj_to_micros(obj) -> dict:
-    """Keep only known micro keys with numeric values from the model's object.
-    Unknown keys / junk are ignored; unreported micros default to 0 downstream."""
-    if not isinstance(obj, dict):
-        return {}
-    return {k: v for k, v in obj.items() if k in ALL_MICRO_KEYS and _is_number(v)}
-
-
 def _parse_compact(text: str) -> dict:
-    """Strip fences, parse the compact JSON, and remap to the named schema."""
+    """Strip fences, parse the compact JSON, and remap to the named schema. The
+    vision stage now returns an ingredient list, not nutrient numbers."""
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -109,8 +114,7 @@ def _parse_compact(text: str) -> dict:
         "meal_name": data.get("n") or "Unknown meal",
         "meal_type": data.get("t") or "snack",
         "confidence": data.get("c") or "medium",
-        "macros": _arr_to_dict(data.get("m"), MACRO_KEYS),
-        "micros": _obj_to_micros(data.get("u")),
+        "items": _parse_items(data.get("i")),
     }
 
 

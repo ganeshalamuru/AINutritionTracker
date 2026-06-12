@@ -3,7 +3,7 @@ import logging
 # Single source of truth for log formatting so EVERY log line is timestamped —
 # our app logs, uvicorn's startup/access/error logs, and any library logs.
 _FORMATTER = logging.Formatter(
-    "%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+    "%(asctime)s [%(levelname)s] [%(threadName)s] %(name)s: %(message)s",
     datefmt="%Y-%m-%d %H:%M:%S",
 )
 
