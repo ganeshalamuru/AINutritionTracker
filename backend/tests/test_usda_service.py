@@ -230,17 +230,18 @@ class NutritionDbTest(unittest.TestCase):
             with self.assertRaises(nd.UsdaRateLimitError):
                 nd.lookup_nutrients("anything", "key")
 
-    def test_rate_limit_propagates_through_nutrients_for_items(self):
+    def test_rate_limit_propagates_through_nutrients_for_meal(self):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(429, {"error": {"code": "OVER_RATE_LIMIT"}})
 
+        dishes = [{"name": "rice bowl", "grams": 100, "items": [{"food": "rice", "grams": 100}]}]
         with patch.object(nd.requests, "post", side_effect=post):
             with self.assertRaises(nd.UsdaRateLimitError):
-                nd.nutrients_for_items([{"food": "rice", "grams": 100}], "key")
+                nd.nutrients_for_meal(dishes, "key")
 
-    # --- summing across items ---
+    # --- ingredient summation (the decomposition / fallback path) ---
 
-    def test_nutrients_for_items_scales_dedupes_and_reports_unmatched(self):
+    def test_sum_ingredients_scales_dedupes_and_reports_unmatched(self):
         rice = food("SR Legacy", "Rice, white, cooked", 1, {1008: 100, 1089: 1.0})
 
         def post(url, params=None, json=None, timeout=None):
@@ -253,25 +254,78 @@ class NutritionDbTest(unittest.TestCase):
             {"food": "mystery sauce", "grams": 30},         # unmatched
         ]
         with patch.object(nd.requests, "post", side_effect=post):
-            macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
+            totals, unmatched, skipped, lines = nd._sum_ingredients(items, "key", 8)
 
-        self.assertAlmostEqual(macros["calories"], 250.0)   # (200+50)/100 * 100
-        self.assertAlmostEqual(micros["iron_mg"], 2.5)      # (200+50)/100 * 1.0
+        self.assertAlmostEqual(totals["calories"], 250.0)   # (200+50)/100 * 100
+        self.assertAlmostEqual(totals["iron_mg"], 2.5)      # (200+50)/100 * 1.0
         self.assertEqual(unmatched, ["mystery sauce"])
         self.assertEqual(skipped, [])
+        # one breakdown line per valid ingredient (dupes preserved), all "ingredient"
+        self.assertEqual([(l["food"], l["source"]) for l in lines], [
+            ("white rice, cooked", "ingredient"),
+            ("white rice, cooked", "ingredient"),
+            ("mystery sauce", "ingredient"),
+        ])
+
+    # --- dish-first behaviour ---
+
+    def test_dish_first_uses_dish_nutrients_not_ingredient_sum(self):
+        # idli matches at the dish level (FNDDS) -> its ingredients are NOT looked up.
+        ingredient_queries = []
+
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            if json["dataType"] == nd.DISH_DATA_TYPES:           # dish search
+                if "idli" in q:
+                    return FakeResp(200, {"foods": [food("Survey (FNDDS)", "Idli", 1, {1008: 150})]})
+                return FakeResp(200, {"foods": []})
+            ingredient_queries.append(q)                          # ingredient fallback
+            return FakeResp(200, {"foods": [food("SR Legacy", q, 2, {1008: 999})]})
+
+        dishes = [{"name": "idli", "grams": 160,
+                   "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}]}]
+        with patch.object(nd.requests, "post", side_effect=post):
+            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
+
+        self.assertAlmostEqual(macros["calories"], 240.0)  # 150 * 160/100, NOT rice+urad
+        self.assertEqual(unmatched, [])
+        self.assertEqual(skipped, [])
+        self.assertEqual(items, [{"food": "idli", "grams": 160, "source": "dish"}])
+        self.assertEqual(ingredient_queries, [])  # fallback never ran
+
+    def test_dish_miss_falls_back_to_ingredients(self):
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            if json["dataType"] == nd.DISH_DATA_TYPES:           # no dish match
+                return FakeResp(200, {"foods": []})
+            if "rice" in q:                                       # ingredient fallback
+                return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})]})
+            return FakeResp(200, {"foods": []})
+
+        dishes = [{"name": "mystery dish", "grams": 100,
+                   "items": [{"food": "rice", "grams": 200}, {"food": "secret spice", "grams": 5}]}]
+        with patch.object(nd.requests, "post", side_effect=post):
+            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
+
+        self.assertAlmostEqual(macros["calories"], 260.0)  # rice 130 * 200/100
+        self.assertEqual(unmatched, ["secret spice"])
+        self.assertEqual(skipped, [])
+        self.assertEqual([(i["food"], i["source"]) for i in items], [
+            ("rice", "ingredient"), ("secret spice", "ingredient"),
+        ])
 
     def test_mock_mode_returns_canned_totals_without_network(self):
         os.environ["MOCK_GEMINI"] = "1"
         try:
             # requests.post is NOT patched — a network call here would error/hang.
-            macros, micros, unmatched, skipped = nd.nutrients_for_items(
-                [{"food": "anything", "grams": 100}], "key"
-            )
+            dishes = [{"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]}]
+            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
         finally:
             os.environ.pop("MOCK_GEMINI", None)
         self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
+        self.assertEqual(items, [{"food": "idli", "grams": 160, "source": "dish"}])
 
     # --- spices: model wording -> USDA wording ---
 
@@ -306,16 +360,17 @@ class NutritionDbTest(unittest.TestCase):
         items = [
             {"food": "alpha", "grams": 300},
             {"food": "beta", "grams": 200},
-            {"food": "gamma", "grams": 10},   # smallest -> dropped when cap=2
+            {"food": "gamma", "grams": 10},   # smallest -> dropped when budget=2
         ]
-        with patch.object(nd, "USDA_MAX_LOOKUPS", 2):
-            with patch.object(nd.requests, "post", side_effect=post) as m:
-                macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
+        with patch.object(nd.requests, "post", side_effect=post) as m:
+            totals, unmatched, skipped, lines = nd._sum_ingredients(items, "key", 2)
 
         self.assertEqual(skipped, ["gamma"])
         self.assertEqual(unmatched, [])
         self.assertEqual(m.call_count, 2)                 # only the two kept foods
-        self.assertAlmostEqual(macros["calories"], 500.0)  # (300+200)/100 * 100, gamma excluded
+        self.assertAlmostEqual(totals["calories"], 500.0)  # (300+200)/100 * 100, gamma excluded
+        # a breakdown line is still emitted for the skipped ingredient (greyed in the UI)
+        self.assertEqual([l["food"] for l in lines], ["alpha", "beta", "gamma"])
 
     def test_cached_lookups_are_free_and_dont_use_the_budget(self):
         def post(url, params=None, json=None, timeout=None):
@@ -326,16 +381,15 @@ class NutritionDbTest(unittest.TestCase):
 
         with patch.object(nd.requests, "post", side_effect=post):
             nd.lookup_nutrients("rice", "key")   # pre-cache "rice"
-            with patch.object(nd, "USDA_MAX_LOOKUPS", 1):
-                items = [
-                    {"food": "rice", "grams": 100},    # cached -> free, always counted
-                    {"food": "alpha", "grams": 300},   # largest uncached -> looked up
-                    {"food": "beta", "grams": 200},    # over the budget -> skipped
-                ]
-                macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
+            items = [
+                {"food": "rice", "grams": 100},    # cached -> free, always counted
+                {"food": "alpha", "grams": 300},   # largest uncached -> looked up
+                {"food": "beta", "grams": 200},    # over the budget -> skipped
+            ]
+            totals, unmatched, skipped, lines = nd._sum_ingredients(items, "key", 1)
 
         self.assertEqual(skipped, ["beta"])
-        self.assertAlmostEqual(macros["calories"], 430.0)  # rice 130 + alpha 300, beta excluded
+        self.assertAlmostEqual(totals["calories"], 430.0)  # rice 130 + alpha 300, beta excluded
 
 
 if __name__ == "__main__":

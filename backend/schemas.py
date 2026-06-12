@@ -63,6 +63,7 @@ class MicrosData(BaseModel):
 class MealItem(BaseModel):
     food: str
     grams: float = 0
+    source: Optional[str] = None  # "dish" (whole-dish match) | "ingredient" (decomposed)
 
 
 class AnalyzeResponse(BaseModel):

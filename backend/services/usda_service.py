@@ -30,6 +30,7 @@ from services.nutrition_data import (
     USDA_SEARCH_URL,
     USDA_DATA_TYPES,
     DATA_TYPE_RANK,
+    DISH_DATA_TYPES,
     USDA_PAGE_SIZE,
     USDA_TIMEOUT,
     USDA_MAX_WORKERS,
@@ -39,6 +40,7 @@ from services.nutrition_data import (
     SIMPLIFY_STRIP_WORDS,
     GENERIC_WORDS,
     FOOD_ALIASES,
+    DISH_ALIASES,
     FDC_NUTRIENT_MAP,
     ENERGY_FALLBACK_IDS,
     MOCK_MACROS,
@@ -215,11 +217,12 @@ def _pick_best(foods: list, query: str) -> dict | None:
     return min(survivors, key=rank)
 
 
-def _search_usda(query: str, api_key: str, require_all: bool) -> list:
+def _search_usda(query: str, api_key: str, require_all: bool, data_types: list | None = None) -> list:
     """One external call to USDA /foods/search. Logs the request and response, and
-    raises UsdaRateLimitError on a throttle. Returns the candidate food list."""
+    raises UsdaRateLimitError on a throttle. Returns the candidate food list.
+    `data_types` defaults to the ingredient set; the dish lookup passes DISH_DATA_TYPES."""
     payload = {
-        "query": query, "dataType": USDA_DATA_TYPES,
+        "query": query, "dataType": data_types or USDA_DATA_TYPES,
         "pageSize": USDA_PAGE_SIZE, "requireAllWords": require_all,
     }
     logger.info("request  -> search %r (%s)", query, "strict" if require_all else "loose")
@@ -298,6 +301,54 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
     return per_100g
 
 
+def lookup_dish(dish_name: str, api_key: str) -> dict | None:
+    """Per-100g nutrient profile for a whole DISH, or None if USDA's FNDDS has no real
+    match (caller then decomposes the dish into ingredients). Mirrors lookup_nutrients
+    but rewrites via DISH_ALIASES and searches the dish data types. Cached separately
+    (a 'dish::' key prefix) so a dish and an ingredient of the same name don't collide.
+    Raises UsdaRateLimitError if the key is throttled."""
+    name = _normalize(dish_name)
+    if not name:
+        return None
+
+    cache_key = "dish::" + name
+    cached = _cache_get(cache_key)
+    if cached is not None:
+        logger.info("cache hit %r (dish)", name)
+        return cached
+
+    search_q = DISH_ALIASES.get(name, name)
+    via = f" (via {search_q!r})" if search_q != name else ""
+
+    try:
+        foods = _search_usda(search_q, api_key, require_all=True, data_types=DISH_DATA_TYPES)
+        if not foods:
+            simpler = _simplify(search_q)
+            if simpler:
+                logger.info("retry %r (dish, loose)", simpler)
+                foods = _search_usda(simpler, api_key, require_all=False, data_types=DISH_DATA_TYPES)
+    except UsdaRateLimitError:
+        raise
+    except Exception as e:
+        logger.warning("dish lookup failed %r: %s: %s", name, type(e).__name__, e)
+        return None
+
+    food = _pick_best(foods, search_q)
+    if food is None:
+        logger.info("no dish match %r%s", name, via)
+        return None
+
+    per_100g = _extract_per_100g(food)
+    logger.info("matched dish %r%s -> %s [%s]",
+                name, via, food.get("description"), food.get("dataType"))
+    _cache_put(cache_key, food.get("fdcId"), per_100g)
+    return per_100g
+
+
+def _uncached_dish(name: str) -> bool:
+    return _cache_get("dish::" + _normalize(name)) is None
+
+
 def clear_cache():
     """Drop all cached lookups (used when matching logic changes — see CACHE_VERSION)."""
     _ensure_cache_table()
@@ -309,29 +360,22 @@ def clear_cache():
         logger.warning("could not clear food_cache: %s", e)
 
 
-def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, list, list]:
-    """Sum nutrients across an ingredient list.
+def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict, list, list, list]:
+    """Decomposition path: look each base ingredient up in USDA, scale by grams, sum.
 
-    Returns (macros, micros, unmatched, skipped):
-      - macros/micros are full schema dicts (default 0)
-      - unmatched lists foods USDA had no real match for
-      - skipped lists foods we chose not to look up because the meal exceeded
-        USDA_MAX_LOOKUPS distinct *uncached* ingredients (the largest portions are
-        kept; already-cached foods are always resolved and never use the budget)
-    Both unmatched and skipped foods contribute 0. In mock mode, returns canned
-    totals with empty unmatched/skipped and no API call.
-
-    Raises UsdaRateLimitError if USDA throttles the key — the caller maps it to a
-    clear error so a rate-limited meal never silently returns zeros.
+    Cached lookups are free; only `budget` distinct *uncached* ingredients are looked up
+    (largest portions first), the rest go to `skipped`. Returns
+    (totals, unmatched, skipped, lines) where lines is one {food, grams, source:"ingredient"}
+    entry per valid ingredient (for the UI breakdown). Raises UsdaRateLimitError on throttle.
     """
-    if _is_mock():
-        logger.info("mock mode -> canned nutrient totals (no USDA call)")
-        macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
-        micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
-        return macros, micros, [], []
+    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+    lines: list = []
+    unmatched: list = []
 
     valid = [it for it in (items or [])
              if (it.get("food") or "").strip() and _is_number(it.get("grams")) and it.get("grams") > 0]
+    if not valid:
+        return totals, unmatched, [], lines
 
     # Total grams per distinct food name — used to prioritize the lookup budget.
     grams_by_name: dict[str, float] = {}
@@ -339,16 +383,15 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
         name = it["food"].strip()
         grams_by_name[name] = grams_by_name.get(name, 0.0) + it["grams"]
 
-    # Cached lookups are free; only uncached ones consume the per-meal budget. Spend
-    # it on the largest portions (they dominate the totals); skip the rest.
     cached = {n for n in grams_by_name if _cache_get(_normalize(n)) is not None}
     uncached = sorted((n for n in grams_by_name if n not in cached),
                       key=lambda n: grams_by_name[n], reverse=True)
-    to_lookup = list(cached) + uncached[:USDA_MAX_LOOKUPS]
-    skipped = uncached[USDA_MAX_LOOKUPS:]
+    budget = max(budget, 0)
+    to_lookup = list(cached) + uncached[:budget]
+    skipped = uncached[budget:]
     if skipped:
-        logger.info("lookup cap %d reached -> skipping %d smaller ingredient(s): %s",
-                    USDA_MAX_LOOKUPS, len(skipped), skipped)
+        logger.info("lookup cap reached -> skipping %d smaller ingredient(s): %s",
+                    len(skipped), skipped)
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
@@ -356,10 +399,9 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
     profiles = dict(results)  # name -> per_100g | None
 
     skipped_set = set(skipped)
-    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
-    unmatched = []
     for it in valid:
         food = it["food"].strip()
+        lines.append({"food": food, "grams": it["grams"], "source": "ingredient"})
         if food in skipped_set:
             continue
         per_100g = profiles.get(food)
@@ -371,6 +413,76 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
         for key in totals:
             totals[key] += per_100g.get(key, 0) * factor
 
+    return totals, unmatched, skipped, lines
+
+
+def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, list, list, list]:
+    """Sum nutrients across a meal's dishes, dish-first.
+
+    For each dish we try a whole-dish USDA lookup (lookup_dish); a dish that matches
+    contributes its per-100g profile scaled by the dish's portion grams. Dishes USDA
+    has no dish-level match for (or with no portion weight) fall back to summing their
+    base-ingredient breakdown — so coverage is never worse than pure decomposition.
+
+    Returns (macros, micros, unmatched, skipped, items):
+      - macros/micros: full schema dicts (default 0)
+      - unmatched: base ingredients USDA couldn't resolve (from the fallback path)
+      - skipped: ingredients not looked up because the meal exceeded the per-meal
+        uncached-lookup budget (USDA_MAX_LOOKUPS), largest portions kept
+      - items: the flat resolved breakdown for the UI — one {food, grams, source} line
+        per matched dish ("dish") and per fallback ingredient ("ingredient")
+    In mock mode returns canned totals + one dish line per dish, no API call. Raises
+    UsdaRateLimitError if USDA throttles the key.
+    """
+    if _is_mock():
+        logger.info("mock mode -> canned nutrient totals (no USDA call)")
+        macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
+        micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
+        items = [{"food": d["name"].strip(), "grams": d.get("grams") or 0, "source": "dish"}
+                 for d in (dishes or []) if (d.get("name") or "").strip()]
+        return macros, micros, [], [], items
+
+    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+    items: list = []
+    budget = USDA_MAX_LOOKUPS
+
+    valid_dishes = [d for d in (dishes or []) if (d.get("name") or "").strip()]
+
+    # Phase A — dish-first. Cached dish lookups are free; cap uncached dish lookups at
+    # the budget, largest portions first. Dishes with no portion weight skip to Phase B.
+    dish_candidates = [d for d in valid_dishes if (d.get("grams") or 0) > 0]
+    dish_cached = [d for d in dish_candidates if not _uncached_dish(d["name"])]
+    dish_uncached = sorted((d for d in dish_candidates if _uncached_dish(d["name"])),
+                           key=lambda d: d["grams"], reverse=True)
+    dish_lookup = dish_cached + dish_uncached[:budget]
+    budget -= min(len(dish_uncached), budget)
+
+    # Parallel dish lookups (UsdaRateLimitError propagates when we iterate).
+    dish_pairs = list(zip(dish_lookup,
+                          _LOOKUP_POOL.map(lambda d: lookup_dish(d["name"], api_key), dish_lookup)))
+    matched_ids = set()
+    for d, per_100g in dish_pairs:
+        if per_100g is None:
+            continue
+        grams = d["grams"]
+        factor = grams / 100.0
+        for key in totals:
+            totals[key] += per_100g.get(key, 0) * factor
+        items.append({"food": d["name"].strip(), "grams": grams, "source": "dish"})
+        matched_ids.add(id(d))
+
+    # Phase B — decompose every dish that didn't match at the dish level (includes
+    # dishes with no portion weight and any beyond the dish budget).
+    fallback_items: list = []
+    for d in valid_dishes:
+        if id(d) not in matched_ids:
+            fallback_items.extend(d.get("items") or [])
+
+    ing_totals, unmatched, skipped, ing_lines = _sum_ingredients(fallback_items, api_key, budget)
+    for key in totals:
+        totals[key] += ing_totals[key]
+    items.extend(ing_lines)
+
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
     micros = {k: round(totals[k], 4) for k in MICRO_KEYS}
-    return macros, micros, unmatched, skipped
+    return macros, micros, unmatched, skipped, items

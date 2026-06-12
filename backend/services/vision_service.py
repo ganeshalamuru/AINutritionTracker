@@ -27,43 +27,32 @@ logger = logging.getLogger("nutriai.vision")
 CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
 
-# Mock vision output: the decomposed item list (macros/micros come from the lookup
-# stage, which short-circuits to canned values under MOCK_GEMINI — see usda_service).
+# Mock vision output: the dish list (macros/micros come from the lookup stage, which
+# short-circuits to canned values under MOCK_GEMINI — see usda_service).
 MOCK_RESPONSE = {
     "meal_name": "Grilled Chicken with Rice and Vegetables",
     "meal_type": "lunch",
     "confidence": "high",
-    "items": [
-        {"food": "grilled chicken breast", "grams": 150},
-        {"food": "white rice, cooked", "grams": 180},
-        {"food": "mixed vegetables, cooked", "grams": 120},
+    "dishes": [
+        {"name": "grilled chicken", "grams": 150,
+         "items": [{"food": "grilled chicken breast", "grams": 150}]},
+        {"name": "white rice", "grams": 180,
+         "items": [{"food": "white rice, cooked", "grams": 180}]},
+        {"name": "mixed vegetables", "grams": 120,
+         "items": [{"food": "mixed vegetables, cooked", "grams": 120}]},
     ],
 }
 
-NUTRITION_PROMPT = """You identify the foods in a meal photo and break them into base ingredients. Return ONLY compact JSON. No markdown, no prose.
+NUTRITION_PROMPT = """Identify the dishes in this meal photo. Output ONLY compact JSON, no markdown or prose:
+{"n":"meal name","t":"breakfast|lunch|dinner|snack","c":"high|medium|low","d":[{"n":"dish","g":grams,"i":[{"f":"ingredient","g":grams},...]}]}
 
-Schema (return exactly this shape):
-{"n":"meal name","t":"breakfast|lunch|dinner|snack","c":"high|medium|low","i":[{"f":"ingredient name","g":grams}, ...]}
+- One entry per distinct dish/food; never merge dishes. "n"=common dish name, "g"=its total edible grams in the photo. Estimate grams conservatively — when unsure, lean low rather than high.
+- "i"=base-ingredient fallback (used only if the dish isn't found): plain single foods (grains, dals, vegetables, dairy, meat, nuts, oil, sugar, spices) with grams.
+- Do NOT estimate calories or nutrients. "c": high=clear, medium=probable, low=unclear.
 
-Rules:
-- DO NOT estimate calories or nutrients. Only identify base ingredients and their weights.
-- CRITICAL: NEVER output a dish, recipe, or beverage name as an ingredient. Break EVERY
-  dish down into the base raw/cooked foods it is made from: grains, flours, legumes/dals,
-  vegetables, dairy, meats, nuts, oils, sugar, spices.
-- "f" must be a plain single-food name a nutrition database lists (e.g. "rice, cooked",
-  "urad dal", "spinach, cooked", "paneer", "coconut", "vegetable oil", "milk", "sugar").
-  No dish names, no brand names.
-- "g" is the estimated edible weight in grams of that base food in the visible portion.
-- If multiple dishes are visible, decompose and list the base ingredients across all of them.
-
-How to decompose (examples):
-- dosa -> [{"f":"rice","g":60},{"f":"urad dal","g":20},{"f":"vegetable oil","g":5}]
-- sambar -> [{"f":"toor dal","g":30},{"f":"mixed vegetables","g":60},{"f":"tamarind","g":5},{"f":"vegetable oil","g":5}]
-- coconut chutney -> [{"f":"coconut","g":25},{"f":"chana dal","g":5},{"f":"green chili","g":2}]
-- filter coffee -> [{"f":"brewed coffee","g":80},{"f":"milk","g":60},{"f":"sugar","g":5}]
-- palak paneer -> [{"f":"spinach, cooked","g":120},{"f":"paneer","g":80},{"f":"cream","g":20},{"f":"onion","g":15},{"f":"vegetable oil","g":10}]
-
-c: high=ingredients clearly identifiable, medium=probable, low=unclear."""
+Examples:
+idli -> {"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]}
+sambar -> {"n":"sambar","g":150,"i":[{"f":"toor dal","g":30},{"f":"mixed vegetables","g":60},{"f":"tamarind","g":5},{"f":"vegetable oil","g":5}]}"""
 
 
 def _is_quota_error(err: str) -> bool:
@@ -95,9 +84,34 @@ def _parse_items(arr) -> list[dict]:
     return out
 
 
+def _parse_dishes(arr) -> list[dict]:
+    """Keep well-formed dishes from the model's `d` list. Each dish is
+    {name, grams, items}: a named dish, its estimated portion grams, and its
+    base-ingredient breakdown (parsed by _parse_items, used as a lookup fallback).
+    Tolerant of junk: non-dict entries and nameless dishes are dropped; a bad grams
+    value defaults to 0."""
+    out = []
+    if not isinstance(arr, list):
+        return out
+    for entry in arr:
+        if not isinstance(entry, dict):
+            continue
+        name = (entry.get("n") or "").strip()
+        if not name:
+            continue
+        grams = entry.get("g")
+        out.append({
+            "name": name,
+            "grams": grams if _is_number(grams) else 0,
+            "items": _parse_items(entry.get("i")),
+        })
+    return out
+
+
 def _parse_compact(text: str) -> dict:
     """Strip fences, parse the compact JSON, and remap to the named schema. The
-    vision stage now returns an ingredient list, not nutrient numbers."""
+    vision stage returns a list of dishes (each with a fallback ingredient breakdown),
+    not nutrient numbers."""
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
@@ -106,7 +120,7 @@ def _parse_compact(text: str) -> dict:
         "meal_name": data.get("n") or "Unknown meal",
         "meal_type": data.get("t") or "snack",
         "confidence": data.get("c") or "medium",
-        "items": _parse_items(data.get("i")),
+        "dishes": _parse_dishes(data.get("d")),
     }
 
 

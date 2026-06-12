@@ -124,3 +124,51 @@ FOOD_ALIASES = {
     "black pepper": "pepper black",
     "pepper": "pepper black",
 }
+
+# Composite DISH names -> a USDA-friendly (FNDDS) query. Tried BEFORE decomposing a
+# dish into ingredients: USDA's Survey (FNDDS) database carries many Indian dishes as
+# whole items, and a single "idli" lookup (scaled by the dish's portion grams) is far
+# more accurate than summing mis-stated base ingredients (e.g. idli is a fermented,
+# steamed batter — not plain cooked rice + cooked lentils). A dish that doesn't resolve
+# here simply falls back to ingredient decomposition, so unverified entries are safe
+# (just a wasted search). Curate against the real API with check_aliases.py before
+# adding entries — keep only dishes that actually match in FNDDS.
+DISH_ALIASES = {
+    "idli": "idli",
+    "idly": "idli",
+    "dosa": "dosa",
+    "masala dosa": "dosa",
+    "plain dosa": "dosa",
+    "sambar": "sambar",
+    "sambhar": "sambar",
+    "vada": "vada",
+    "medu vada": "vada",
+    "uttapam": "uttapam",
+    "uthappam": "uttapam",
+    "upma": "upma",
+    "poha": "poha",
+    "pongal": "pongal",
+    "paratha": "paratha",
+    "aloo paratha": "paratha",
+    "chapati": "chapati",
+    "roti": "chapati",
+    "naan": "naan",
+    "biryani": "biryani",
+    "chicken biryani": "chicken biryani",
+    "vegetable biryani": "vegetable biryani",
+    "pulao": "rice pilaf",
+    "pulav": "rice pilaf",
+    "dal": "dal",
+    "daal": "dal",
+    "rajma": "kidney beans curry",
+    "chana masala": "chickpea curry",
+    "chole": "chickpea curry",
+    "paneer curry": "paneer curry",
+    "palak paneer": "palak paneer",
+    "chicken curry": "chicken curry",
+    "butter chicken": "chicken curry",
+    "raita": "raita",
+    "coconut chutney": "coconut chutney",
+    "chutney": "chutney",
+    "idli sambar": "idli",
+}

@@ -16,6 +16,7 @@ from services.nutrition_data.config import (
     USDA_SEARCH_URL,
     USDA_DATA_TYPES,
     DATA_TYPE_RANK,
+    DISH_DATA_TYPES,
     USDA_PAGE_SIZE,
     USDA_TIMEOUT,
     USDA_MAX_WORKERS,
@@ -27,6 +28,7 @@ from services.nutrition_data.aliases import (
     SIMPLIFY_STRIP_WORDS,
     GENERIC_WORDS,
     FOOD_ALIASES,
+    DISH_ALIASES,
 )
 from services.nutrition_data.nutrient_map import (
     FDC_NUTRIENT_MAP,
@@ -41,6 +43,7 @@ __all__ = [
     "USDA_SEARCH_URL",
     "USDA_DATA_TYPES",
     "DATA_TYPE_RANK",
+    "DISH_DATA_TYPES",
     "USDA_PAGE_SIZE",
     "USDA_TIMEOUT",
     "USDA_MAX_WORKERS",
@@ -50,6 +53,7 @@ __all__ = [
     "SIMPLIFY_STRIP_WORDS",
     "GENERIC_WORDS",
     "FOOD_ALIASES",
+    "DISH_ALIASES",
     "FDC_NUTRIENT_MAP",
     "ENERGY_FALLBACK_IDS",
     "MOCK_MACROS",

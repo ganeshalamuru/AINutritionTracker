@@ -1,7 +1,8 @@
 """Unit tests for the vision/decomposition stage parsing (services/vision_service.py).
 
-The model now returns an ingredient list (not nutrient numbers); these tests cover
-the compact-JSON parsing and its tolerance of malformed output. No network.
+The model returns a list of dishes (each with a fallback ingredient breakdown), not
+nutrient numbers; these tests cover the compact-JSON parsing and its tolerance of
+malformed output. No network.
 
 Run from the backend/ directory:
     python -m unittest tests.test_vision_service
@@ -12,32 +13,38 @@ import services.vision_service as gs
 
 
 class ParseCompactTest(unittest.TestCase):
-    def test_parses_ingredient_list(self):
-        raw = ('{"n":"Palak Paneer","t":"dinner","c":"high",'
-               '"i":[{"f":"spinach, cooked","g":120},{"f":"paneer","g":80}]}')
+    def test_parses_dish_list(self):
+        raw = ('{"n":"South Indian Breakfast","t":"breakfast","c":"high","d":['
+               '{"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]},'
+               '{"n":"sambar","g":150,"i":[{"f":"toor dal","g":30}]}]}')
         out = gs._parse_compact(raw)
-        self.assertEqual(out["meal_name"], "Palak Paneer")
-        self.assertEqual(out["meal_type"], "dinner")
+        self.assertEqual(out["meal_name"], "South Indian Breakfast")
+        self.assertEqual(out["meal_type"], "breakfast")
         self.assertEqual(out["confidence"], "high")
-        self.assertEqual(out["items"], [
-            {"food": "spinach, cooked", "grams": 120},
-            {"food": "paneer", "grams": 80},
+        self.assertEqual(out["dishes"], [
+            {"name": "idli", "grams": 160,
+             "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}]},
+            {"name": "sambar", "grams": 150,
+             "items": [{"food": "toor dal", "grams": 30}]},
         ])
 
     def test_strips_markdown_fences(self):
-        raw = '```json\n{"n":"Toast","t":"breakfast","c":"low","i":[{"f":"bread","g":40}]}\n```'
+        raw = ('```json\n{"n":"Toast","t":"breakfast","c":"low","d":['
+               '{"n":"toast","g":40,"i":[{"f":"bread","g":40}]}]}\n```')
         out = gs._parse_compact(raw)
         self.assertEqual(out["meal_name"], "Toast")
-        self.assertEqual(out["items"], [{"food": "bread", "grams": 40}])
+        self.assertEqual(out["dishes"], [
+            {"name": "toast", "grams": 40, "items": [{"food": "bread", "grams": 40}]},
+        ])
 
-    def test_drops_junk_and_blank_entries(self):
-        raw = ('{"n":"x","t":"snack","c":"medium",'
-               '"i":[{"f":"rice","g":100},{"junk":1},{"f":"","g":5},"nope",'
-               '{"f":"oil"}]}')  # last: missing grams -> defaults to 0
+    def test_drops_junk_dishes_and_items(self):
+        raw = ('{"n":"x","t":"snack","c":"medium","d":['
+               '{"n":"rice bowl","g":100,"i":[{"f":"rice","g":100},{"junk":1},{"f":"","g":5},"nope",{"f":"oil"}]},'
+               '{"g":50},"bad",{"n":"  "}]}')  # nameless/blank dishes dropped; oil missing grams -> 0
         out = gs._parse_compact(raw)
-        self.assertEqual(out["items"], [
-            {"food": "rice", "grams": 100},
-            {"food": "oil", "grams": 0},
+        self.assertEqual(out["dishes"], [
+            {"name": "rice bowl", "grams": 100,
+             "items": [{"food": "rice", "grams": 100}, {"food": "oil", "grams": 0}]},
         ])
 
     def test_defaults_when_fields_missing(self):
@@ -45,17 +52,23 @@ class ParseCompactTest(unittest.TestCase):
         self.assertEqual(out["meal_name"], "Unknown meal")
         self.assertEqual(out["meal_type"], "snack")
         self.assertEqual(out["confidence"], "medium")
-        self.assertEqual(out["items"], [])
+        self.assertEqual(out["dishes"], [])
 
-    def test_bad_items_type_yields_empty_list(self):
-        out = gs._parse_compact('{"n":"x","i":"not a list"}')
-        self.assertEqual(out["items"], [])
+    def test_bad_dishes_type_yields_empty_list(self):
+        self.assertEqual(gs._parse_compact('{"n":"x","d":"not a list"}')["dishes"], [])
+
+    def test_bad_items_type_yields_dish_with_empty_items(self):
+        out = gs._parse_compact('{"n":"x","d":[{"n":"a","g":10,"i":"nope"}]}')
+        self.assertEqual(out["dishes"], [{"name": "a", "grams": 10, "items": []}])
 
 
 class MockResponseTest(unittest.TestCase):
-    def test_mock_response_is_item_based(self):
-        self.assertIn("items", gs.MOCK_RESPONSE)
-        self.assertTrue(all("food" in it and "grams" in it for it in gs.MOCK_RESPONSE["items"]))
+    def test_mock_response_is_dish_based(self):
+        self.assertIn("dishes", gs.MOCK_RESPONSE)
+        for d in gs.MOCK_RESPONSE["dishes"]:
+            self.assertIn("name", d)
+            self.assertIn("grams", d)
+            self.assertTrue(all("food" in it and "grams" in it for it in d["items"]))
 
 
 if __name__ == "__main__":

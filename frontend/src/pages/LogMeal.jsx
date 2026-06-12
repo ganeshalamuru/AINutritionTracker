@@ -367,14 +367,18 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
                   {photo.analysis.items.map((it, i) => {
                     const isSkipped = photo.analysis.skipped?.includes(it.food);
                     const isUnmatched = photo.analysis.unmatched?.includes(it.food);
+                    const isDish = it.source === "dish";
                     const style = isSkipped
                       ? "bg-gray-200 text-gray-500 line-through"
                       : isUnmatched
                       ? "bg-yellow-100 text-yellow-700"
+                      : isDish
+                      ? "bg-green-50 text-green-700"
                       : "bg-white text-gray-600";
                     return (
                       <span key={i} className={`text-xs px-2 py-1 rounded-full ${style}`}>
                         {it.food} · {Math.round(it.grams)}g
+                        {isDish && <span className="ml-1 opacity-60">dish</span>}
                       </span>
                     );
                   })}

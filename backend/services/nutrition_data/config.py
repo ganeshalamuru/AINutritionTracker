@@ -10,6 +10,10 @@ USDA_DATA_TYPES = ["Foundation", "SR Legacy", "Survey (FNDDS)"]
 # Lower rank = preferred. Generic analytical entries beat consumed/mixed dishes.
 DATA_TYPE_RANK = {"Foundation": 0, "SR Legacy": 1, "Survey (FNDDS)": 2}
 
+# Composite DISHES (idli, dosa, sambar, ...) live in FNDDS (consumed/prepared foods),
+# not the generic analytic databases — so the dish-first lookup searches these.
+DISH_DATA_TYPES = ["Survey (FNDDS)", "SR Legacy"]
+
 USDA_PAGE_SIZE = 5          # fetch a few candidates so we can pick the best match
 USDA_TIMEOUT = 10
 USDA_MAX_WORKERS = 4        # parallel ingredient lookups per meal
@@ -21,4 +25,4 @@ USDA_MAX_LOOKUPS = 8
 
 # Bump to invalidate cached lookups after changing matching logic (main.py purges
 # food_cache on startup when app_config's stored version differs from this).
-CACHE_VERSION = "5"
+CACHE_VERSION = "6"

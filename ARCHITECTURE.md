@@ -9,16 +9,24 @@ layers, what each one is responsible for, and how a request flows through them.
 ## The big picture
 
 NutriAI is a photo-to-nutrition tracker. You photograph a meal; a **vision model**
-identifies the dish and decomposes it into base ingredients with gram weights; the
-**USDA FoodData Central** database supplies the real per-100g nutrient numbers; the
+identifies each **dish** (with a fallback base-ingredient breakdown and gram weights);
+the **USDA FoodData Central** database supplies the real per-100g nutrient numbers; the
 app scales and sums them and stores the meal. This split — *perception* by the LLM,
 *facts* from USDA — is the core design decision (the LLM hallucinated nutrients when
 asked to do both). It is the **two-stage nutrition pipeline** and everything in the
 backend is arranged around it.
 
+Stage 2 is **dish-first**: it looks the whole dish up in USDA's FNDDS database (which
+carries many composite dishes, including Indian ones like idli/dosa/sambar) and only
+**decomposes a dish into its base ingredients when no dish-level match exists**. A whole
+"idli" entry scaled by the portion weight is far more accurate than summing mis-stated
+"cooked rice + cooked lentils" — and decomposition remains the safety net for anything
+FNDDS doesn't cover.
+
 ```
- photo ──> [Stage 1: vision_service] ──ingredients+grams──> [Stage 2: usda_service] ──> macros+micros ──> DB
-            (Groq / Gemini / Ollama)                          (USDA + SQLite cache)
+ photo ─> [Stage 1: vision_service] ─dishes(+ingredient fallback)─> [Stage 2: usda_service] ─> macros+micros ─> DB
+           (Groq / Gemini / Ollama)                                   dish-first, else decompose
+                                                                      (USDA FNDDS + SQLite cache)
 ```
 
 ---
@@ -50,13 +58,13 @@ backend/
 │   └── config.py            #   /api/config (GET/PUT API keys + vision provider/model)
 │
 └── services/                # business logic — where the work actually happens
-    ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> ingredient list
-    ├── usda_service.py      #   Stage 2: USDA lookup, matching, SQLite cache, shared thread pool
+    ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients)
+    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache, shared thread pool
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
-        ├── config.py        #     USDA endpoint + request tuning + USDA_MAX_LOOKUPS + CACHE_VERSION
-        ├── aliases.py       #     FOOD_ALIASES + word-set vocabularies for name normalization
+        ├── config.py        #     USDA endpoint + tuning + DISH_DATA_TYPES + USDA_MAX_LOOKUPS + CACHE_VERSION
+        ├── aliases.py       #     FOOD_ALIASES + DISH_ALIASES + word-set vocabularies for name normalization
         ├── nutrient_map.py  #     USDA nutrientId -> our schema key
         └── mock.py          #     canned totals for MOCK_GEMINI mode
 ```
@@ -89,14 +97,17 @@ backend/
 1. `routers/meals.py` reads the uploaded image bytes, calls `meal_service.analyze_image`.
 2. `meal_service` reads the configured provider/key (`core.config`), saves a temp image,
    and runs **Stage 1** — `vision_service.analyze_meal_image` in a worker thread
-   (`asyncio.to_thread`, so the event loop never blocks). The vision model returns an
-   ingredient list only.
-3. It then runs **Stage 2** — `usda_service.nutrients_for_items` (also off-thread): each
-   ingredient is normalized/aliased, looked up in USDA (cache first), the best match is
-   gated + scaled by grams, and contributions are summed into the macro/micro schema.
-   Lookups for a meal run in parallel on a **shared module-level `ThreadPoolExecutor`**.
-4. The assembled `AnalyzeResponse` (totals + `items`/`unmatched`/`skipped`) goes back. No
-   DB write yet — the user reviews, then logs.
+   (`asyncio.to_thread`, so the event loop never blocks). The vision model returns a list
+   of dishes, each with a portion weight and a fallback base-ingredient breakdown.
+3. It then runs **Stage 2** — `usda_service.nutrients_for_meal` (also off-thread),
+   **dish-first**: each dish is looked up whole in USDA FNDDS (`DISH_ALIASES`, cache first)
+   and scaled by its grams; dishes with no dish-level match fall back to `_sum_ingredients`
+   over their breakdown (alias → head-noun gate → scale → sum). All lookups run in parallel
+   on a **shared module-level `ThreadPoolExecutor`**; a per-meal uncached-lookup budget
+   (`USDA_MAX_LOOKUPS`) bounds API usage.
+4. The assembled `AnalyzeResponse` (totals + a per-line `items` breakdown tagged
+   `source: "dish"|"ingredient"`, plus `unmatched`/`skipped`) goes back. No DB write yet —
+   the user reviews, then logs.
 
 **`POST /api/meals/log` and `/log-group`** — `meal_service` writes the `Meal` (+ `Macros`,
 `Micros`) rows; grouped meals share a `group_id`. Temp images are kept or purged per request.
@@ -134,6 +145,9 @@ Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API key
 - **Single sources of truth.** Nutrient field lists → `core.nutrients`. Config access &
   defaults → `core.config`. Don't re-declare these elsewhere.
 - **Keep routers thin.** New endpoint logic goes in a service; the router just wires it.
+- **Dish aliases are curated empirically.** Add a dish to `DISH_ALIASES` only after
+  confirming it matches in FNDDS via `python check_aliases.py <key>` (it audits dishes too).
+  An unverified dish is harmless but wasteful — it just falls back to decomposition.
 - **`core` depends on nothing above it.** If `core` needs something from `services`,
   the dependency is pointing the wrong way — move the shared piece down into `core`.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded**

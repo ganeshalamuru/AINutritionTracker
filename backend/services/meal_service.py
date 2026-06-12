@@ -20,7 +20,7 @@ from schemas import (
     TimelineResponse, MacrosData, MicrosData,
 )
 from services.vision_service import analyze_meal_image
-from services.usda_service import nutrients_for_items, UsdaRateLimitError
+from services.usda_service import nutrients_for_meal, UsdaRateLimitError
 
 
 # --- analyze (Stage 1 perception + Stage 2 nutrient lookup) ---
@@ -48,7 +48,7 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
     with open(temp_path, "wb") as f:
         f.write(image_bytes)
 
-    # Stage 1: vision model identifies the dish + its base ingredients (no nutrients).
+    # Stage 1: vision model identifies each dish + its base-ingredient fallback (no nutrients).
     try:
         result = await asyncio.to_thread(
             analyze_meal_image, image_bytes, api_key, user_note or "", model, provider
@@ -57,13 +57,13 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         os.remove(temp_path)
         raise _map_vision_error(e)
 
-    # Stage 2: turn the ingredient list into real nutrient numbers via the USDA
-    # food database (the model no longer estimates macros/micros itself).
-    items = result.get("items", [])
+    # Stage 2: turn the dish list into real nutrient numbers via the USDA food database
+    # (dish-first, decomposing into base ingredients only when a dish has no match).
+    dishes = result.get("dishes", [])
     usda_key = config.get_usda_key(db)
     try:
-        macros_d, micros_d, unmatched, skipped = await asyncio.to_thread(
-            nutrients_for_items, items, usda_key
+        macros_d, micros_d, unmatched, skipped, breakdown = await asyncio.to_thread(
+            nutrients_for_meal, dishes, usda_key
         )
     except UsdaRateLimitError as e:
         raise HTTPException(
@@ -80,7 +80,8 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         estimated_serving=result.get("estimated_serving"),
         macros=MacrosData(**macros_d),
         micros=MicrosData(**micros_d),
-        items=[MealItem(food=i.get("food", ""), grams=i.get("grams") or 0) for i in items],
+        items=[MealItem(food=i.get("food", ""), grams=i.get("grams") or 0, source=i.get("source"))
+               for i in breakdown],
         unmatched=unmatched,
         skipped=skipped,
         temp_image_token=token,

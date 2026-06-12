@@ -177,6 +177,19 @@ Frontend-only sentinel `{ id: 0, isGuest: true }` — never written to DB. Analy
 ---
 
 ## Two-Stage Nutrition Architecture (replaced single-shot estimation, 2026-06-12)
+
+> **Update — dish-first lookup (2026-06-12 #6):** Stage 1 now returns a list of **dishes**
+> (`d:[{n,g,i:[...]}]`) — each dish has a portion weight and a fallback base-ingredient
+> breakdown — instead of a flat ingredient list. Stage 2 (`usda_service.nutrients_for_meal`)
+> is **dish-first**: it looks the whole dish up in USDA **FNDDS** (`DISH_ALIASES`,
+> `DISH_DATA_TYPES`) and only **decomposes into ingredients when the dish has no match**
+> (`_sum_ingredients`, the old path). This fixes composite dishes like idli (a fermented,
+> steamed batter that was wrongly summed as "cooked rice + cooked lentils", undercounting
+> ~2–3×). `AnalyzeResponse.items[]` lines now carry `source: "dish"|"ingredient"`;
+> `CACHE_VERSION`→"6". Curate `DISH_ALIASES` with `python check_aliases.py <key>` (now audits
+> dishes too). **`ARCHITECTURE.md` is authoritative**; the prose below predates this change
+> and still describes the flat-ingredient flow.
+
 **Problem:** asking one vision-LLM call to both perceive the meal AND recall exact nutrient facts produced fabricated numbers (micros especially) — provider swaps couldn't fix it (structural). **Fix:** split perception from nutrient lookup.
 
 - **Stage 1 — perception** (`gemini_service.py`): the vision model returns ONLY a compact ingredient list, no nutrients:
@@ -247,6 +260,7 @@ The service retries once on any non-quota error (15s timeout each). **Logging:**
 | Too many USDA calls per meal (~1 per distinct uncached ingredient) | Per-meal lookup cap `USDA_MAX_LOOKUPS = 8` — largest portions first, cached lookups free; overflow → `skipped[]` shown "not counted" in LogMeal. (No USDA bulk name-search endpoint exists.) |
 | Large `nutrition_db.py` mixed data + logic | Extracted all reference tables/constants into a `services/nutrition_data/` package (re-imported, public surface unchanged) |
 | Disorganized backend: config access duplicated 3×, nutrient field lists in 4 files, summation/serialization copy-pasted, all logic in routers, ThreadPoolExecutor per `/analyze`, misnamed modules | **Re-layered backend** into `routers → services → core → (models, schemas)`. New `core/` (database, logging_config, config, nutrients, lifespan); single source of truth for nutrient fields (`core.nutrients`) and config access (`core.config`); routers thinned over new `meal_service`/`summary_service`; `/api/config` moved to `routers/config.py`; **shared module-level USDA thread pool** (no longer per-call); `gemini_service.py`→`vision_service.py`, `nutrition_db.py`→`usda_service.py`. Behavior unchanged; 29 tests green. See `ARCHITECTURE.md`. |
+| Composite dishes mis-priced (idli decomposed to "cooked rice + cooked lentils" — a fermented/steamed batter undercounted ~2–3×; wrong grams state; odd FNDDS picks) | **Dish-first lookup.** Stage 1 returns dishes (`d:[{n,g,i}]`) with a fallback ingredient breakdown; Stage 2 `nutrients_for_meal` looks the whole dish up in USDA FNDDS (`DISH_ALIASES`/`DISH_DATA_TYPES`) and **decomposes only on a dish miss** (`_sum_ingredients`). `items[]` lines tagged `source` dish/ingredient; `CACHE_VERSION`→"6"; `check_aliases.py` audits dishes. 32 tests green. |
 
 ---
 

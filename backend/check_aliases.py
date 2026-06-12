@@ -1,9 +1,12 @@
-"""Audit the USDA food aliases against the real FoodData Central API.
+"""Audit the USDA food + dish aliases against the real FoodData Central API.
 
-Runs every entry in FOOD_ALIASES (plus a few common non-aliased foods) through the
-exact production matching path (alias -> strict search -> simplified fallback ->
-head-noun gate / best-of-N) and prints what each resolves to. For misses it also
-prints the raw candidates USDA returned, so a better alias can be chosen.
+Runs every entry in FOOD_ALIASES (plus a few common non-aliased foods) AND every entry
+in DISH_ALIASES through the exact production matching path (alias -> strict search ->
+simplified fallback -> head-noun gate / best-of-N) and prints what each resolves to. For
+misses it also prints the raw candidates USDA returned, so a better alias can be chosen.
+
+Use the DISH section to curate DISH_ALIASES: keep dishes that match in FNDDS; drop the
+rest (they fall back to ingredient decomposition anyway).
 
 Read-only (search calls only). The local cache is bypassed so results are always live.
 
@@ -56,23 +59,30 @@ def diagnose(name: str, key: str):
     return q, nd._pick_best(foods, q), foods
 
 
-def main():
-    key = _load_key()
-    names = sorted(set(nd.FOOD_ALIASES) | set(EXTRA_FOODS))
-    print(f"Auditing {len(names)} foods against USDA FoodData Central...\n")
+def diagnose_dish(name: str, key: str):
+    """Like diagnose() but via the dish path: DISH_ALIASES + the dish data types."""
+    q = nd.DISH_ALIASES.get(nd._normalize(name), nd._normalize(name))
+    foods = nd._search_usda(q, key, require_all=True, data_types=nd.DISH_DATA_TYPES)
+    if not foods:
+        simpler = nd._simplify(q)
+        if simpler:
+            loose = nd._search_usda(simpler, key, require_all=False, data_types=nd.DISH_DATA_TYPES)
+            if loose:
+                foods = loose
+    return q, nd._pick_best(foods, q), foods
 
+
+def _audit(names, key, alias_of, diagnose_fn) -> list:
+    """Run one audit pass; print each result and return the unmatched names.
+    Raises UsdaRateLimitError so the caller can stop the whole run."""
     unmatched = []
-    done = 0
     for name in names:
-        done += 1
-        alias = nd._aliased(name)
+        alias = alias_of(name)
         via = "" if alias == name else f"  (via '{alias}')"
         try:
-            q, chosen, candidates = diagnose(name, key)
-        except nd.UsdaRateLimitError as e:
-            print(f"\nRATE LIMITED after {done - 1} foods - stopping. {e}")
-            print("Wait an hour (or use a signed key with 1,000/hr) and re-run.")
-            return
+            q, chosen, candidates = diagnose_fn(name, key)
+        except nd.UsdaRateLimitError:
+            raise
         except Exception as e:
             print(f"MISS {name:22}{via}  | error: {type(e).__name__}: {e}")
             unmatched.append(name)
@@ -89,10 +99,38 @@ def main():
                 print(f"        candidate: {c.get('description')} [{c.get('dataType')}]")
             if not candidates:
                 print("        candidate: (no results)")
+    return unmatched
 
-    print(f"\n{len(names) - len(unmatched)} matched, {len(unmatched)} unmatched.")
-    if unmatched:
-        print("Unmatched: " + ", ".join(unmatched))
+
+def main():
+    key = _load_key()
+    food_names = sorted(set(nd.FOOD_ALIASES) | set(EXTRA_FOODS))
+    dish_names = sorted(set(nd.DISH_ALIASES))
+
+    try:
+        print(f"=== INGREDIENTS: auditing {len(food_names)} foods (ingredient path) ===\n")
+        food_unmatched = _audit(food_names, key, nd._aliased, diagnose)
+
+        print(f"\n=== DISHES: auditing {len(dish_names)} dishes (dish path, FNDDS) ===")
+        print("(a MISS here is fine — that dish just falls back to ingredient decomposition)\n")
+        dish_unmatched = _audit(
+            dish_names, key,
+            lambda n: nd.DISH_ALIASES.get(nd._normalize(n), nd._normalize(n)),
+            diagnose_dish,
+        )
+    except nd.UsdaRateLimitError as e:
+        print(f"\nRATE LIMITED - stopping. {e}")
+        print("Wait an hour (or use a signed key with 1,000/hr) and re-run.")
+        return
+
+    print(f"\nIngredients: {len(food_names) - len(food_unmatched)} matched, "
+          f"{len(food_unmatched)} unmatched.")
+    if food_unmatched:
+        print("  Unmatched: " + ", ".join(food_unmatched))
+    print(f"Dishes: {len(dish_names) - len(dish_unmatched)} matched, "
+          f"{len(dish_unmatched)} unmatched (these decompose to ingredients).")
+    if dish_unmatched:
+        print("  Unmatched: " + ", ".join(dish_unmatched))
 
 
 if __name__ == "__main__":
