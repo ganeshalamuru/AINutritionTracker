@@ -61,27 +61,41 @@ bash start.sh --skip-build
 
 ## Project Structure
 
+> **See `ARCHITECTURE.md`** (project root) for the layered design, dependency rules,
+> request flows, and conventions. The tree below is the file-level map.
+
+The backend is layered: **`routers → services → core → (models, schemas)`**. `core/`
+holds infrastructure (db, logging, config, the nutrient schema, lifespan) and never
+imports from `services`/`routers`; routers are thin wrappers over services.
+
 ```
 ai-nutrition-tracker/
+├── ARCHITECTURE.md           # Layered design + request flows + conventions (read this first)
 ├── backend/
-│   ├── main.py               # FastAPI app entry, CORS, static serving, lifespan + DB migration + config seeding + logging
-│   ├── logging_config.py     # configure_logging(): timestamped formatter on root + uvicorn loggers
-│   ├── database.py           # SQLAlchemy engine + get_db dependency
+│   ├── main.py               # Thin entrypoint: load env, configure logging, assemble routers, serve frontend
+│   ├── core/                 # Infrastructure (no business logic)
+│   │   ├── database.py       #   SQLAlchemy engine, SessionLocal, Base, get_db
+│   │   ├── logging_config.py #   configure_logging(): timestamped formatter on root + uvicorn loggers
+│   │   ├── config.py         #   app_config access + vision defaults + filesystem paths (UPLOADS_DIR/DIST_DIR)
+│   │   ├── nutrients.py      #   SINGLE SOURCE: MACRO_KEYS/MICRO_KEYS + to_*_data / sum_* helpers
+│   │   └── lifespan.py       #   startup/shutdown: create tables, group_id migration, food_cache prep, seed config, purge uploads
 │   ├── models.py             # ORM models: Profile, Meal (with group_id), Macros, Micros, AppConfig
 │   ├── schemas.py            # Pydantic models: MealSummary, MealGroupSummary (total_micros), TimelineItem union
-│   ├── routers/
-│   │   ├── profiles.py       # GET/POST /profiles, POST /profiles/verify (scoped to profile_id), DELETE
-│   │   ├── meals.py          # POST /analyze (provider-aware), POST /log, POST /log-group, GET /timeline,
-│   │   │                     # GET /group/{group_id}, DELETE /group/{group_id}, DELETE /{id}
-│   │   └── nutrition.py      # GET /daily, GET /monthly summaries
-│   ├── services/
-│   │   ├── gemini_service.py # Vision dispatch (Groq/Gemini/Ollama) → compact JSON; timeout+retry; timestamped logging; MOCK_GEMINI=1
-│   │   ├── nutrition_db.py    # Stage-2 USDA lookup: aliasing, matching, cache, per-meal lookup cap
-│   │   └── nutrition_data/    # Pure reference data (no logic), re-imported by nutrition_db:
-│   │       ├── config.py      #   USDA endpoint + tuning + USDA_MAX_LOOKUPS + CACHE_VERSION
-│   │       ├── aliases.py     #   FOOD_ALIASES, COOKING_ADJECTIVES, SIMPLIFY_STRIP_WORDS, GENERIC_WORDS
-│   │       ├── nutrient_map.py#   FDC_NUTRIENT_MAP, ENERGY_FALLBACK_IDS
-│   │       └── mock.py        #   MOCK_MACROS, MOCK_MICROS
+│   ├── routers/              # Thin HTTP layer (parse request → call service → return)
+│   │   ├── profiles.py       #   GET/POST /profiles, POST /profiles/verify (scoped to profile_id), DELETE
+│   │   ├── meals.py          #   POST /analyze, /log, /log-group, GET /timeline, /group/{id}, /{id}, PATCH/DELETE
+│   │   ├── nutrition.py      #   GET /daily, GET /monthly summaries
+│   │   └── config.py         #   GET/PUT /config (API keys + vision provider/model)
+│   ├── services/             # Business logic
+│   │   ├── vision_service.py #   Stage 1: vision dispatch (Groq/Gemini/Ollama) → ingredient list; timeout+retry; MOCK_GEMINI=1
+│   │   ├── usda_service.py   #   Stage 2: USDA lookup — aliasing, matching, cache, per-meal cap, shared thread pool
+│   │   ├── meal_service.py   #   analyze orchestration + meal CRUD + timeline/group read models
+│   │   ├── summary_service.py#   daily/monthly aggregation
+│   │   └── nutrition_data/    #   Pure reference data (no logic), re-imported by usda_service:
+│   │       ├── config.py      #     USDA endpoint + tuning + USDA_MAX_LOOKUPS + CACHE_VERSION
+│   │       ├── aliases.py     #     FOOD_ALIASES, COOKING_ADJECTIVES, SIMPLIFY_STRIP_WORDS, GENERIC_WORDS
+│   │       ├── nutrient_map.py#     FDC_NUTRIENT_MAP, ENERGY_FALLBACK_IDS
+│   │       └── mock.py        #     MOCK_MACROS, MOCK_MICROS
 │   ├── uploads/              # Temp image staging (auto-purged after 1 hour)
 │   └── requirements.txt
 ├── frontend/
@@ -232,6 +246,7 @@ The service retries once on any non-quota error (15s timeout each). **Logging:**
 | Common spices (turmeric/chili/cumin/cinnamon powder) always `unmatched` | Added spice `FOOD_ALIASES` mapping to USDA "Spices, …" wording + broadened `_simplify()` strip set (`SIMPLIFY_STRIP_WORDS`) so "X powder/stick" retries loosely as "X" |
 | Too many USDA calls per meal (~1 per distinct uncached ingredient) | Per-meal lookup cap `USDA_MAX_LOOKUPS = 8` — largest portions first, cached lookups free; overflow → `skipped[]` shown "not counted" in LogMeal. (No USDA bulk name-search endpoint exists.) |
 | Large `nutrition_db.py` mixed data + logic | Extracted all reference tables/constants into a `services/nutrition_data/` package (re-imported, public surface unchanged) |
+| Disorganized backend: config access duplicated 3×, nutrient field lists in 4 files, summation/serialization copy-pasted, all logic in routers, ThreadPoolExecutor per `/analyze`, misnamed modules | **Re-layered backend** into `routers → services → core → (models, schemas)`. New `core/` (database, logging_config, config, nutrients, lifespan); single source of truth for nutrient fields (`core.nutrients`) and config access (`core.config`); routers thinned over new `meal_service`/`summary_service`; `/api/config` moved to `routers/config.py`; **shared module-level USDA thread pool** (no longer per-call); `gemini_service.py`→`vision_service.py`, `nutrition_db.py`→`usda_service.py`. Behavior unchanged; 29 tests green. See `ARCHITECTURE.md`. |
 
 ---
 

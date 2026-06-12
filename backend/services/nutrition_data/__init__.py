@@ -1,6 +1,6 @@
-"""Reference data for the USDA nutrient-lookup stage (services/nutrition_db.py).
+"""Reference data for the USDA nutrient-lookup stage (services/usda_service.py).
 
-Pure data only — no logic, no I/O, no module globals. Split out of nutrition_db.py
+Pure data only — no logic, no I/O, no module globals. Split out of usda_service.py
 so the matching code and the large lookup tables it depends on can be read and
 edited independently. Grouped by concern:
 
@@ -9,8 +9,8 @@ edited independently. Grouped by concern:
   nutrient_map  — USDA nutrient IDs -> our schema keys
   mock          — canned totals returned in MOCK_GEMINI mode
 
-`nutrition_db` re-imports every name below into its own namespace, so the public
-surface (e.g. `nd.FOOD_ALIASES`, `nd.CACHE_VERSION`) is unchanged.
+`usda_service` re-imports every name below into its own namespace, so the public
+surface (e.g. `FOOD_ALIASES`, `CACHE_VERSION`) is unchanged.
 """
 from services.nutrition_data.config import (
     USDA_SEARCH_URL,

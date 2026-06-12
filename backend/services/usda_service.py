@@ -1,4 +1,4 @@
-"""Nutrient lookup stage.
+"""Nutrient lookup stage (Stage 2 of the two-stage nutrition pipeline).
 
 The vision model identifies a meal's ingredients + weights (it's good at that);
 this module turns that ingredient list into real nutrient numbers by looking each
@@ -20,12 +20,12 @@ from concurrent.futures import ThreadPoolExecutor
 import requests
 from sqlalchemy import text
 
-from database import engine
-from logging_config import configure_logging
-from services.gemini_service import MACRO_KEYS, ALL_MICRO_KEYS
+from core.database import engine
+from core.logging_config import configure_logging
+from core.nutrients import MACRO_KEYS, MICRO_KEYS
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
-# Re-imported here so the public surface (nd.FOOD_ALIASES, nd.CACHE_VERSION, ...) and
-# all consumers (main.py, check_aliases.py, tests) keep working unchanged.
+# Re-imported here so the public surface (USDA_*, FOOD_ALIASES, CACHE_VERSION, ...) and
+# all consumers (lifespan, check_aliases.py, tests) keep working unchanged.
 from services.nutrition_data import (
     USDA_SEARCH_URL,
     USDA_DATA_TYPES,
@@ -47,6 +47,11 @@ from services.nutrition_data import (
 
 configure_logging()
 logger = logging.getLogger("nutriai.nutrition_db")
+
+# One reusable pool for parallel per-meal ingredient lookups, created once at import
+# instead of per /analyze call. The thread_name_prefix keeps each worker's log lines
+# distinguishable (the formatter prints %(threadName)s).
+_LOOKUP_POOL = ThreadPoolExecutor(max_workers=USDA_MAX_WORKERS, thread_name_prefix="usda-lookup")
 
 
 class UsdaRateLimitError(Exception):
@@ -75,7 +80,7 @@ def _extract_per_100g(food: dict) -> dict:
         if nid is not None and _is_number(val):
             raw[nid] = val
 
-    per_100g = {k: 0.0 for k in MACRO_KEYS + ALL_MICRO_KEYS}
+    per_100g = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
     for nid, key in FDC_NUTRIENT_MAP.items():
         if nid in raw:
             per_100g[key] = float(raw[nid])
@@ -93,7 +98,7 @@ _cache_ready = False
 
 
 def _ensure_cache_table():
-    """Create the cache table on first use. main.py also creates it at startup;
+    """Create the cache table on first use. The lifespan also creates it at startup;
     doing it here too keeps the module self-sufficient (e.g. standalone tests)."""
     global _cache_ready
     if _cache_ready:
@@ -322,7 +327,7 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
     if _is_mock():
         logger.info("mock mode -> canned nutrient totals (no USDA call)")
         macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
-        micros = {k: MOCK_MICROS.get(k, 0) for k in ALL_MICRO_KEYS}
+        micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
         return macros, micros, [], []
 
     valid = [it for it in (items or [])
@@ -345,13 +350,13 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
         logger.info("lookup cap %d reached -> skipping %d smaller ingredient(s): %s",
                     USDA_MAX_LOOKUPS, len(skipped), skipped)
 
-    # Deduped lookups run in parallel to cut latency.
-    with ThreadPoolExecutor(max_workers=min(USDA_MAX_WORKERS, len(to_lookup) or 1)) as pool:
-        results = list(pool.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup))
-    profiles = dict(results)  # name -> per_100g | None  (UsdaRateLimitError propagates out of map)
+    # Deduped lookups run in parallel on the shared pool to cut latency.
+    # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
+    results = list(_LOOKUP_POOL.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup))
+    profiles = dict(results)  # name -> per_100g | None
 
     skipped_set = set(skipped)
-    totals = {k: 0.0 for k in MACRO_KEYS + ALL_MICRO_KEYS}
+    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
     unmatched = []
     for it in valid:
         food = it["food"].strip()
@@ -367,5 +372,5 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
             totals[key] += per_100g.get(key, 0) * factor
 
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
-    micros = {k: round(totals[k], 4) for k in ALL_MICRO_KEYS}
+    micros = {k: round(totals[k], 4) for k in MICRO_KEYS}
     return macros, micros, unmatched, skipped

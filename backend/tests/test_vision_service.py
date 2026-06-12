@@ -1,14 +1,14 @@
-"""Unit tests for the vision/decomposition stage parsing (services/gemini_service.py).
+"""Unit tests for the vision/decomposition stage parsing (services/vision_service.py).
 
 The model now returns an ingredient list (not nutrient numbers); these tests cover
 the compact-JSON parsing and its tolerance of malformed output. No network.
 
 Run from the backend/ directory:
-    python -m unittest tests.test_gemini_service
+    python -m unittest tests.test_vision_service
 """
 import unittest
 
-import services.gemini_service as gs
+import services.vision_service as gs
 
 
 class ParseCompactTest(unittest.TestCase):

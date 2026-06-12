@@ -1,10 +1,10 @@
-"""Unit tests for the USDA nutrient-lookup stage (services/nutrition_db.py).
+"""Unit tests for the USDA nutrient-lookup stage (services/usda_service.py).
 
 No network: every external USDA call is stubbed via `requests.post`. The cache is
 pointed at a throwaway temp SQLite DB so tests never touch the real nutrition.db.
 
 Run from the backend/ directory:
-    python -m unittest tests.test_nutrition_db
+    python -m unittest tests.test_usda_service
     python -m unittest discover -s tests        # all tests
 """
 import json
@@ -15,7 +15,7 @@ from unittest.mock import patch
 
 from sqlalchemy import create_engine
 
-import services.nutrition_db as nd
+import services.usda_service as nd
 
 
 class FakeResp:

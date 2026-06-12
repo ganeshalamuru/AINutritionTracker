@@ -1,3 +1,11 @@
+"""Vision / perception stage (Stage 1 of the two-stage nutrition pipeline).
+
+Despite the historical names floating around the project, this module is provider-
+agnostic: it dispatches a meal photo to whichever vision model is configured (Groq,
+Gemini, or a future Ollama) and returns ONLY a decomposed ingredient list — it does
+NOT estimate nutrients (the model hallucinated those). The real per-100g numbers come
+from the USDA lookup in usda_service.py.
+"""
 import base64
 import json
 import logging
@@ -6,37 +14,21 @@ import re
 import time
 import google.generativeai as genai
 
-from logging_config import configure_logging
+from core.config import DEFAULT_PROVIDER, DEFAULT_MODEL
+from core.logging_config import configure_logging
 
 # Logger for all model traffic. Shares the app's timestamped formatter (configured
 # here too so logs still show when this module is imported standalone, e.g. tests).
 configure_logging()
 logger = logging.getLogger("nutriai.vision")
 
-# Default vision provider/model. Groq's free tier gives ~1,000 RPD / 6K TPM (vs
-# Google free tier's ~20 RPD on Flash, or Gemma's 383 TPM that can't fit a single
-# image request) plus the fastest inference. Llama 4 Scout is natively multimodal.
-DEFAULT_PROVIDER = "groq"
-DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
-
 # Per-call timeout (seconds) and retry budget. The app used to hang forever when
 # the model never responded — cap each call and retry at most once.
 CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
 
-# Schema keys shared with the nutrient-lookup stage. The vision model no longer
-# estimates these values directly (it hallucinates them) — it only identifies the
-# meal and its ingredients; nutrition_db.py supplies real per-100g numbers.
-MACRO_KEYS = ["calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "sodium_mg"]
-ALL_MICRO_KEYS = [
-    "vitamin_a_mcg", "vitamin_d_mcg", "vitamin_e_mg", "vitamin_k_mcg", "vitamin_c_mg",
-    "vitamin_b1_mg", "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b6_mg", "vitamin_b12_mcg",
-    "folate_mcg", "calcium_mg", "iron_mg", "magnesium_mg", "potassium_mg",
-    "zinc_mg", "phosphorus_mg",
-]
-
 # Mock vision output: the decomposed item list (macros/micros come from the lookup
-# stage, which short-circuits to canned values under MOCK_GEMINI — see nutrition_db).
+# stage, which short-circuits to canned values under MOCK_GEMINI — see usda_service).
 MOCK_RESPONSE = {
     "meal_name": "Grilled Chicken with Rice and Vegetables",
     "meal_type": "lunch",

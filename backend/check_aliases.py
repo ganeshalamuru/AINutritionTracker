@@ -15,7 +15,7 @@ import logging
 import os
 import sys
 
-import services.nutrition_db as nd
+import services.usda_service as nd
 
 # Keep the table clean — silence the per-call request/response INFO logging.
 logging.getLogger("nutriai.nutrition_db").setLevel(logging.WARNING)
