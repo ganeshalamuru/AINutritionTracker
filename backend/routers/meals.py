@@ -12,21 +12,35 @@ from schemas import (
     MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
     TimelineResponse, MacrosData, MicrosData
 )
-from services.gemini_service import analyze_meal_image
+from services.gemini_service import analyze_meal_image, DEFAULT_MODEL, DEFAULT_PROVIDER
 
 router = APIRouter(prefix="/meals", tags=["meals"])
 
 UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "..", "uploads")
 
 
-def get_api_key(db: Session) -> str:
-    config = db.query(AppConfig).filter(AppConfig.key == "gemini_api_key").first()
-    if not config or not config.value:
+def _config_value(db: Session, key: str, default: str) -> str:
+    config = db.query(AppConfig).filter(AppConfig.key == key).first()
+    return config.value if config and config.value else default
+
+
+def get_api_key(db: Session, provider: str = "gemini") -> str:
+    key_name = "groq_api_key" if provider == "groq" else "gemini_api_key"
+    label = "Groq" if provider == "groq" else "Gemini"
+    value = _config_value(db, key_name, "")
+    if not value:
         raise HTTPException(
             status_code=503,
-            detail="Gemini API key not configured. Go to Settings to add your key."
+            detail=f"{label} API key not configured. Go to Settings to add your key."
         )
-    return config.value
+    return value
+
+
+def get_vision_config(db: Session) -> tuple[str, str]:
+    """Returns (provider, model) for vision analysis, falling back to defaults."""
+    provider = _config_value(db, "vision_provider", DEFAULT_PROVIDER)
+    model = _config_value(db, "vision_model", DEFAULT_MODEL)
+    return provider, model
 
 
 def _macros_data(macros) -> MacrosData:
@@ -66,7 +80,8 @@ async def analyze_meal(
     user_note: Optional[str] = Form(default=None),
     db: Session = Depends(get_db)
 ):
-    api_key = get_api_key(db)
+    provider, model = get_vision_config(db)
+    api_key = get_api_key(db, provider)
 
     image_bytes = await image.read()
     token = str(uuid.uuid4())
@@ -75,16 +90,20 @@ async def analyze_meal(
         f.write(image_bytes)
 
     try:
-        result = await asyncio.to_thread(analyze_meal_image, image_bytes, api_key, user_note or "")
+        result = await asyncio.to_thread(
+            analyze_meal_image, image_bytes, api_key, user_note or "", model, provider
+        )
     except Exception as e:
         os.remove(temp_path)
-        print(f"[Gemini error] {type(e).__name__}: {e}")
+        # The vision service already logs this error (timestamped). Map it to HTTP here.
         err = str(e).lower()
         raw = str(e)
         if "429" in err or "rate" in err or "per_minute" in err or "requests_per_minute" in err:
-            raise HTTPException(status_code=429, detail=f"Rate limit hit — wait 60 seconds and try again. (Gemini: {raw})")
+            raise HTTPException(status_code=429, detail=f"Rate limit hit — wait 60 seconds and try again. ({raw})")
         if "quota" in err or "daily" in err or "resource_exhausted" in err or "per_day" in err:
-            raise HTTPException(status_code=429, detail=f"Daily quota exhausted — resets at UTC midnight or upgrade to a paid Gemini API key. (Gemini: {raw})")
+            raise HTTPException(status_code=429, detail=f"Daily quota exhausted — resets on the provider's reset schedule. ({raw})")
+        if "timeout" in err or "timed out" in err or "deadline" in err or "504" in err:
+            raise HTTPException(status_code=504, detail=f"AI analysis timed out — the model didn't respond. Try again. ({raw})")
         raise HTTPException(status_code=502, detail=f"AI analysis failed: {raw}")
 
     macros = MacrosData(**result.get("macros", {}))

@@ -8,6 +8,28 @@ import MicroGrid from "../components/meal/MicroGrid";
 
 const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
+// Downscale a photo in the browser before upload — cuts input tokens, upload time,
+// and latency. 384px keeps both dimensions ≤384 so vision APIs bill a flat ~258
+// image tokens (no tiling), fitting comfortably under free-tier TPM limits. The
+// model downsamples internally anyway. Falls back to the original file on failure.
+async function downscaleImage(file, maxDim = 384, quality = 0.8) {
+  try {
+    const bitmap = await createImageBitmap(file, { imageOrientation: "from-image" });
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    const w = Math.round(bitmap.width * scale);
+    const h = Math.round(bitmap.height * scale);
+    const canvas = document.createElement("canvas");
+    canvas.width = w;
+    canvas.height = h;
+    canvas.getContext("2d").drawImage(bitmap, 0, 0, w, h);
+    bitmap.close?.();
+    const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+    return blob ? new File([blob], "meal.jpg", { type: "image/jpeg" }) : file;
+  } catch {
+    return file;
+  }
+}
+
 export default function LogMeal() {
   const { profile } = useProfile();
   const navigate = useNavigate();
@@ -37,7 +59,7 @@ export default function LogMeal() {
     setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, analyzing: true, error: null } : p));
     try {
       const fd = new FormData();
-      fd.append("image", file);
+      fd.append("image", await downscaleImage(file));
       fd.append("profile_id", profile.id);
       if (hint.trim()) fd.append("user_note", hint.trim());
       const { data } = await client.post("/meals/analyze", fd, {

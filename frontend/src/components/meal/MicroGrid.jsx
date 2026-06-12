@@ -1,5 +1,7 @@
 import { useState } from "react";
 
+// Full micro label set. The AI reports only the micros notable for a given meal,
+// so we render just the ones with a value (see Section's non-zero filter).
 const VITAMINS = [
   { key: "vitamin_a_mcg", label: "Vit A", unit: "mcg" },
   { key: "vitamin_d_mcg", label: "Vit D", unit: "mcg" },
@@ -24,11 +26,13 @@ const MINERALS = [
 ];
 
 function Section({ title, items, data }) {
+  const present = items.filter(({ key }) => Number(data?.[key]) > 0);
+  if (!present.length) return null;
   return (
     <div>
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</p>
       <div className="grid grid-cols-3 gap-2">
-        {items.map(({ key, label, unit }) => (
+        {present.map(({ key, label, unit }) => (
           <div key={key} className="bg-gray-50 rounded-xl p-2 text-center">
             <p className="text-xs font-semibold text-gray-700">{Math.round((data?.[key] || 0) * 10) / 10}<span className="font-normal text-gray-400">{unit}</span></p>
             <p className="text-xs text-gray-500 mt-0.5">{label}</p>
@@ -42,6 +46,7 @@ function Section({ title, items, data }) {
 export default function MicroGrid({ micros, alwaysOpen = false }) {
   const [open, setOpen] = useState(false);
   const isOpen = alwaysOpen || open;
+  const hasAny = [...VITAMINS, ...MINERALS].some(({ key }) => Number(micros?.[key]) > 0);
   return (
     <div className="mt-3">
       {!alwaysOpen && (
@@ -57,8 +62,14 @@ export default function MicroGrid({ micros, alwaysOpen = false }) {
       )}
       {isOpen && (
         <div className="mt-3 space-y-4">
-          <Section title="Vitamins" items={VITAMINS} data={micros} />
-          <Section title="Minerals" items={MINERALS} data={micros} />
+          {hasAny ? (
+            <>
+              <Section title="Vitamins" items={VITAMINS} data={micros} />
+              <Section title="Minerals" items={MINERALS} data={micros} />
+            </>
+          ) : (
+            <p className="text-xs text-gray-400">No notable micronutrients.</p>
+          )}
         </div>
       )}
     </div>

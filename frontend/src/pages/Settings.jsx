@@ -11,15 +11,46 @@ export default function Settings() {
   const [apiKey, setApiKey] = useState("");
   const [keySet, setKeySet] = useState(false);
   const [saving, setSaving] = useState(false);
-  const [testing, setTesting] = useState(false);
+  const [groqKey, setGroqKey] = useState("");
+  const [groqSet, setGroqSet] = useState(false);
+  const [savingGroq, setSavingGroq] = useState(false);
+  const [selected, setSelected] = useState("");
+  const [savingModel, setSavingModel] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
+  // Each option carries the provider + model id it should set.
+  const MODELS = [
+    { provider: "groq", model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Groq · Llama 4 Scout (vision) — fast, ~1k/day" },
+    { provider: "gemini", model: "gemini-2.5-flash", label: "Gemini · 2.5 Flash — reliable, ~20/day" },
+    { provider: "gemini", model: "gemma-4-31b-it", label: "Gemini · Gemma 4 31B — high RPD but low TPM" },
+  ];
+  const keyOf = (p, m) => `${p}::${m}`;
+  const activeProvider = selected.split("::")[0];
+
   useEffect(() => {
-    client.get("/config").then((r) => setKeySet(r.data.gemini_api_key_set));
+    client.get("/config").then((r) => {
+      setKeySet(r.data.gemini_api_key_set);
+      setGroqSet(r.data.groq_api_key_set);
+      setSelected(keyOf(r.data.vision_provider || "groq", r.data.vision_model || ""));
+    });
     client.get("/profiles").then((r) => setProfiles(r.data));
   }, []);
+
+  const saveModel = async (value) => {
+    setSelected(value);
+    const [provider, model] = value.split("::");
+    setSavingModel(true);
+    try {
+      await client.put("/config", { vision_provider: provider, vision_model: model });
+      setToast({ message: "Model updated!", type: "success" });
+    } catch {
+      setToast({ message: "Failed to update model", type: "error" });
+    } finally {
+      setSavingModel(false);
+    }
+  };
 
   const saveKey = async () => {
     if (!apiKey.trim()) return;
@@ -33,6 +64,21 @@ export default function Settings() {
       setToast({ message: "Failed to save key", type: "error" });
     } finally {
       setSaving(false);
+    }
+  };
+
+  const saveGroqKey = async () => {
+    if (!groqKey.trim()) return;
+    setSavingGroq(true);
+    try {
+      await client.put("/config", { groq_api_key: groqKey.trim() });
+      setGroqSet(true);
+      setGroqKey("");
+      setToast({ message: "Groq key saved!", type: "success" });
+    } catch {
+      setToast({ message: "Failed to save key", type: "error" });
+    } finally {
+      setSavingGroq(false);
     }
   };
 
@@ -56,9 +102,60 @@ export default function Settings() {
       <h2 className="text-xl font-bold text-gray-900">Settings</h2>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-        <h3 className="font-semibold text-gray-800">Gemini API Key</h3>
+        <h3 className="font-semibold text-gray-800">AI Vision Model</h3>
         <p className="text-xs text-gray-500">
-          Required for AI meal analysis.{" "}
+          Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
+          The selected provider needs its API key set below.
+        </p>
+        <select
+          value={selected}
+          onChange={(e) => saveModel(e.target.value)}
+          disabled={savingModel}
+          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
+        >
+          {MODELS.map((m) => (
+            <option key={keyOf(m.provider, m.model)} value={keyOf(m.provider, m.model)}>{m.label}</option>
+          ))}
+        </select>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <h3 className="font-semibold text-gray-800">
+          Groq API Key {activeProvider === "groq" && <span className="text-xs text-green-500">(active)</span>}
+        </h3>
+        <p className="text-xs text-gray-500">
+          Used by the Groq vision provider.{" "}
+          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-green-600 underline">
+            Get a free key here
+          </a>
+        </p>
+        <div className="flex items-center gap-2">
+          <span className={`text-xs px-2 py-1 rounded-full font-medium ${groqSet ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
+            {groqSet ? "Key saved" : "Not set"}
+          </span>
+        </div>
+        <input
+          type="password"
+          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 font-mono"
+          placeholder="gsk_..."
+          value={groqKey}
+          onChange={(e) => setGroqKey(e.target.value)}
+        />
+        <button
+          onClick={saveGroqKey}
+          disabled={savingGroq || !groqKey.trim()}
+          className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+        >
+          {savingGroq ? "Saving..." : groqSet ? "Update Key" : "Save Key"}
+        </button>
+      </div>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <h3 className="font-semibold text-gray-800">
+          Gemini API Key {activeProvider === "gemini" && <span className="text-xs text-green-500">(active)</span>}
+        </h3>
+        <p className="text-xs text-gray-500">
+          Only needed for the Gemini fallback models.{" "}
           <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-green-600 underline">
             Get a free key here
           </a>

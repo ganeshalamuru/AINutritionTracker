@@ -1,6 +1,9 @@
 """
 Check Gemini API key: available models, token limits, and connectivity.
 
+NOTE: The app now defaults to the Groq provider (Llama 4 Scout) for meal analysis.
+This script only covers the Gemini *fallback* models, not Groq.
+
 Usage:
     python check_gemini_limits.py <your_api_key>
     python check_gemini_limits.py          # reads GEMINI_API_KEY env var
@@ -17,7 +20,10 @@ except ImportError:
     sys.exit(1)
 
 
+APP_MODEL = "gemma-4-31b-it"
+
 HIGHLIGHT_MODELS = {
+    "gemma-4-31b-it",
     "gemini-2.5-pro",
     "gemini-2.5-flash",
     "gemini-2.0-flash",
@@ -27,6 +33,7 @@ HIGHLIGHT_MODELS = {
 }
 
 FREE_TIER_LIMITS = {
+    "gemma-4-31b-it":    {"rpm": 30, "rpd": 14400},
     "gemini-2.5-pro":    {"rpm": 5,  "rpd": 25},
     "gemini-2.5-flash":  {"rpm": 10, "rpd": 500},
     "gemini-2.0-flash":  {"rpm": 15, "rpd": 1500},
@@ -74,7 +81,7 @@ def check(api_key: str):
         limits = FREE_TIER_LIMITS.get(name, {})
         rpm = str(limits.get("rpm", "?"))
         rpd = str(limits.get("rpd", "?"))
-        flag = "  <-- app uses this" if name == "gemini-2.0-flash" else ""
+        flag = "  <-- app uses this" if name == APP_MODEL else ""
         print(col.format(
             name,
             f"{m.input_token_limit:,}" if m.input_token_limit else "—",
@@ -88,12 +95,12 @@ def check(api_key: str):
     print("  Paid tier limits are much higher — check console.cloud.google.com for exact quotas.\n")
 
     # Quick connectivity test
-    print("=== Testing key with gemini-2.0-flash... ===\n")
+    print(f"=== Testing key with {APP_MODEL}... ===\n")
     try:
-        model = genai.GenerativeModel("gemini-2.0-flash")
+        model = genai.GenerativeModel(APP_MODEL)
         resp = model.generate_content("Reply with just the word: OK")
         print(f"  Response: {resp.text.strip()}")
-        print("  API key is valid and gemini-2.0-flash is reachable.\n")
+        print(f"  API key is valid and {APP_MODEL} is reachable.\n")
     except Exception as e:
         err = str(e)
         if "quota" in err.lower() or "resource_exhausted" in err.lower():

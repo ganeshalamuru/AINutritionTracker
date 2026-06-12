@@ -12,9 +12,14 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`) — persists across restarts |
-| AI Vision | Google Gemini (`gemini-3.5-flash` default — valid model, confirmed in API) |
+| AI Vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`). Gemini/Gemma selectable as fallback. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
+
+> **Why Groq?** On this Google free-tier account, every usable Gemini Flash model is capped at
+> ~20 requests/day, and `gemma-4-31b-it` has only 383 TPM (can't fit one image request → 504s).
+> Groq's free tier gives ~1,000 RPD / 6K TPM / 30 RPM plus the fastest inference. Set the model in
+> Settings; each provider uses its own API key (`groq_api_key` / `gemini_api_key`).
 
 ---
 
@@ -39,6 +44,10 @@ bash start.sh --skip-build
 - Desktop: `http://localhost:8000` (both dev and production)
 - Mobile (same WiFi): run `ipconfig`, find your IPv4 address, open `http://<your-ip>:8000`
 
+> **First-time AI setup:** get a free Groq key at https://console.groq.com/keys (no card) and paste
+> it into Settings → "Groq API Key". Optionally seed via `GROQ_API_KEY` env (or `GEMINI_API_KEY`
+> for the fallback) before first launch. `MOCK_GEMINI=1` skips all real calls.
+
 > Dev mode: Vite owns :8000 and proxies `/api/*` → FastAPI on :8001. Hot reload works on any `.jsx` / `.css` save. Backend also uses `--reload` so Python changes restart automatically.
 
 > Production mode: `.\start.ps1` (no `-Dev`) builds the React app into `frontend/dist/` and FastAPI serves it as static files on :8000. Use this before sharing with others or testing on mobile with final UI.
@@ -54,17 +63,18 @@ bash start.sh --skip-build
 ```
 ai-nutrition-tracker/
 ├── backend/
-│   ├── main.py               # FastAPI app entry, CORS, static file serving, lifespan + DB migration
+│   ├── main.py               # FastAPI app entry, CORS, static serving, lifespan + DB migration + config seeding + logging
+│   ├── logging_config.py     # configure_logging(): timestamped formatter on root + uvicorn loggers
 │   ├── database.py           # SQLAlchemy engine + get_db dependency
 │   ├── models.py             # ORM models: Profile, Meal (with group_id), Macros, Micros, AppConfig
 │   ├── schemas.py            # Pydantic models: MealSummary, MealGroupSummary (total_micros), TimelineItem union
 │   ├── routers/
 │   │   ├── profiles.py       # GET/POST /profiles, POST /profiles/verify (scoped to profile_id), DELETE
-│   │   ├── meals.py          # POST /analyze, POST /log, POST /log-group, GET /timeline,
+│   │   ├── meals.py          # POST /analyze (provider-aware), POST /log, POST /log-group, GET /timeline,
 │   │   │                     # GET /group/{group_id}, DELETE /group/{group_id}, DELETE /{id}
 │   │   └── nutrition.py      # GET /daily, GET /monthly summaries
 │   ├── services/
-│   │   └── gemini_service.py # Gemini Flash image → structured JSON nutrition data; MOCK_GEMINI=1 support
+│   │   └── gemini_service.py # Vision dispatch (Groq/Gemini/Ollama) → compact JSON; timeout+retry; timestamped logging; MOCK_GEMINI=1
 │   ├── uploads/              # Temp image staging (auto-purged after 1 hour)
 │   └── requirements.txt
 ├── frontend/
@@ -93,14 +103,19 @@ ai-nutrition-tracker/
 
 ## Key Design Decisions
 
-### API Key Storage
-Gemini API key stored in `app_config` SQLite table (set via Settings UI) OR loaded from `backend/.env` on first startup.
+### Vision Provider Architecture
+Provider + model are configurable via `AppConfig` keys `vision_provider` + `vision_model` (defaults `groq` / `meta-llama/llama-4-scout-17b-16e-instruct`, seeded in `main.py` lifespan). `gemini_service.py` dispatches through a `PROVIDERS` map: `_groq_analyze` (groq SDK, base64 image, JSON mode), `_gemini_analyze` (covers `gemini-*` + `gemma-*`), `_ollama_analyze` (stub for a future fully-local option). `get_api_key(db, provider)` in `meals.py` returns the matching key (`groq_api_key` / `gemini_api_key`). Settings has a provider/model dropdown plus a key field per provider.
 
-### Mock Gemini Mode
-Set `MOCK_GEMINI=1` env var before starting to skip all Gemini API calls and return canned nutrition data. Useful for UI testing without burning free quota. Mock response defined in `gemini_service.py:MOCK_RESPONSE`.
+**Latency/throughput levers:** each call has a **15s timeout + one retry** (non-quota errors only) so it never hangs; images are **downscaled client-side to 384px** in `LogMeal.jsx` (flat ~258 image tokens, no tiling); output is a compact JSON (see Vision Prompt below).
+
+### API Key Storage
+API keys stored in `app_config` SQLite table (`groq_api_key`, `gemini_api_key`), set via Settings UI OR seeded from `GROQ_API_KEY` / `GEMINI_API_KEY` env on first startup (`main.py` lifespan).
+
+### Mock Mode
+Set `MOCK_GEMINI=1` env var before starting to skip all real model calls and return canned nutrition data (`gemini_service.py:MOCK_RESPONSE`). Name is historical — it applies to every provider, not just Gemini.
 
 ### Multi-Photo Grouped Meals
-Multiple photos from LogMeal are analyzed independently (one Gemini call each) and grouped under a shared `group_id` UUID. Groups are stored as individual `Meal` rows with the same `group_id`. The timeline backend collapses them into a `MealGroupSummary` with summed macros AND summed micros. Home.jsx does the same grouping client-side from the flat daily summary (macros only), but fetches full group data (with micros) from `GET /meals/group/{group_id}` when the modal is opened.
+Multiple photos from LogMeal are analyzed independently (one vision call each) and grouped under a shared `group_id` UUID. Groups are stored as individual `Meal` rows with the same `group_id`. The timeline backend collapses them into a `MealGroupSummary` with summed macros AND summed micros. Home.jsx does the same grouping client-side from the flat daily summary (macros only), but fetches full group data (with micros) from `GET /meals/group/{group_id}` when the modal is opened.
 
 ### Meal Detail Modal
 Clicking any MealCard or GroupedMealCard opens a bottom-sheet modal (`MealDetailModal`). Shows all 7 macros (calories, protein, carbs, fat, fiber, sugar, sodium) + 17 micros (collapsible). Groups have Totals / Breakdown tabs. Totals tab shows summed macros + summed micros.
@@ -140,21 +155,23 @@ Frontend-only sentinel `{ id: 0, isGuest: true }` — never written to DB. Analy
 
 ---
 
-## Gemini Prompt
-Returns **pure JSON** with:
-- `meal_name`, `meal_type`, `confidence` (high/medium/low), `estimated_serving`
-- `macros`: calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg
-- `micros`: 11 vitamins (A/D/E/K/C/B1/B2/B3/B6/B12/folate) + 6 minerals (calcium/iron/magnesium/potassium/zinc/phosphorus)
+## Vision Prompt & Compact JSON
+The model returns a **compact JSON** that `_parse_compact()` remaps to the full named schema:
+- `n` (meal_name), `t` (meal_type), `c` (confidence high/medium/low)
+- `m`: fixed-order **array of 7 macros** `[calories, protein_g, carbs_g, fat_g, fiber_g, sugar_g, sodium_mg]` → `_arr_to_dict`
+- `u`: **variable object** of the micros notable for THAT meal, keyed by name from the full 17 (`ALL_MICRO_KEYS`) → `_obj_to_micros` (keeps known numeric keys, ignores unknown/junk)
 
-All unknown values default to `0`. Code strips markdown fences as fallback.
+`estimated_serving`/`notes` are no longer requested. Unreported micros default to `0`; the DB keeps all 17 micro columns. Parsing strips markdown fences and tolerates bad arrays/objects (→ 0 / `{}`). `MicroGrid.jsx` renders only the reported (non-zero) micros, grouped Vitamins/Minerals.
 
 ---
 
-## Gemini Error Handling
-`meals.py` distinguishes two quota error types:
-- **Per-minute rate limit** (`429`/`rate`/`per_minute` in error): "wait 60 seconds"
-- **Daily quota exhausted** (`quota`/`daily`/`resource_exhausted`/`per_day`): "resets at UTC midnight"
-Raw Gemini error is appended to the message so the user can diagnose. All errors also `print()` to terminal with `[Gemini error]` prefix.
+## Error Handling & Logging
+`meals.py` maps provider errors to HTTP (messages are provider-neutral, include the raw error):
+- **Per-minute rate limit** (`429`/`rate`/`per_minute`) → 429 "wait 60 seconds"
+- **Daily quota exhausted** (`quota`/`daily`/`resource_exhausted`/`per_day`) → 429
+- **Timeout / no response** (`timeout`/`timed out`/`deadline`/`504`) → 504 (never hangs)
+
+The service retries once on any non-quota error (15s timeout each). **Logging:** `backend/logging_config.py` `configure_logging()` applies a timestamped formatter to the root + uvicorn loggers (called from `main.py` and `gemini_service.py`), so **every** log line is timestamped. The `nutriai.vision` logger emits one line per request and per response with provider, model, latency, and the model's raw output (plus retries/errors). Frontend `client.js` has a 25s axios timeout as a UI safety net.
 
 ---
 
@@ -186,6 +203,11 @@ Raw Gemini error is appended to the message so the user can diagnose. All errors
 | Stored dates had `+00:00` suffix (broke frontend `+ "Z"` parsing) | Stripped timezone suffix from all existing DB rows via SQL UPDATE |
 | Daily summary fetched wrong day for non-UTC timezones | `Home.jsx` sends local midnight as UTC ISO range (`date_from`/`date_to`) via axios `params`; backend filters `logged_at >= date_from AND logged_at < date_to` instead of `func.date()` |
 | Deprecated `datetime.utcnow()` / `datetime.utcfromtimestamp()` calls | Replaced with `datetime.now(timezone.utc)` / `datetime.fromtimestamp(..., tz=timezone.utc)` across `main.py`, `models.py`, `nutrition.py` |
+| Gemini free tier unusable (~20 RPD on Flash; Gemma 383 TPM can't fit an image → 504s) | Switched default to **Groq · Llama 4 Scout** (~1k RPD / 6K TPM); made provider/model configurable with Gemini fallback |
+| Slow / token-heavy analysis | Compact JSON output, **384px** client-side image downscale, `max_tokens` cap, `temperature=0` |
+| App hung forever when the model didn't respond | **15s timeout + retry once** per call; 504 mapped to a clear error; 25s axios safety-net |
+| Same fixed 8 micros reported for every meal | Model now returns a **variable object** of the major micros for that specific meal (from the full 17); `MicroGrid` shows only the reported ones |
+| Logs had no timestamps | `logging_config.py` `configure_logging()` timestamps root + uvicorn loggers; `nutriai.vision` logs every request/response with provider, model, latency, raw output |
 
 ---
 
@@ -209,8 +231,8 @@ DELETE /api/meals/{id}            Delete meal
 GET    /api/nutrition/daily       ?profile_id&date        — today's totals
 GET    /api/nutrition/monthly     ?profile_id&year&month  — monthly breakdown + averages
 
-GET    /api/config                Check if API key is set
-PUT    /api/config                Save {gemini_api_key}
+GET    /api/config                {gemini_api_key_set, groq_api_key_set, vision_provider, vision_model}
+PUT    /api/config                Save any of {gemini_api_key, groq_api_key, vision_provider, vision_model}
 ```
 
 Interactive API docs: `http://localhost:8000/docs`

@@ -1,3 +1,4 @@
+import logging
 import os
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
@@ -10,10 +11,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
+from logging_config import configure_logging
+configure_logging()
+
 from database import engine, get_db, Base
 from models import AppConfig
 from schemas import ConfigUpdate
+from services.gemini_service import DEFAULT_MODEL, DEFAULT_PROVIDER
 from routers import profiles, meals, nutrition
+
+logger = logging.getLogger("nutriai")
 
 UPLOADS_DIR = os.path.join(os.path.dirname(__file__), "uploads")
 DIST_DIR = os.path.join(os.path.dirname(__file__), "..", "frontend", "dist")
@@ -35,9 +42,18 @@ async def lifespan(app: FastAPI):
     from database import SessionLocal
     db = SessionLocal()
     try:
-        if not db.query(AppConfig).filter(AppConfig.key == "gemini_api_key").first():
-            env_key = os.getenv("GEMINI_API_KEY", "")
-            db.add(AppConfig(key="gemini_api_key", value=env_key))
+        seeds = {
+            "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
+            "groq_api_key": os.getenv("GROQ_API_KEY", ""),
+            "vision_provider": DEFAULT_PROVIDER,
+            "vision_model": DEFAULT_MODEL,
+        }
+        added = False
+        for key, value in seeds.items():
+            if not db.query(AppConfig).filter(AppConfig.key == key).first():
+                db.add(AppConfig(key=key, value=value))
+                added = True
+        if added:
             db.commit()
     finally:
         db.close()
@@ -71,20 +87,39 @@ app.include_router(meals.router, prefix="/api")
 app.include_router(nutrition.router, prefix="/api")
 
 
+def _get_config_value(db: Session, key: str, default: str = "") -> str:
+    config = db.query(AppConfig).filter(AppConfig.key == key).first()
+    return config.value if config and config.value else default
+
+
+def _set_config_value(db: Session, key: str, value: str):
+    config = db.query(AppConfig).filter(AppConfig.key == key).first()
+    if config:
+        config.value = value
+    else:
+        db.add(AppConfig(key=key, value=value))
+
+
 @app.get("/api/config")
 def get_config(db: Session = Depends(get_db)):
-    config = db.query(AppConfig).filter(AppConfig.key == "gemini_api_key").first()
-    has_key = bool(config and config.value)
-    return {"gemini_api_key_set": has_key}
+    return {
+        "gemini_api_key_set": bool(_get_config_value(db, "gemini_api_key")),
+        "groq_api_key_set": bool(_get_config_value(db, "groq_api_key")),
+        "vision_provider": _get_config_value(db, "vision_provider", DEFAULT_PROVIDER),
+        "vision_model": _get_config_value(db, "vision_model", DEFAULT_MODEL),
+    }
 
 
 @app.put("/api/config")
 def update_config(data: ConfigUpdate, db: Session = Depends(get_db)):
-    config = db.query(AppConfig).filter(AppConfig.key == "gemini_api_key").first()
-    if config:
-        config.value = data.gemini_api_key
-    else:
-        db.add(AppConfig(key="gemini_api_key", value=data.gemini_api_key))
+    if data.gemini_api_key is not None:
+        _set_config_value(db, "gemini_api_key", data.gemini_api_key)
+    if data.groq_api_key is not None:
+        _set_config_value(db, "groq_api_key", data.groq_api_key)
+    if data.vision_provider is not None:
+        _set_config_value(db, "vision_provider", data.vision_provider)
+    if data.vision_model is not None:
+        _set_config_value(db, "vision_model", data.vision_model)
     db.commit()
     return {"ok": True}
 

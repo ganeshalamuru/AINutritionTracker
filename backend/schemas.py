@@ -189,4 +189,7 @@ class MonthlySummary(BaseModel):
 # --- Config ---
 
 class ConfigUpdate(BaseModel):
-    gemini_api_key: str
+    gemini_api_key: Optional[str] = None
+    groq_api_key: Optional[str] = None
+    vision_provider: Optional[str] = None
+    vision_model: Optional[str] = None
