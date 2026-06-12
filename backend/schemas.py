@@ -74,6 +74,7 @@ class AnalyzeResponse(BaseModel):
     micros: MicrosData
     items: List[MealItem] = Field(default_factory=list)
     unmatched: List[str] = Field(default_factory=list)
+    skipped: List[str] = Field(default_factory=list)
     temp_image_token: Optional[str] = None
     notes: Optional[str] = None
 

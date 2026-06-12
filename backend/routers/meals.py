@@ -1,7 +1,6 @@
 import asyncio
 import os
 import uuid
-from datetime import datetime
 from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form
 from sqlalchemy.orm import Session
@@ -112,7 +111,7 @@ async def analyze_meal(
     items = result.get("items", [])
     usda_key = _config_value(db, "usda_api_key", "DEMO_KEY")
     try:
-        macros_d, micros_d, unmatched = await asyncio.to_thread(
+        macros_d, micros_d, unmatched, skipped = await asyncio.to_thread(
             nutrients_for_items, items, usda_key
         )
     except UsdaRateLimitError as e:
@@ -135,6 +134,7 @@ async def analyze_meal(
         micros=micros,
         items=[MealItem(food=i.get("food", ""), grams=i.get("grams") or 0) for i in items],
         unmatched=unmatched,
+        skipped=skipped,
         temp_image_token=token,
         notes=result.get("notes"),
     )

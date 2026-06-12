@@ -1,4 +1,4 @@
-import { createContext, useContext, useState, useEffect } from "react";
+import { createContext, useContext, useState } from "react";
 
 export const GUEST_PROFILE = { id: 0, name: "Guest", avatar_color: "#9ca3af", isGuest: true };
 

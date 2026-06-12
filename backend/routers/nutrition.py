@@ -1,7 +1,8 @@
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
+from typing import Optional
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
-from sqlalchemy import func, extract
+from sqlalchemy import extract
 from database import get_db
 from models import Meal, Macros, Micros
 from schemas import DailySummary, MonthlySummary, DailyBreakdown, MealSummary
@@ -36,7 +37,7 @@ def _meal_to_summary(m: Meal) -> MealSummary:
 
 
 @router.get("/daily", response_model=DailySummary)
-def daily_summary(profile_id: int, date_from: str = None, date_to: str = None, db: Session = Depends(get_db)):
+def daily_summary(profile_id: int, date_from: Optional[str] = None, date_to: Optional[str] = None, db: Session = Depends(get_db)):
     if not date_from:
         today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
         date_from = today + "T00:00:00"

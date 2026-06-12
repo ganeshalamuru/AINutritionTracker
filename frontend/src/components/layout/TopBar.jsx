@@ -1,7 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useProfile } from "../../context/ProfileContext";
 
-
 export default function TopBar() {
   const { profile, logout } = useProfile();
   const navigate = useNavigate();

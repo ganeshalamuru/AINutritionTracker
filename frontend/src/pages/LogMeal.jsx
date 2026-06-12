@@ -364,20 +364,33 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
                   Identified ingredients
                 </span>
                 <div className="flex flex-wrap gap-1.5">
-                  {photo.analysis.items.map((it, i) => (
-                    <span
-                      key={i}
-                      className={`text-xs px-2 py-1 rounded-full ${photo.analysis.unmatched?.includes(it.food) ? "bg-yellow-100 text-yellow-700" : "bg-white text-gray-600"}`}
-                    >
-                      {it.food} · {Math.round(it.grams)}g
-                    </span>
-                  ))}
+                  {photo.analysis.items.map((it, i) => {
+                    const isSkipped = photo.analysis.skipped?.includes(it.food);
+                    const isUnmatched = photo.analysis.unmatched?.includes(it.food);
+                    const style = isSkipped
+                      ? "bg-gray-200 text-gray-500 line-through"
+                      : isUnmatched
+                      ? "bg-yellow-100 text-yellow-700"
+                      : "bg-white text-gray-600";
+                    return (
+                      <span key={i} className={`text-xs px-2 py-1 rounded-full ${style}`}>
+                        {it.food} · {Math.round(it.grams)}g
+                      </span>
+                    );
+                  })}
                 </div>
                 {photo.analysis.unmatched?.length > 0 && (
                   <p className="text-xs text-yellow-700 mt-2">
                     Couldn't find {photo.analysis.unmatched.length} item
                     {photo.analysis.unmatched.length > 1 ? "s" : ""} in the food database —
                     totals may be undercounted.
+                  </p>
+                )}
+                {photo.analysis.skipped?.length > 0 && (
+                  <p className="text-xs text-gray-500 mt-2">
+                    {photo.analysis.skipped.length} ingredient
+                    {photo.analysis.skipped.length > 1 ? "s" : ""} over the lookup limit —
+                    not counted.
                   </p>
                 )}
               </div>

@@ -253,23 +253,89 @@ class NutritionDbTest(unittest.TestCase):
             {"food": "mystery sauce", "grams": 30},         # unmatched
         ]
         with patch.object(nd.requests, "post", side_effect=post):
-            macros, micros, unmatched = nd.nutrients_for_items(items, "key")
+            macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
 
         self.assertAlmostEqual(macros["calories"], 250.0)   # (200+50)/100 * 100
         self.assertAlmostEqual(micros["iron_mg"], 2.5)      # (200+50)/100 * 1.0
         self.assertEqual(unmatched, ["mystery sauce"])
+        self.assertEqual(skipped, [])
 
     def test_mock_mode_returns_canned_totals_without_network(self):
         os.environ["MOCK_GEMINI"] = "1"
         try:
             # requests.post is NOT patched — a network call here would error/hang.
-            macros, micros, unmatched = nd.nutrients_for_items(
+            macros, micros, unmatched, skipped = nd.nutrients_for_items(
                 [{"food": "anything", "grams": 100}], "key"
             )
         finally:
             os.environ.pop("MOCK_GEMINI", None)
         self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
         self.assertEqual(unmatched, [])
+        self.assertEqual(skipped, [])
+
+    # --- spices: model wording -> USDA wording ---
+
+    def test_spice_aliases_match_usda_wording(self):
+        self.assertEqual(nd._aliased("turmeric powder"), "turmeric ground")
+        self.assertEqual(nd._aliased("red chili powder"), "chili powder")
+        self.assertEqual(nd._aliased("cumin powder"), "cumin seed")
+        self.assertEqual(nd._aliased("cinnamon stick"), "cinnamon ground")
+
+        hit = food("SR Legacy", "Spices, turmeric, ground", 1, {1008: 312, 1089: 55})
+        with patch.object(nd.requests, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})):
+            per = nd.lookup_nutrients("turmeric powder", "key")
+        self.assertIsNotNone(per)
+        self.assertEqual(per["calories"], 312)
+
+    def test_simplify_strips_descriptor_words(self):
+        # Un-aliased "<food> powder/stick" still retries loosely on the bare food.
+        self.assertEqual(nd._simplify("paprika powder"), "paprika")
+        self.assertEqual(nd._simplify("lemongrass stick"), "lemongrass")
+
+    # --- per-meal lookup cap ---
+
+    def test_lookup_cap_skips_smallest_uncached(self):
+        # Echo each query back as the description (noun present, energy populated).
+        calls = []
+
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            calls.append(q)
+            return FakeResp(200, {"foods": [food("SR Legacy", q, 1, {1008: 100})]})
+
+        items = [
+            {"food": "alpha", "grams": 300},
+            {"food": "beta", "grams": 200},
+            {"food": "gamma", "grams": 10},   # smallest -> dropped when cap=2
+        ]
+        with patch.object(nd, "USDA_MAX_LOOKUPS", 2):
+            with patch.object(nd.requests, "post", side_effect=post) as m:
+                macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
+
+        self.assertEqual(skipped, ["gamma"])
+        self.assertEqual(unmatched, [])
+        self.assertEqual(m.call_count, 2)                 # only the two kept foods
+        self.assertAlmostEqual(macros["calories"], 500.0)  # (300+200)/100 * 100, gamma excluded
+
+    def test_cached_lookups_are_free_and_dont_use_the_budget(self):
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            if "rice" in q:
+                return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})]})
+            return FakeResp(200, {"foods": [food("SR Legacy", q, 2, {1008: 100})]})
+
+        with patch.object(nd.requests, "post", side_effect=post):
+            nd.lookup_nutrients("rice", "key")   # pre-cache "rice"
+            with patch.object(nd, "USDA_MAX_LOOKUPS", 1):
+                items = [
+                    {"food": "rice", "grams": 100},    # cached -> free, always counted
+                    {"food": "alpha", "grams": 300},   # largest uncached -> looked up
+                    {"food": "beta", "grams": 200},    # over the budget -> skipped
+                ]
+                macros, micros, unmatched, skipped = nd.nutrients_for_items(items, "key")
+
+        self.assertEqual(skipped, ["beta"])
+        self.assertAlmostEqual(macros["calories"], 430.0)  # rice 130 + alpha 300, beta excluded
 
 
 if __name__ == "__main__":

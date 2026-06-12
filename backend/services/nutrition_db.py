@@ -23,164 +23,35 @@ from sqlalchemy import text
 from database import engine
 from logging_config import configure_logging
 from services.gemini_service import MACRO_KEYS, ALL_MICRO_KEYS
+# Reference data (lookup tables, config constants) lives in services/nutrition_data/.
+# Re-imported here so the public surface (nd.FOOD_ALIASES, nd.CACHE_VERSION, ...) and
+# all consumers (main.py, check_aliases.py, tests) keep working unchanged.
+from services.nutrition_data import (
+    USDA_SEARCH_URL,
+    USDA_DATA_TYPES,
+    DATA_TYPE_RANK,
+    USDA_PAGE_SIZE,
+    USDA_TIMEOUT,
+    USDA_MAX_WORKERS,
+    USDA_MAX_LOOKUPS,
+    CACHE_VERSION,
+    COOKING_ADJECTIVES,
+    SIMPLIFY_STRIP_WORDS,
+    GENERIC_WORDS,
+    FOOD_ALIASES,
+    FDC_NUTRIENT_MAP,
+    ENERGY_FALLBACK_IDS,
+    MOCK_MACROS,
+    MOCK_MICROS,
+)
 
 configure_logging()
 logger = logging.getLogger("nutriai.nutrition_db")
-
-USDA_SEARCH_URL = "https://api.nal.usda.gov/fdc/v1/foods/search"
-# Foundation + SR Legacy have the fullest micro profiles and are the most generic
-# (preferred when picking a match); FNDDS (Survey) adds many prepared/mixed dishes.
-# Branded is excluded — it's mostly label-only macros.
-USDA_DATA_TYPES = ["Foundation", "SR Legacy", "Survey (FNDDS)"]
-# Lower rank = preferred. Generic analytical entries beat consumed/mixed dishes.
-DATA_TYPE_RANK = {"Foundation": 0, "SR Legacy": 1, "Survey (FNDDS)": 2}
-USDA_PAGE_SIZE = 5          # fetch a few candidates so we can pick the best match
-USDA_TIMEOUT = 10
-USDA_MAX_WORKERS = 4        # parallel ingredient lookups per meal
-
-# Bump to invalidate cached lookups after changing matching logic (main.py purges
-# food_cache on startup when app_config's stored version differs from this).
-CACHE_VERSION = "4"
-
-# Stripped (after the comma) when retrying a miss with a simpler query.
-COOKING_ADJECTIVES = {
-    "cooked", "raw", "fried", "boiled", "roasted", "grilled", "steamed",
-    "fresh", "baked", "sauteed", "sautéed",
-}
-
-# Non-distinctive words: ignored when deriving the "food noun" a match must contain,
-# so 'mint leaves' keys on 'mint' (not 'leaves') and 'rice white cooked' keys on 'rice'.
-GENERIC_WORDS = {
-    "leaves", "leaf", "powder", "ground", "dried", "fresh", "raw", "cooked",
-    "fried", "boiled", "roasted", "grilled", "steamed", "baked", "whole",
-    "plain", "sliced", "chopped", "oil", "nfs", "white", "red", "green",
-}
-
-# Common (esp. Indian) ingredient names the model emits -> a concise, USDA-friendly
-# generic/cooked query. The alias only rewrites the SEARCH; results still pass the
-# head-noun gate below, and the cache stays keyed by the original ingredient name.
-FOOD_ALIASES = {
-    "rice": "rice white cooked",
-    "white rice": "rice white cooked",
-    "cooked rice": "rice white cooked",
-    "basmati rice": "rice white cooked",
-    "boiled rice": "rice white cooked",
-    "brown rice": "brown rice cooked",
-    "yogurt": "yogurt plain whole",
-    "curd": "yogurt plain whole",
-    "dahi": "yogurt plain whole",
-    "paneer": "cheese paneer",
-    "ghee": "butter ghee",
-    "butter": "salted butter",
-    "onion": "onions cooked",
-    "fried onion": "onions cooked",
-    "onion, fried": "onions cooked",
-    "onions": "onions cooked",
-    "mint": "spearmint fresh",
-    "mint leaves": "spearmint fresh",
-    "coriander": "coriander leaves raw",
-    "cilantro": "coriander leaves raw",
-    "tomato": "tomatoes raw",
-    "tomatoes": "tomatoes raw",
-    "potato": "potatoes boiled",
-    "carrot": "carrots raw",
-    "carrots": "carrots raw",
-    "peas": "peas green cooked",
-    "green peas": "peas green cooked",
-    "mixed vegetables": "mixed vegetables cooked",
-    "vegetables": "mixed vegetables cooked",
-    "roti": "chapati roti",
-    "chapati": "chapati roti",
-    "wheat roti": "chapati roti",
-    "naan": "bread naan",
-    "dal": "lentils cooked",
-    "daal": "lentils cooked",
-    "lentils": "lentils cooked",
-    # Dals / legumes the decomposition step emits.
-    # USDA has no urad/black gram entry — fall back to generic cooked lentils.
-    "urad dal": "lentils cooked",
-    "urad": "lentils cooked",
-    "black gram": "lentils cooked",
-    "toor dal": "pigeon peas cooked",
-    "tur dal": "pigeon peas cooked",
-    "arhar": "pigeon peas cooked",
-    "pigeon peas": "pigeon peas cooked",
-    "chana dal": "chickpeas cooked",
-    "bengal gram": "chickpeas cooked",
-    "chickpeas": "chickpeas cooked",
-    "moong dal": "mung beans cooked",
-    "mung dal": "mung beans cooked",
-    "green gram": "mung beans cooked",
-    "chicken": "chicken breast cooked roasted",
-    "chicken breast": "chicken breast cooked roasted",
-    "chicken breast, cooked": "chicken breast cooked roasted",
-    "egg": "egg whole cooked",
-    "milk": "milk whole",
-    "apple": "apples raw",
-    "apples": "apples raw",
-    "banana": "bananas raw",
-    "bananas": "bananas raw",
-    # Other base ingredients from decomposition.
-    "coconut": "coconut raw",
-    "tamarind": "tamarinds raw",
-    "green chili": "chili peppers raw",
-    "chili": "chili peppers raw",
-    "chilli": "chili peppers raw",
-    "coffee": "brewed coffee",
-    "filter coffee": "brewed coffee",
-    "vegetable oil": "vegetable oil nfs",
-    "oil": "vegetable oil nfs",
-    "sugar": "granulated sugar",
-    "semolina": "semolina",
-    "rava": "semolina",
-    "sooji": "semolina",
-}
 
 
 class UsdaRateLimitError(Exception):
     """USDA rejected the request for exceeding the API key's rate limit.
     Raised (not swallowed) so the meal fails loudly instead of returning zeros."""
-
-# USDA FoodData Central nutrient IDs -> our schema keys (values are per 100g).
-FDC_NUTRIENT_MAP = {
-    1008: "calories",        # Energy (kcal)
-    1003: "protein_g",
-    1005: "carbs_g",         # Carbohydrate, by difference
-    1004: "fat_g",           # Total lipid (fat)
-    1079: "fiber_g",         # Fiber, total dietary
-    2000: "sugar_g",         # Total Sugars
-    1093: "sodium_mg",
-    1106: "vitamin_a_mcg",   # Vitamin A, RAE
-    1114: "vitamin_d_mcg",   # Vitamin D (D2 + D3)
-    1109: "vitamin_e_mg",    # Vitamin E (alpha-tocopherol)
-    1185: "vitamin_k_mcg",   # Vitamin K (phylloquinone)
-    1162: "vitamin_c_mg",    # Vitamin C, total ascorbic acid
-    1165: "vitamin_b1_mg",   # Thiamin
-    1166: "vitamin_b2_mg",   # Riboflavin
-    1167: "vitamin_b3_mg",   # Niacin
-    1175: "vitamin_b6_mg",   # Vitamin B-6
-    1178: "vitamin_b12_mcg", # Vitamin B-12
-    1177: "folate_mcg",      # Folate, total
-    1087: "calcium_mg",
-    1089: "iron_mg",
-    1090: "magnesium_mg",
-    1092: "potassium_mg",
-    1095: "zinc_mg",
-    1091: "phosphorus_mg",
-}
-# Energy is sometimes reported under Atwater factors instead of 1008.
-ENERGY_FALLBACK_IDS = (2047, 2048)
-
-# Canned per-meal totals returned in mock mode so the pipeline runs fully offline.
-MOCK_MACROS = {
-    "calories": 520, "protein_g": 42, "carbs_g": 55, "fat_g": 12,
-    "fiber_g": 6, "sugar_g": 4, "sodium_mg": 480,
-}
-MOCK_MICROS = {
-    "vitamin_c_mg": 18, "vitamin_d_mcg": 1.2, "vitamin_b12_mcg": 0.9,
-    "folate_mcg": 45, "calcium_mg": 55, "iron_mg": 2.8,
-    "magnesium_mg": 62, "potassium_mg": 520,
-}
 
 
 def _is_number(v) -> bool:
@@ -273,7 +144,7 @@ def _simplify(query: str) -> str:
     then strip cooking adjectives. 'onion, fried' -> 'onion'; 'chicken breast, cooked'
     -> 'chicken breast'. Returns '' when it wouldn't change the query."""
     base = query.split(",", 1)[0]
-    words = [w for w in base.split() if w not in COOKING_ADJECTIVES]
+    words = [w for w in base.split() if w not in SIMPLIFY_STRIP_WORDS]
     simplified = " ".join(words).strip()
     return simplified if simplified and simplified != query else ""
 
@@ -433,12 +304,17 @@ def clear_cache():
         logger.warning("could not clear food_cache: %s", e)
 
 
-def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, list]:
+def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, list, list]:
     """Sum nutrients across an ingredient list.
 
-    Returns (macros, micros, unmatched) where macros/micros are full schema dicts
-    (default 0) and unmatched lists the foods USDA couldn't resolve (those
-    contribute nothing). In mock mode, returns canned totals without any API call.
+    Returns (macros, micros, unmatched, skipped):
+      - macros/micros are full schema dicts (default 0)
+      - unmatched lists foods USDA had no real match for
+      - skipped lists foods we chose not to look up because the meal exceeded
+        USDA_MAX_LOOKUPS distinct *uncached* ingredients (the largest portions are
+        kept; already-cached foods are always resolved and never use the budget)
+    Both unmatched and skipped foods contribute 0. In mock mode, returns canned
+    totals with empty unmatched/skipped and no API call.
 
     Raises UsdaRateLimitError if USDA throttles the key — the caller maps it to a
     clear error so a rate-limited meal never silently returns zeros.
@@ -447,21 +323,40 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
         logger.info("mock mode -> canned nutrient totals (no USDA call)")
         macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
         micros = {k: MOCK_MICROS.get(k, 0) for k in ALL_MICRO_KEYS}
-        return macros, micros, []
+        return macros, micros, [], []
 
     valid = [it for it in (items or [])
              if (it.get("food") or "").strip() and _is_number(it.get("grams")) and it.get("grams") > 0]
 
-    # One lookup per distinct food name (deduped), run in parallel to cut latency.
-    unique_names = list({(it.get("food") or "").strip() for it in valid})
-    with ThreadPoolExecutor(max_workers=min(USDA_MAX_WORKERS, len(unique_names) or 1)) as pool:
-        results = list(pool.map(lambda name: (name, lookup_nutrients(name, api_key)), unique_names))
+    # Total grams per distinct food name — used to prioritize the lookup budget.
+    grams_by_name: dict[str, float] = {}
+    for it in valid:
+        name = it["food"].strip()
+        grams_by_name[name] = grams_by_name.get(name, 0.0) + it["grams"]
+
+    # Cached lookups are free; only uncached ones consume the per-meal budget. Spend
+    # it on the largest portions (they dominate the totals); skip the rest.
+    cached = {n for n in grams_by_name if _cache_get(_normalize(n)) is not None}
+    uncached = sorted((n for n in grams_by_name if n not in cached),
+                      key=lambda n: grams_by_name[n], reverse=True)
+    to_lookup = list(cached) + uncached[:USDA_MAX_LOOKUPS]
+    skipped = uncached[USDA_MAX_LOOKUPS:]
+    if skipped:
+        logger.info("lookup cap %d reached -> skipping %d smaller ingredient(s): %s",
+                    USDA_MAX_LOOKUPS, len(skipped), skipped)
+
+    # Deduped lookups run in parallel to cut latency.
+    with ThreadPoolExecutor(max_workers=min(USDA_MAX_WORKERS, len(to_lookup) or 1)) as pool:
+        results = list(pool.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup))
     profiles = dict(results)  # name -> per_100g | None  (UsdaRateLimitError propagates out of map)
 
+    skipped_set = set(skipped)
     totals = {k: 0.0 for k in MACRO_KEYS + ALL_MICRO_KEYS}
     unmatched = []
     for it in valid:
         food = it["food"].strip()
+        if food in skipped_set:
+            continue
         per_100g = profiles.get(food)
         if per_100g is None:
             if food not in unmatched:
@@ -473,4 +368,4 @@ def nutrients_for_items(items: list[dict], api_key: str) -> tuple[dict, dict, li
 
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
     micros = {k: round(totals[k], 4) for k in ALL_MICRO_KEYS}
-    return macros, micros, unmatched
+    return macros, micros, unmatched, skipped
