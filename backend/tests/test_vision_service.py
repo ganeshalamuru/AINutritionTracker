@@ -132,7 +132,7 @@ class OllamaAnalyzeTest(unittest.TestCase):
                 return {"message": {"content": content}}
 
         with patch.object(gs.requests, "post", return_value=FakeResponse()) as post:
-            result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:4b-instruct")
+            result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
 
         self.assertEqual(raw, content)
         self.assertEqual(
@@ -143,11 +143,14 @@ class OllamaAnalyzeTest(unittest.TestCase):
         url = post.call_args.args[0]
         payload = post.call_args.kwargs["json"]
         self.assertTrue(url.endswith("/api/chat"))
-        self.assertEqual(payload["model"], "qwen3-vl:4b-instruct")
+        self.assertEqual(payload["model"], "qwen3-vl:8b-instruct")
         # format carries the response JSON schema (constrained decoding), not just "json".
         self.assertEqual(payload["format"], gs._OLLAMA_FORMAT)
         self.assertIn("d", payload["format"]["required"])
         self.assertFalse(payload["stream"])
+        # num_ctx is capped so Ollama doesn't reserve VRAM for the model's 262k context
+        # and offload layers to CPU.
+        self.assertEqual(payload["options"]["num_ctx"], gs.OLLAMA_NUM_CTX)
         self.assertEqual(payload["messages"][0]["content"], "PROMPT")
         self.assertEqual(len(payload["messages"][0]["images"]), 1)
 

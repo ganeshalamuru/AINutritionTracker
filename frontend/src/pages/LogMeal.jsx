@@ -86,6 +86,10 @@ export default function LogMeal() {
       if (hint.trim()) fd.append("user_note", hint.trim());
       const { data } = await client.post("/meals/analyze", fd, {
         headers: { "Content-Type": "multipart/form-data" },
+        // Local Ollama vision can take up to ~120s (backend OLLAMA_TIMEOUT) plus the USDA
+        // lookups — far longer than client.js's global 45s. Override per-request so a slow
+        // local model isn't cut off mid-analysis; cloud providers still finish well under it.
+        timeout: 180000,
       });
       const dishBase = (data.dishes || []).map((d) => Math.round(dishBaseline(d)));
       setPhotos((prev) => prev.map((p) =>

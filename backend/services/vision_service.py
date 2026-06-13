@@ -81,11 +81,20 @@ CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
 
 # Local Ollama needs its own, much longer budget: the first /analyze after startup
-# pays a one-time model load into VRAM, and a local 4B vision model is slower than a
+# pays a one-time model load into VRAM, and a local vision model is slower than a
 # cloud API. The 15s cloud budget would time out on the cold call. Host is overridable
 # for a remote/containerized Ollama; default is the daemon's standard local port.
 OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_TIMEOUT = 120
+
+# Context window for the local model. Ollama sizes its KV-cache + compute-buffer VRAM
+# reservation off num_ctx and defaults to a small window (~4096), which is already enough
+# for our request (one image + a short prompt + <=512 output tokens) — the 8B has produced
+# correct full output at 4096. We pin it explicitly for deterministic behavior across
+# Ollama versions. Do NOT raise it to "fit more context": a larger window only enlarges
+# the KV reservation and pushes more model layers onto the CPU (slower) on a small GPU.
+# Override via env only if a very high-res photo ever truncates.
+OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 
 # Ollama structured-output schema for the compact response. The cloud models (Llama 4
 # Scout / Gemini) follow the prompt's shape from `format: "json"` alone, but a local 4B
@@ -303,7 +312,7 @@ def _ollama_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, 
             "model": model,
             "stream": False,
             "format": _OLLAMA_FORMAT,
-            "options": {"temperature": 0},
+            "options": {"temperature": 0, "num_ctx": OLLAMA_NUM_CTX},
             "messages": [{"role": "user", "content": prompt, "images": [b64]}],
         },
         timeout=OLLAMA_TIMEOUT,

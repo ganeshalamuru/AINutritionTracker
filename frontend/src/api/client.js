@@ -1,9 +1,9 @@
 import axios from "axios";
 
-// 45s timeout so the UI fails gracefully instead of hanging if the backend stalls.
-// /analyze runs Stage 1 (vision, ~15s cap) then Stage 2 (several USDA lookups, each up
-// to ~10s with a retry), so a slow-but-successful analyze can legitimately take longer
-// than 25s; 45s accommodates that while still eventually giving up.
+// 45s default timeout so the UI fails gracefully instead of hanging if the backend stalls.
+// This suits cloud requests (vision ~15s cap + a few USDA lookups). The /analyze call with
+// a LOCAL Ollama model can run much longer (vision up to ~120s — see OLLAMA_TIMEOUT), so it
+// overrides this with a longer per-request timeout in LogMeal.jsx.
 const client = axios.create({ baseURL: "/api", timeout: 45000 });
 
 client.interceptors.request.use((config) => {

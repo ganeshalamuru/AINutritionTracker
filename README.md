@@ -16,7 +16,7 @@ request flows, and conventions. (Session-by-session history lives in `git log`.)
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`, WAL) — persists across restarts |
-| AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct`) selectable. Identifies dishes/ingredients only. |
+| AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct` / `qwen3-vl:8b-instruct`) selectable. Identifies dishes/ingredients only. |
 | Nutrient data | **USDA FoodData Central** API (`usda_api_key`, default `DEMO_KEY`) — real macros/micros, cached in SQLite `food_cache`. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
@@ -58,18 +58,33 @@ free USDA key at <https://fdc.nal.usda.gov/api-key-signup>, then paste them into
 Optionally seed via `GROQ_API_KEY` / `GEMINI_API_KEY` / `USDA_API_KEY` env vars before first launch.
 `DEMO_KEY` works out-of-box at a low limit (30/hr + 50/day — a couple of meals exhausts it).
 
-**Local vision (no key, no quota):** install [Ollama](https://ollama.com/download), run
-`ollama pull qwen3-vl:4b-instruct` (3.3 GB; ~4 GB VRAM — fits an 8 GB GPU comfortably), then pick
-**Ollama · Qwen3-VL 4B** in Settings. The daemon serves on `http://localhost:11434`
-(override with `OLLAMA_HOST`). The first analysis after startup is slower while the model loads
-into VRAM; subsequent calls take a few seconds.
+**Local vision (no key, no quota):** install [Ollama](https://ollama.com/download), pull a
+Qwen3-VL model, then pick **Ollama** as the provider and the model in Settings (provider and
+model are separate dropdowns). Two local models are offered:
+
+- `ollama pull qwen3-vl:4b-instruct` (3.3 GB) — **fits an 8 GB GPU fully and is fast**
+  (a few seconds per photo). Good default for local use.
+- `ollama pull qwen3-vl:8b-instruct` (~6 GB) — **more accurate** at identifying dishes
+  (esp. Indian dishes), but on an 8 GB GPU it **only partly fits** (Ollama offloads ~25–35%
+  of layers to CPU → ~40 s per photo). Comfortable/fast on a 12 GB+ GPU.
+
+The daemon serves on `http://localhost:11434` (override with `OLLAMA_HOST`). The first
+analysis after startup is slower while the model loads into VRAM.
+
+> **VRAM note.** We pin the local context window to `num_ctx=4096` (Ollama's default-ish —
+> plenty for one image + a short prompt). Don't raise it hoping to "fit more context": a
+> larger window only enlarges the KV-cache reservation and pushes *more* model layers onto
+> the CPU on a small GPU. Check the split with `ollama ps` — `PROCESSOR` shows GPU vs CPU.
+> Override `OLLAMA_NUM_CTX` only if a very high-res photo ever truncates.
 
 **Freeing the GPU / stopping Ollama:**
 
 ```powershell
 ollama ps                      # what's loaded right now (PROCESSOR shows GPU vs CPU)
-ollama stop qwen3-vl:4b-instruct   # unload the model from VRAM (daemon keeps running)
+ollama stop qwen3-vl:8b-instruct   # unload the model from VRAM (daemon keeps running)
 ```
+
+(Substitute `qwen3-vl:4b-instruct` in any of these commands when running the 4B.)
 
 - Ollama auto-unloads an idle model after ~5 min; set `OLLAMA_KEEP_ALIVE` to change that
   (`0` = unload immediately after each call, `-1` = keep resident — avoids the cold-load wait).
@@ -82,7 +97,7 @@ ollama stop qwen3-vl:4b-instruct   # unload the model from VRAM (daemon keeps ru
 ```powershell
 # If you only stopped the model (daemon still running): just analyze a meal — it reloads
 # automatically. To preload it now and skip the cold-load wait on the first photo:
-ollama run qwen3-vl:4b-instruct "ok"   # warms the model into VRAM, then exits
+ollama run qwen3-vl:8b-instruct "ok"   # warms the model into VRAM, then exits
 
 # If you stopped the daemon: relaunch the Ollama app from the Start menu (it runs the
 # server in the tray), or start it headless:
@@ -176,7 +191,7 @@ backend/
 ### Frontend (`frontend/src/`)
 
 ```
-App.jsx · main.jsx · context/ProfileContext.jsx · api/client.js (45s axios timeout)
+App.jsx · main.jsx · context/ProfileContext.jsx · api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
 pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
 components/  layout/ (Layout, TopBar, BottomNav)
             meal/   (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MicroGrid)

@@ -17,38 +17,48 @@ export default function Settings() {
   const [usdaKey, setUsdaKey] = useState("");
   const [usdaSet, setUsdaSet] = useState(false);
   const [savingUsda, setSavingUsda] = useState(false);
-  const [selected, setSelected] = useState("");
+  const [provider, setProvider] = useState("groq");
+  const [model, setModel] = useState("");
   const [savingModel, setSavingModel] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
 
-  // Each option carries the provider + model id it should set.
-  const MODELS = [
-    { provider: "groq", model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Groq · Llama 4 Scout (vision) — fast, ~1k/day" },
-    { provider: "gemini", model: "gemini-2.5-flash", label: "Gemini · 2.5 Flash — reliable, ~20/day" },
-    { provider: "gemini", model: "gemma-4-31b-it", label: "Gemini · Gemma 4 31B — high RPD but low TPM" },
-    { provider: "ollama", model: "qwen3-vl:4b-instruct", label: "Ollama · Qwen3-VL 4B (local) — private, no quota" },
+  // Provider -> its selectable models. The provider dropdown picks the group; the
+  // model dropdown lists that group's `models`.
+  const PROVIDERS = [
+    { id: "groq", label: "Groq (cloud)", models: [
+      { model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout — fast, ~1k/day" },
+    ]},
+    { id: "gemini", label: "Gemini (cloud)", models: [
+      { model: "gemini-2.5-flash", label: "2.5 Flash — reliable, ~20/day" },
+      { model: "gemma-4-31b-it", label: "Gemma 4 31B — high RPD but low TPM" },
+    ]},
+    { id: "ollama", label: "Ollama (local)", models: [
+      { model: "qwen3-vl:4b-instruct", label: "Qwen3-VL 4B — fast, fits 8 GB GPU" },
+      { model: "qwen3-vl:8b-instruct", label: "Qwen3-VL 8B — more accurate, slower on 8 GB" },
+    ]},
   ];
-  const keyOf = (p, m) => `${p}::${m}`;
-  const activeProvider = selected.split("::")[0];
+  const modelsFor = (p) => (PROVIDERS.find((x) => x.id === p)?.models ?? []);
 
   useEffect(() => {
     client.get("/config").then((r) => {
       setKeySet(r.data.gemini_api_key_set);
       setGroqSet(r.data.groq_api_key_set);
       setUsdaSet(r.data.usda_api_key_set);
-      setSelected(keyOf(r.data.vision_provider || "groq", r.data.vision_model || ""));
+      const p = r.data.vision_provider || "groq";
+      setProvider(p);
+      setModel(r.data.vision_model || modelsFor(p)[0]?.model || "");
     });
     client.get("/profiles").then((r) => setProfiles(r.data));
   }, []);
 
-  const saveModel = async (value) => {
-    setSelected(value);
-    const [provider, model] = value.split("::");
+  const saveConfig = async (nextProvider, nextModel) => {
+    setProvider(nextProvider);
+    setModel(nextModel);
     setSavingModel(true);
     try {
-      await client.put("/config", { vision_provider: provider, vision_model: model });
+      await client.put("/config", { vision_provider: nextProvider, vision_model: nextModel });
       setToast({ message: "Model updated!", type: "success" });
     } catch {
       setToast({ message: "Failed to update model", type: "error" });
@@ -56,6 +66,11 @@ export default function Settings() {
       setSavingModel(false);
     }
   };
+
+  // Switching provider picks that provider's first model (the current model usually
+  // doesn't belong to the new provider).
+  const onProviderChange = (p) => saveConfig(p, modelsFor(p)[0]?.model || "");
+  const onModelChange = (m) => saveConfig(provider, m);
 
   const saveKey = async () => {
     if (!apiKey.trim()) return;
@@ -125,25 +140,39 @@ export default function Settings() {
         <h3 className="font-semibold text-gray-800">AI Vision Model</h3>
         <p className="text-xs text-gray-500">
           Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
-          {activeProvider === "ollama"
+          {provider === "ollama"
             ? " Ollama runs locally — no API key needed; make sure the Ollama app is running and the model is pulled."
             : " The selected provider needs its API key set below."}
         </p>
-        <select
-          value={selected}
-          onChange={(e) => saveModel(e.target.value)}
-          disabled={savingModel}
-          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
-        >
-          {MODELS.map((m) => (
-            <option key={keyOf(m.provider, m.model)} value={keyOf(m.provider, m.model)}>{m.label}</option>
-          ))}
-        </select>
+        <div className="space-y-2">
+          <label className="block text-xs font-medium text-gray-600">Provider</label>
+          <select
+            value={provider}
+            onChange={(e) => onProviderChange(e.target.value)}
+            disabled={savingModel}
+            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
+          >
+            {PROVIDERS.map((p) => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+          <label className="block text-xs font-medium text-gray-600">Model</label>
+          <select
+            value={model}
+            onChange={(e) => onModelChange(e.target.value)}
+            disabled={savingModel}
+            className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
+          >
+            {modelsFor(provider).map((m) => (
+              <option key={m.model} value={m.model}>{m.label}</option>
+            ))}
+          </select>
+        </div>
       </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
         <h3 className="font-semibold text-gray-800">
-          Groq API Key {activeProvider === "groq" && <span className="text-xs text-green-500">(active)</span>}
+          Groq API Key {provider === "groq" && <span className="text-xs text-green-500">(active)</span>}
         </h3>
         <p className="text-xs text-gray-500">
           Used by the Groq vision provider.{" "}
@@ -174,7 +203,7 @@ export default function Settings() {
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
         <h3 className="font-semibold text-gray-800">
-          Gemini API Key {activeProvider === "gemini" && <span className="text-xs text-green-500">(active)</span>}
+          Gemini API Key {provider === "gemini" && <span className="text-xs text-green-500">(active)</span>}
         </h3>
         <p className="text-xs text-gray-500">
           Only needed for the Gemini fallback models.{" "}
