@@ -28,6 +28,11 @@ DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 DEFAULT_USDA_KEY = "DEMO_KEY"
 
+# Version of the USDA food-cache contents. BUMP THIS whenever the matching/alias logic
+# (services/usda_service.py + services/nutrition_data/) changes, so stale cached lookups
+# are discarded. core/lifespan.py purges food_cache on startup when the stored version differs.
+CACHE_VERSION = "7"
+
 
 def get_value(db: Session, key: str, default: str = "") -> str:
     config = db.query(AppConfig).filter(AppConfig.key == key).first()

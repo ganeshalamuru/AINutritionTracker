@@ -27,13 +27,9 @@ from core.logging_config import configure_logging
 from core.nutrients import MACRO_KEYS, MICRO_KEYS
 
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
-# Re-imported here so the public surface (USDA_*, FOOD_ALIASES, CACHE_VERSION, ...) and
-# all consumers (lifespan, check_aliases.py, tests) keep working unchanged. CACHE_VERSION
-# and COOKING_ADJECTIVES are re-exported (not used in this module) — noqa keeps `ruff
-# --fix` from stripping them and breaking those consumers.
+# Re-imported here so the public surface (USDA_*, FOOD_ALIASES, ...) and consumers
+# (check_aliases.py, tests) keep working unchanged. Every name below is used in this module.
 from services.nutrition_data import (
-    CACHE_VERSION,  # noqa: F401
-    COOKING_ADJECTIVES,  # noqa: F401
     DATA_TYPE_RANK,
     DISH_ALIASES,
     DISH_DATA_TYPES,

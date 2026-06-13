@@ -12,7 +12,7 @@ from fastapi import FastAPI
 from sqlalchemy import text
 
 from core import config
-from core.config import UPLOADS_DIR
+from core.config import CACHE_VERSION, UPLOADS_DIR
 from core.database import Base, SessionLocal, engine
 
 logger = logging.getLogger("nutriai")
@@ -41,10 +41,6 @@ async def lifespan(app: FastAPI):
 
 
 def _migrate_and_prepare_cache():
-    # Imported here (not at module load) to avoid pulling the USDA service into the
-    # import graph before the app is assembled.
-    from services.usda_service import CACHE_VERSION
-
     with engine.connect() as conn:
         try:
             conn.execute(text("ALTER TABLE meals ADD COLUMN group_id TEXT"))

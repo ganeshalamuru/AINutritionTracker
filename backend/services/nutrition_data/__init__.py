@@ -10,7 +10,7 @@ edited independently. Grouped by concern:
   mock          — canned totals returned in MOCK_GEMINI mode
 
 `usda_service` re-imports every name below into its own namespace, so the public
-surface (e.g. `FOOD_ALIASES`, `CACHE_VERSION`) is unchanged.
+surface (e.g. `FOOD_ALIASES`) is unchanged.
 """
 
 from services.nutrition_data.aliases import (
@@ -21,7 +21,6 @@ from services.nutrition_data.aliases import (
     SIMPLIFY_STRIP_WORDS,
 )
 from services.nutrition_data.config import (
-    CACHE_VERSION,
     DATA_TYPE_RANK,
     DISH_DATA_TYPES,
     USDA_CONNECT_TIMEOUT,
@@ -55,7 +54,6 @@ __all__ = [
     "USDA_RETRY_BACKOFF",
     "USDA_MAX_WORKERS",
     "USDA_MAX_LOOKUPS",
-    "CACHE_VERSION",
     "COOKING_ADJECTIVES",
     "SIMPLIFY_STRIP_WORDS",
     "GENERIC_WORDS",

@@ -28,6 +28,4 @@ USDA_MAX_WORKERS = 4  # parallel ingredient lookups per meal
 # bounded; ingredients beyond the cap are reported as "skipped" (counted as 0).
 USDA_MAX_LOOKUPS = 8
 
-# Bump to invalidate cached lookups after changing matching logic (main.py purges
-# food_cache on startup when app_config's stored version differs from this).
-CACHE_VERSION = "7"
+# CACHE_VERSION now lives in core.config — bump it there after changing matching/aliases.
