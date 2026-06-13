@@ -16,7 +16,7 @@ request flows, and conventions. (Session-by-session history lives in `git log`.)
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`, WAL) — persists across restarts |
-| AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma selectable as fallback. Identifies dishes/ingredients only. |
+| AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct`) selectable. Identifies dishes/ingredients only. |
 | Nutrient data | **USDA FoodData Central** API (`usda_api_key`, default `DEMO_KEY`) — real macros/micros, cached in SQLite `food_cache`. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
@@ -57,6 +57,40 @@ bash start.sh --dev   |   bash start.sh   |   bash start.sh --skip-build
 free USDA key at <https://fdc.nal.usda.gov/api-key-signup>, then paste them into **Settings**.
 Optionally seed via `GROQ_API_KEY` / `GEMINI_API_KEY` / `USDA_API_KEY` env vars before first launch.
 `DEMO_KEY` works out-of-box at a low limit (30/hr + 50/day — a couple of meals exhausts it).
+
+**Local vision (no key, no quota):** install [Ollama](https://ollama.com/download), run
+`ollama pull qwen3-vl:4b-instruct` (3.3 GB; ~4 GB VRAM — fits an 8 GB GPU comfortably), then pick
+**Ollama · Qwen3-VL 4B** in Settings. The daemon serves on `http://localhost:11434`
+(override with `OLLAMA_HOST`). The first analysis after startup is slower while the model loads
+into VRAM; subsequent calls take a few seconds.
+
+**Freeing the GPU / stopping Ollama:**
+
+```powershell
+ollama ps                      # what's loaded right now (PROCESSOR shows GPU vs CPU)
+ollama stop qwen3-vl:4b-instruct   # unload the model from VRAM (daemon keeps running)
+```
+
+- Ollama auto-unloads an idle model after ~5 min; set `OLLAMA_KEEP_ALIVE` to change that
+  (`0` = unload immediately after each call, `-1` = keep resident — avoids the cold-load wait).
+- To stop the **daemon** too: quit **Ollama** from the Windows system tray, or
+  `Stop-Process -Name ollama -Force` (also `ollama app` on some installs). It restarts on next
+  login unless you disable it in Windows **Settings → Apps → Startup**.
+
+**Starting it again:**
+
+```powershell
+# If you only stopped the model (daemon still running): just analyze a meal — it reloads
+# automatically. To preload it now and skip the cold-load wait on the first photo:
+ollama run qwen3-vl:4b-instruct "ok"   # warms the model into VRAM, then exits
+
+# If you stopped the daemon: relaunch the Ollama app from the Start menu (it runs the
+# server in the tray), or start it headless:
+ollama serve                           # serves on http://localhost:11434
+```
+
+- Confirm it's back with `ollama ps` — `PROCESSOR` should read `100% GPU`. No need to restart
+  NutriAI; the next **Analyze** picks it up.
 
 ---
 
@@ -154,6 +188,11 @@ review (editable per-dish portions rescale client-side) → log. `uid()` (Math.r
 `crypto.randomUUID` for browser compatibility. All destructive actions use the shared
 `ConfirmModal` — never a browser `confirm()`.
 
+In the **Home** and **Timeline** feeds a grouped multi-photo session renders with
+`GroupedMealCard` — a layered "deck" look (two offset shadow layers behind the card) plus a
+`🍱 Session · N items` badge — so it's distinguishable at a glance from a flat single
+`MealCard`. Which card to render is driven by the `item_type` discriminator on each feed row.
+
 ---
 
 ## Request flows
@@ -235,8 +274,10 @@ midnight land on the right day regardless of timezone.
   built in the lifespan and rebuilt only on a key/model change (`PUT /api/config` →
   `reload_clients`); USDA shares a `requests.Session` and a thread pool; the DB engine is pooled.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded** (vision:
-  15s + one retry; USDA: `(3.05s connect, 10s read)` + one retry on transient
-  Timeout/ConnectionError). Rate limits surface as HTTP 429, never silent zeros.
+  Groq/Gemini 15s, local Ollama 120s — each + one retry; USDA: `(3.05s connect, 10s read)` +
+  one retry on a transient `Timeout`/`ConnectionError` **or** a transient HTTP status
+  (`USDA_TRANSIENT_STATUS` = 404/5xx — USDA's gateway intermittently serves an HTML error page
+  instead of JSON)). Rate limits (429/403) surface as HTTP 429 and fail fast, never silent zeros.
 - **`MOCK_GEMINI=1`** short-circuits *both* stages (canned dish list + canned totals, no network).
   The name is historical — it is provider-agnostic, not Gemini-only.
 - **Logging** is timestamped and thread-named (`core.logging_config`); parallel USDA workers log

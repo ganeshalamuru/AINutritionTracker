@@ -21,6 +21,10 @@ USDA_CONNECT_TIMEOUT = 3.05  # connect timeout — fail fast on connection issue
 # These cover transient Timeout/ConnectionError only (not rate limits or HTTP errors).
 USDA_RETRIES = 1  # retries after the first attempt (so up to 2 attempts total)
 USDA_RETRY_BACKOFF = 0.5  # base seconds between attempts (grows with attempt number)
+# USDA's gateway intermittently answers a transient 404/5xx with an HTML error page instead of
+# JSON; retried like a network blip (see USDA_RETRIES). 403/429 are NOT here — _search_usda
+# handles those as rate limits and they must fail fast, not retry.
+USDA_TRANSIENT_STATUS = frozenset({404, 500, 502, 503, 504})
 USDA_MAX_WORKERS = 4  # parallel ingredient lookups per meal
 
 # Cap on distinct UNCACHED ingredients looked up per meal (largest portions win).

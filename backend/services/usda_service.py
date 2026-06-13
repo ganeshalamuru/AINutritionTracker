@@ -49,6 +49,7 @@ from services.nutrition_data import (
     USDA_RETRY_BACKOFF,
     USDA_SEARCH_URL,
     USDA_TIMEOUT,
+    USDA_TRANSIENT_STATUS,
 )
 
 configure_logging()
@@ -260,8 +261,9 @@ def _search_usda(
     logger.info("request  -> search %r (%s)", query, "strict" if require_all else "loose")
     start = time.monotonic()
     # Retry transient network failures (Timeout/ConnectionError) on a fresh socket; USDA
-    # search stalls intermittently and a retry usually clears it. Rate limits and HTTP
-    # errors come back as a real response and are handled below (not retried here).
+    # search stalls intermittently and a retry usually clears it. A transient server-side
+    # status (gateway HTML 404 / 5xx) is retried the same way. Rate limits (429/403) and a
+    # persistent bad status come back as a real response and are handled below (not retried).
     for attempt in range(USDA_RETRIES + 1):
         try:
             resp = _SESSION.post(
@@ -270,7 +272,6 @@ def _search_usda(
                 json=payload,
                 timeout=(USDA_CONNECT_TIMEOUT, USDA_TIMEOUT),
             )
-            break
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             if attempt < USDA_RETRIES:
                 logger.warning(
@@ -284,6 +285,18 @@ def _search_usda(
                 time.sleep(USDA_RETRY_BACKOFF * (attempt + 1))
                 continue
             raise
+        # Transient gateway hiccup: USDA occasionally serves an HTML 404/5xx instead of JSON.
+        if resp.status_code in USDA_TRANSIENT_STATUS and attempt < USDA_RETRIES:
+            logger.warning(
+                "retry %d/%d <- search %r | HTTP %d",
+                attempt + 1,
+                USDA_RETRIES,
+                query,
+                resp.status_code,
+            )
+            time.sleep(USDA_RETRY_BACKOFF * (attempt + 1))
+            continue
+        break
     elapsed = time.monotonic() - start
 
     body = {}

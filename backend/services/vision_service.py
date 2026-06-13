@@ -2,7 +2,7 @@
 
 Despite the historical names floating around the project, this module is provider-
 agnostic: it dispatches a meal photo to whichever vision model is configured (Groq,
-Gemini, or a future Ollama) and returns ONLY a decomposed ingredient list — it does
+Gemini, or local Ollama) and returns ONLY a decomposed ingredient list — it does
 NOT estimate nutrients (the model hallucinated those). The real per-100g numbers come
 from the USDA lookup in usda_service.py.
 """
@@ -16,6 +16,7 @@ import threading
 import time
 
 import google.generativeai as genai
+import requests
 
 from core import config
 from core.config import DEFAULT_MODEL, DEFAULT_PROVIDER
@@ -78,6 +79,50 @@ def reload_clients(db):
 # the model never responded — cap each call and retry at most once.
 CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
+
+# Local Ollama needs its own, much longer budget: the first /analyze after startup
+# pays a one-time model load into VRAM, and a local 4B vision model is slower than a
+# cloud API. The 15s cloud budget would time out on the cold call. Host is overridable
+# for a remote/containerized Ollama; default is the daemon's standard local port.
+OLLAMA_HOST = os.environ.get("OLLAMA_HOST", "http://localhost:11434")
+OLLAMA_TIMEOUT = 120
+
+# Ollama structured-output schema for the compact response. The cloud models (Llama 4
+# Scout / Gemini) follow the prompt's shape from `format: "json"` alone, but a local 4B
+# collapses a single-dish photo to the bare {n,g,i} object and drops the {n,t,c,d:[...]}
+# wrapper — so _parse_compact finds no `d` array and returns zero dishes. Passing the
+# schema constrains decoding to the exact wrapper; the model only fills the values.
+_OLLAMA_FORMAT = {
+    "type": "object",
+    "properties": {
+        "n": {"type": "string"},
+        "t": {"type": "string"},
+        "c": {"type": "string"},
+        "d": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "n": {"type": "string"},
+                    "g": {"type": "number"},
+                    "i": {
+                        "type": "array",
+                        "items": {
+                            "type": "object",
+                            "properties": {
+                                "f": {"type": "string"},
+                                "g": {"type": "number"},
+                            },
+                            "required": ["f", "g"],
+                        },
+                    },
+                },
+                "required": ["n", "g", "i"],
+            },
+        },
+    },
+    "required": ["n", "t", "c", "d"],
+}
 
 # Mock vision output: the dish list (macros/micros come from the lookup stage, which
 # short-circuits to canned values under MOCK_GEMINI — see usda_service).
@@ -246,8 +291,26 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, st
     return _parse_compact(raw), raw
 
 
-def _ollama_analyze(*args, **kwargs) -> tuple[dict, str]:
-    raise RuntimeError("Ollama provider is not configured yet.")
+def _ollama_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+    """Local vision via the Ollama daemon (no API key, no client to pre-build — it's a
+    stateless HTTP endpoint on the machine). Mirrors _groq_analyze's shape: image goes in
+    as base64, `format` carries the response JSON schema so decoding is constrained to our
+    {n,t,c,d:[...]} shape (a 4B drops the wrapper otherwise), temperature 0 for determinism."""
+    b64 = base64.b64encode(image_bytes).decode()
+    response = requests.post(
+        f"{OLLAMA_HOST}/api/chat",
+        json={
+            "model": model,
+            "stream": False,
+            "format": _OLLAMA_FORMAT,
+            "options": {"temperature": 0},
+            "messages": [{"role": "user", "content": prompt, "images": [b64]}],
+        },
+        timeout=OLLAMA_TIMEOUT,
+    )
+    response.raise_for_status()
+    raw = response.json().get("message", {}).get("content") or ""
+    return _parse_compact(raw), raw
 
 
 PROVIDERS = {

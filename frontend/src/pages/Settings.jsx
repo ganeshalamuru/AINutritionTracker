@@ -28,6 +28,7 @@ export default function Settings() {
     { provider: "groq", model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Groq · Llama 4 Scout (vision) — fast, ~1k/day" },
     { provider: "gemini", model: "gemini-2.5-flash", label: "Gemini · 2.5 Flash — reliable, ~20/day" },
     { provider: "gemini", model: "gemma-4-31b-it", label: "Gemini · Gemma 4 31B — high RPD but low TPM" },
+    { provider: "ollama", model: "qwen3-vl:4b-instruct", label: "Ollama · Qwen3-VL 4B (local) — private, no quota" },
   ];
   const keyOf = (p, m) => `${p}::${m}`;
   const activeProvider = selected.split("::")[0];
@@ -124,7 +125,9 @@ export default function Settings() {
         <h3 className="font-semibold text-gray-800">AI Vision Model</h3>
         <p className="text-xs text-gray-500">
           Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
-          The selected provider needs its API key set below.
+          {activeProvider === "ollama"
+            ? " Ollama runs locally — no API key needed; make sure the Ollama app is running and the model is pulled."
+            : " The selected provider needs its API key set below."}
         </p>
         <select
           value={selected}

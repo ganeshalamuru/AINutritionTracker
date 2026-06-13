@@ -32,6 +32,7 @@ from services.nutrition_data.config import (
     USDA_RETRY_BACKOFF,
     USDA_SEARCH_URL,
     USDA_TIMEOUT,
+    USDA_TRANSIENT_STATUS,
 )
 from services.nutrition_data.mock import (
     MOCK_MACROS,
@@ -52,6 +53,7 @@ __all__ = [
     "USDA_CONNECT_TIMEOUT",
     "USDA_RETRIES",
     "USDA_RETRY_BACKOFF",
+    "USDA_TRANSIENT_STATUS",
     "USDA_MAX_WORKERS",
     "USDA_MAX_LOOKUPS",
     "COOKING_ADJECTIVES",

@@ -48,7 +48,10 @@ def set_value(db: Session, key: str, value: str):
 
 
 def get_api_key(db: Session, provider: str = "gemini") -> str:
-    """The configured key for a vision provider, or a 503 telling the user to set it."""
+    """The configured key for a vision provider, or a 503 telling the user to set it.
+    Ollama runs locally with no key, so it needs no guard."""
+    if provider == "ollama":
+        return ""
     key_name = "groq_api_key" if provider == "groq" else "gemini_api_key"
     label = "Groq" if provider == "groq" else "Gemini"
     value = get_value(db, key_name)

@@ -114,6 +114,44 @@ class ReloadClientsTest(unittest.TestCase):
         self.assertIsNone(gs._groq_client)
 
 
+class OllamaAnalyzeTest(unittest.TestCase):
+    """_ollama_analyze posts to the local Ollama daemon and parses message.content via
+    _parse_compact. No network: requests.post is stubbed."""
+
+    def test_posts_image_and_parses_dish_list(self):
+        content = (
+            '{"n":"Lunch","t":"lunch","c":"high","d":['
+            '{"n":"dosa","g":120,"i":[{"f":"rice","g":80}]}]}'
+        )
+
+        class FakeResponse:
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {"message": {"content": content}}
+
+        with patch.object(gs.requests, "post", return_value=FakeResponse()) as post:
+            result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:4b-instruct")
+
+        self.assertEqual(raw, content)
+        self.assertEqual(
+            result["dishes"],
+            [{"name": "dosa", "grams": 120, "items": [{"food": "rice", "grams": 80}]}],
+        )
+        # Sent to the chat endpoint with the model, JSON format, and a base64 image.
+        url = post.call_args.args[0]
+        payload = post.call_args.kwargs["json"]
+        self.assertTrue(url.endswith("/api/chat"))
+        self.assertEqual(payload["model"], "qwen3-vl:4b-instruct")
+        # format carries the response JSON schema (constrained decoding), not just "json".
+        self.assertEqual(payload["format"], gs._OLLAMA_FORMAT)
+        self.assertIn("d", payload["format"]["required"])
+        self.assertFalse(payload["stream"])
+        self.assertEqual(payload["messages"][0]["content"], "PROMPT")
+        self.assertEqual(len(payload["messages"][0]["images"]), 1)
+
+
 class MockResponseTest(unittest.TestCase):
     def test_mock_response_is_dish_based(self):
         self.assertIn("dishes", gs.MOCK_RESPONSE)

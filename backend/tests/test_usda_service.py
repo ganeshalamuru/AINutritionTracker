@@ -520,6 +520,26 @@ class NutritionDbTest(unittest.TestCase):
             self.assertIsNone(nd.lookup_nutrients("onion", "key"))
         self.assertEqual(m.call_count, nd.USDA_RETRIES + 1)  # all attempts timed out
 
+    def test_search_retries_on_transient_http_then_succeeds(self):
+        # USDA's gateway sometimes serves a transient HTML 404/5xx instead of JSON; a retry
+        # on a fresh socket clears it, so a valid ingredient isn't dropped as "unmatched".
+        hit = food("SR Legacy", "Onions, raw", 1, {1008: 40})
+        with patch.object(
+            nd._SESSION,
+            "post",
+            side_effect=[FakeResp(404, {}), FakeResp(200, {"foods": [hit]})],
+        ) as m:
+            per = nd.lookup_nutrients("onion", "key")
+        self.assertEqual(m.call_count, 2)  # retried once after the 404, then succeeded
+        self.assertIsNotNone(per)
+        self.assertEqual(per["calories"], 40)
+
+    def test_search_exhausts_transient_http_returns_none(self):
+        # A persistent bad status still fails (raise_for_status -> None), behavior unchanged.
+        with patch.object(nd._SESSION, "post", side_effect=lambda *a, **k: FakeResp(503, {})) as m:
+            self.assertIsNone(nd.lookup_nutrients("onion", "key"))
+        self.assertEqual(m.call_count, nd.USDA_RETRIES + 1)
+
     def test_mock_mode_returns_canned_totals_without_network(self):
         os.environ["MOCK_GEMINI"] = "1"
         try:
