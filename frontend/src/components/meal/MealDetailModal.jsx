@@ -1,6 +1,7 @@
 import { useState } from "react";
 import client from "../../api/client";
 import MicroGrid from "./MicroGrid";
+import MacroHighlights from "./MacroHighlights";
 import ConfirmModal from "../shared/ConfirmModal";
 
 const TYPE_COLORS = {
@@ -17,6 +18,7 @@ function MacroRow({ macros }) {
         <span className="text-sm font-medium text-gray-600">Calories</span>
         <span className="font-bold text-gray-900 text-lg">{Math.round(macros.calories)} kcal</span>
       </div>
+      <MacroHighlights macros={macros} />
       <div className="grid grid-cols-3 gap-2 text-center text-sm">
         <div className="bg-blue-50 rounded-xl p-2.5">
           <p className="font-bold text-blue-600">{Math.round(macros.protein_g)}g</p>

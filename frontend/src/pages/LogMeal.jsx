@@ -5,6 +5,7 @@ import client from "../api/client";
 import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
+import MacroHighlights from "../components/meal/MacroHighlights";
 
 const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
@@ -386,6 +387,7 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onRemove, onRetry }) {
                 <span className="text-xs font-semibold text-gray-700">Macros</span>
                 <span className="font-bold text-gray-900">{Math.round(macros.calories)} kcal</span>
               </div>
+              <MacroHighlights macros={macros} />
               <div className="grid grid-cols-3 gap-1.5 text-center text-xs">
                 <div className="bg-white rounded-lg p-1.5">
                   <p className="font-bold text-blue-500">{Math.round(macros.protein_g)}g</p>
