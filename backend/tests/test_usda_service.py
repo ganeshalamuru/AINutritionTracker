@@ -44,6 +44,12 @@ def food(data_type, desc, fdc_id, nutrients=None, score=0):
     }
 
 
+def structure(dishes):
+    """A breakdown's structural fields only — drops the per-dish macros/micros subtotals
+    (added for client-side portion rescaling) so tests can assert dish/ingredient shape."""
+    return [{k: v for k, v in d.items() if k not in ("macros", "micros")} for d in dishes]
+
+
 class NutritionDbTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
@@ -331,13 +337,15 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
         # matched dish -> name highlighted, ingredients carried but not looked up
-        self.assertEqual(dishes_out, [{
+        self.assertEqual(structure(dishes_out), [{
             "name": "idli", "grams": 160, "matched": True,
             "ingredients": [
                 {"food": "rice", "grams": 90, "status": "not_looked_up"},
                 {"food": "urad dal", "grams": 30, "status": "not_looked_up"},
             ],
         }])
+        # matched dish's per-dish subtotal = dish per-100g * grams/100
+        self.assertAlmostEqual(dishes_out[0]["macros"]["calories"], 240.0)
         self.assertEqual(ingredient_queries, [])  # fallback never ran
 
     def test_curated_dish_miss_falls_back_to_ingredients(self):
@@ -364,13 +372,15 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(unmatched, ["secret spice"])
         self.assertEqual(skipped, [])
         # dish missed -> not matched, each ingredient carries its own USDA outcome
-        self.assertEqual(dishes_out, [{
+        self.assertEqual(structure(dishes_out), [{
             "name": "dal", "grams": 100, "matched": False,
             "ingredients": [
                 {"food": "rice", "grams": 200, "status": "matched"},
                 {"food": "secret spice", "grams": 5, "status": "unmatched"},
             ],
         }])
+        # decomposed dish's per-dish subtotal = sum of matched ingredient contributions
+        self.assertAlmostEqual(dishes_out[0]["macros"]["calories"], 260.0)
 
     def test_uncurated_dish_skips_dish_lookup(self):
         # A dish name not in DISH_ALIASES gets NO speculative whole-dish lookup; it
@@ -393,6 +403,43 @@ class NutritionDbTest(unittest.TestCase):
         self.assertAlmostEqual(macros["calories"], 260.0)    # decomposed: rice 130 * 200/100
         self.assertEqual(unmatched, ["secret spice"])
         self.assertEqual(dishes_out[0]["matched"], False)
+
+    def test_per_dish_nutrients_sum_to_total(self):
+        # A meal mixing a whole-dish match (idli) and a decomposed dish (rice bowl): each
+        # dish carries its own nutrient subtotal, and the subtotals sum to the meal totals
+        # (this invariant is what lets the client rescale a dish without re-querying USDA).
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            if json["dataType"] == nd.DISH_DATA_TYPES:        # dish-level search
+                if "idli" in q:
+                    return FakeResp(200, {"foods": [food("Survey (FNDDS)", "Idli", 1, {1008: 100, 1003: 5})]})
+                return FakeResp(200, {"foods": []})
+            if "rice" in q:                                    # ingredient fallback
+                return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 2, {1008: 130, 1003: 2})]})
+            return FakeResp(200, {"foods": []})
+
+        dishes = [
+            {"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]},
+            {"name": "rice bowl", "grams": 200, "items": [{"food": "rice", "grams": 200}]},
+        ]
+        with patch.object(nd._SESSION, "post", side_effect=post):
+            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes, "key")
+
+        idli_d = next(d for d in dishes_out if d["name"] == "idli")
+        bowl_d = next(d for d in dishes_out if d["name"] == "rice bowl")
+        # matched dish: dish per-100g 100 cal * 160/100 = 160
+        self.assertTrue(idli_d["matched"])
+        self.assertAlmostEqual(idli_d["macros"]["calories"], 160.0)
+        self.assertAlmostEqual(idli_d["macros"]["protein_g"], 8.0)   # 5 * 1.6
+        # decomposed dish: rice 130 cal * 200/100 = 260
+        self.assertFalse(bowl_d["matched"])
+        self.assertAlmostEqual(bowl_d["macros"]["calories"], 260.0)
+        self.assertAlmostEqual(bowl_d["macros"]["protein_g"], 4.0)   # 2 * 2.0
+        # per-dish subtotals sum to the meal totals (within rounding)
+        self.assertAlmostEqual(idli_d["macros"]["calories"] + bowl_d["macros"]["calories"],
+                               macros["calories"], places=2)
+        self.assertAlmostEqual(idli_d["macros"]["protein_g"] + bowl_d["macros"]["protein_g"],
+                               macros["protein_g"], places=2)
 
     # --- transient-failure retries ---
 
@@ -422,10 +469,12 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
-        self.assertEqual(dishes_out, [{
+        self.assertEqual(structure(dishes_out), [{
             "name": "idli", "grams": 160, "matched": True,
             "ingredients": [{"food": "rice", "grams": 90, "status": "not_looked_up"}],
         }])
+        # single dish gets the full canned total as its per-dish subtotal
+        self.assertEqual(dishes_out[0]["macros"]["calories"], round(nd.MOCK_MACROS["calories"], 2))
 
     # --- spices: model wording -> USDA wording ---
 

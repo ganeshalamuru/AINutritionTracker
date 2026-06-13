@@ -477,10 +477,12 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
       - skipped: ingredients not looked up because the meal exceeded the per-meal
         uncached-lookup budget (USDA_MAX_LOOKUPS), largest portions kept
       - breakdown: the dish-grouped resolution for the UI — one entry per dish:
-        {name, grams, matched, ingredients:[{food, grams, status}]} where `matched` is
-        True if the whole dish resolved in USDA (its ingredients then carry status
-        "not_looked_up"), and each fallback ingredient's status is
-        "matched" | "unmatched" | "skipped".
+        {name, grams, matched, macros, micros, ingredients:[{food, grams, status}]} where
+        `matched` is True if the whole dish resolved in USDA (its ingredients then carry
+        status "not_looked_up"), and each fallback ingredient's status is
+        "matched" | "unmatched" | "skipped". `macros`/`micros` are the dish's own nutrient
+        subtotal (full schema dicts); summed across dishes they equal the meal totals, so
+        the client can rescale a dish by its edited portion without re-querying USDA.
     In mock mode returns canned totals + one matched entry per dish, no API call. Raises
     UsdaRateLimitError if USDA throttles the key.
     """
@@ -488,13 +490,23 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         logger.info("mock mode -> canned nutrient totals (no USDA call)")
         macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
         micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
-        breakdown = [
-            {"name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": True,
-             "ingredients": [{"food": (it.get("food") or "").strip(),
-                              "grams": it.get("grams") or 0, "status": "not_looked_up"}
-                             for it in (d.get("items") or []) if (it.get("food") or "").strip()]}
-            for d in (dishes or []) if (d.get("name") or "").strip()
-        ]
+        mock_dishes = [d for d in (dishes or []) if (d.get("name") or "").strip()]
+        # Split the canned totals across dishes proportionally by grams (equal split if
+        # no dish carries a weight) so each dish has a per-dish subtotal for the editing UI.
+        weights = [float(d.get("grams") or 0) for d in mock_dishes]
+        total_w = sum(weights)
+        n = len(mock_dishes)
+        shares = [(w / total_w if total_w > 0 else 1.0 / n) for w in weights] if n else []
+        breakdown = []
+        for d, share in zip(mock_dishes, shares):
+            breakdown.append({
+                "name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": True,
+                "macros": {k: round(macros[k] * share, 2) for k in MACRO_KEYS},
+                "micros": {k: round(micros[k] * share, 4) for k in MICRO_KEYS},
+                "ingredients": [{"food": (it.get("food") or "").strip(),
+                                 "grams": it.get("grams") or 0, "status": "not_looked_up"}
+                                for it in (d.get("items") or []) if (it.get("food") or "").strip()],
+            })
         return macros, micros, [], [], breakdown
 
     totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
@@ -519,6 +531,7 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
     dish_pairs = list(zip(dish_lookup,
                           _LOOKUP_POOL.map(lambda d: lookup_dish(d["name"], api_key), dish_lookup)))
     matched_ids = set()
+    dish_profile: dict[int, dict] = {}  # id(dish) -> per-100g profile, for per-dish subtotals
     for d, per_100g in dish_pairs:
         if per_100g is None:
             continue
@@ -527,6 +540,7 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         for key in totals:
             totals[key] += per_100g.get(key, 0) * factor
         matched_ids.add(id(d))
+        dish_profile[id(d)] = per_100g
 
     # Phase B — decompose every dish that didn't match at the dish level (includes
     # dishes with no portion weight and any beyond the dish budget).
@@ -542,11 +556,21 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
     # Assemble the dish-grouped breakdown for the UI. A matched dish highlights its name
     # (ingredients were not looked up -> "not_looked_up"); an unmatched dish carries each
     # decomposed ingredient's outcome (name-based, since lookups are deduped per meal).
+    # Each dish also gets a per-dish nutrient subtotal (so the client can scale a dish's
+    # nutrients by its edited portion without re-querying USDA). No new lookups: a matched
+    # dish reuses its dish profile; a decomposed dish reads each matched ingredient's
+    # already-cached per-100g profile. The subtotals sum to the meal totals above.
     unmatched_set, skipped_set = set(unmatched), set(skipped)
     breakdown: list = []
     for d in valid_dishes:
         matched = id(d) in matched_ids
         ingredients = []
+        dish_totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+        if matched:
+            per_100g = dish_profile.get(id(d)) or {}
+            factor = (d.get("grams") or 0) / 100.0
+            for key in dish_totals:
+                dish_totals[key] = per_100g.get(key, 0) * factor
         for it in (d.get("items") or []):
             food = (it.get("food") or "").strip()
             if not food:
@@ -559,9 +583,18 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
                 status = "unmatched"
             else:
                 status = "matched"
+                per_100g = _cache_get(_normalize(food))
+                if per_100g and not per_100g.get("__miss__"):
+                    factor = (it.get("grams") or 0) / 100.0
+                    for key in dish_totals:
+                        dish_totals[key] += per_100g.get(key, 0) * factor
             ingredients.append({"food": food, "grams": it.get("grams") or 0, "status": status})
-        breakdown.append({"name": d["name"].strip(), "grams": d.get("grams") or 0,
-                          "matched": matched, "ingredients": ingredients})
+        breakdown.append({
+            "name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": matched,
+            "macros": {k: round(dish_totals[k], 2) for k in MACRO_KEYS},
+            "micros": {k: round(dish_totals[k], 4) for k in MICRO_KEYS},
+            "ingredients": ingredients,
+        })
 
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
     micros = {k: round(totals[k], 4) for k in MICRO_KEYS}

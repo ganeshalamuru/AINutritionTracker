@@ -108,10 +108,13 @@ backend/
    bounds API usage. Both positive matches **and definitive misses** are cached (negative
    caching) so a known-bad name isn't re-queried; transient timeouts are retried, not cached.
 4. The assembled `AnalyzeResponse` goes back as a **dish-grouped breakdown**:
-   `dishes: [{name, grams, matched, ingredients: [{food, grams, status}]}]` where `status` is
-   `matched | unmatched | skipped | not_looked_up`, plus aggregate `unmatched`/`skipped` name
-   lists. No DB write yet — the user reviews (the LogMeal UI highlights matched dishes vs.
-   per-ingredient outcomes), then logs.
+   `dishes: [{name, grams, matched, macros, micros, ingredients: [{food, grams, status}]}]`
+   where `status` is `matched | unmatched | skipped | not_looked_up`, plus aggregate
+   `unmatched`/`skipped` name lists. Each dish also carries its **own nutrient subtotal**
+   (`macros`/`micros`); these sum to the meal totals, so the client can rescale a dish by an
+   edited portion (linear in grams) without re-querying USDA. No DB write yet — the user
+   reviews (the LogMeal UI highlights matched dishes vs. per-ingredient outcomes, and lets
+   them edit each dish's portion to recalculate), then logs.
 
 **`POST /api/meals/log` and `/log-group`** — `meal_service` writes the `Meal` (+ `Macros`,
 `Micros`) rows; grouped meals share a `group_id`. Temp images are kept or purged per request.

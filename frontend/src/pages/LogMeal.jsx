@@ -8,6 +8,27 @@ import MicroGrid from "../components/meal/MicroGrid";
 
 const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
 
+// A dish's baseline portion: the model's dish grams, or the sum of its ingredient grams
+// when the dish itself has no weight (decomposed dishes sometimes only weigh the parts).
+const dishBaseline = (dish) =>
+  dish.grams > 0 ? dish.grams : (dish.ingredients || []).reduce((s, i) => s + (i.grams || 0), 0);
+
+// Re-sum the meal from each dish's per-dish nutrient subtotal, scaled by its edited
+// portion (curGrams / baseGrams). The subtotals come from the immutable analysis, so
+// scaling always derives from the original baseline and repeated edits never compound
+// rounding. A dish's contribution is linear in its grams (whole-dish match or decomposed
+// sum alike), so this is identical to re-running the USDA lookup — no network call needed.
+function scaledTotals(dishes, dishBase, dishGrams, field) {
+  const total = {};
+  dishes.forEach((dish, i) => {
+    const base = dishBase[i];
+    const f = base > 0 ? (dishGrams[i] || 0) / base : 1;
+    const vals = dish[field] || {};
+    for (const k in vals) total[k] = (total[k] || 0) + vals[k] * f;
+  });
+  return total;
+}
+
 // Downscale a photo in the browser before upload — cuts input tokens, upload time,
 // and latency. 384px keeps both dimensions ≤384 so vision APIs bill a flat ~258
 // image tokens (no tiling), fitting comfortably under free-tier TPM limits. The
@@ -65,9 +86,18 @@ export default function LogMeal() {
       const { data } = await client.post("/meals/analyze", fd, {
         headers: { "Content-Type": "multipart/form-data" },
       });
+      const dishBase = (data.dishes || []).map((d) => Math.round(dishBaseline(d)));
       setPhotos((prev) => prev.map((p) =>
         p.id === id
-          ? { ...p, analyzing: false, analysis: data, mealName: data.meal_name, mealType: data.meal_type }
+          ? {
+              ...p, analyzing: false, analysis: data,
+              mealName: data.meal_name, mealType: data.meal_type,
+              // Editable portion state: baselines + current grams + live (edited) totals.
+              dishBase,
+              dishGrams: [...dishBase],
+              liveMacros: data.macros,
+              liveMicros: data.micros,
+            }
           : p
       ));
     } catch (err) {
@@ -89,6 +119,21 @@ export default function LogMeal() {
 
   const updatePhoto = (id, updates) =>
     setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, ...updates } : p));
+
+  // Edit a dish's portion grams; scale that dish proportionally and re-sum the meal.
+  const setDishGrams = (id, dishIndex, grams) =>
+    setPhotos((prev) => prev.map((p) => {
+      if (p.id !== id || !p.analysis) return p;
+      const dishGrams = [...p.dishGrams];
+      dishGrams[dishIndex] = grams;
+      const dishes = p.analysis.dishes || [];
+      return {
+        ...p,
+        dishGrams,
+        liveMacros: scaledTotals(dishes, p.dishBase, dishGrams, "macros"),
+        liveMicros: scaledTotals(dishes, p.dishBase, dishGrams, "micros"),
+      };
+    }));
 
   const removePhoto = (id) =>
     setPhotos((prev) => prev.filter((p) => p.id !== id));
@@ -118,8 +163,8 @@ export default function LogMeal() {
           notes: p.notes,
           keep_image: false,
           temp_image_token: p.analysis.temp_image_token,
-          macros: p.analysis.macros,
-          micros: p.analysis.micros,
+          macros: p.liveMacros || p.analysis.macros,
+          micros: p.liveMicros || p.analysis.micros,
         });
       } else {
         const groupId = uid();
@@ -132,8 +177,8 @@ export default function LogMeal() {
             notes: p.notes,
             keep_image: false,
             temp_image_token: p.analysis.temp_image_token,
-            macros: p.analysis.macros,
-            micros: p.analysis.micros,
+            macros: p.liveMacros || p.analysis.macros,
+            micros: p.liveMicros || p.analysis.micros,
           })),
         });
       }
@@ -194,6 +239,7 @@ export default function LogMeal() {
               key={photo.id}
               photo={photo}
               onUpdate={(updates) => updatePhoto(photo.id, updates)}
+              onDishGrams={(dishIndex, grams) => setDishGrams(photo.id, dishIndex, grams)}
               onRemove={!isAnalyzing ? () => removePhoto(photo.id) : undefined}
               onRetry={() => retryPhoto(photo.id)}
             />
@@ -275,7 +321,10 @@ export default function LogMeal() {
   );
 }
 
-function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
+function PhotoCard({ photo, onUpdate, onDishGrams, onRemove, onRetry }) {
+  // Live (portion-edited) totals when present, else the original analysis values.
+  const macros = photo.liveMacros || photo.analysis?.macros;
+  const micros = photo.liveMicros || photo.analysis?.micros;
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
       <div className="relative">
@@ -335,26 +384,26 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
             <div className="bg-gray-50 rounded-xl p-3">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-xs font-semibold text-gray-700">Macros</span>
-                <span className="font-bold text-gray-900">{Math.round(photo.analysis.macros.calories)} kcal</span>
+                <span className="font-bold text-gray-900">{Math.round(macros.calories)} kcal</span>
               </div>
               <div className="grid grid-cols-3 gap-1.5 text-center text-xs">
                 <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-blue-500">{Math.round(photo.analysis.macros.protein_g)}g</p>
+                  <p className="font-bold text-blue-500">{Math.round(macros.protein_g)}g</p>
                   <p className="text-gray-400">Protein</p>
                 </div>
                 <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-orange-400">{Math.round(photo.analysis.macros.carbs_g)}g</p>
+                  <p className="font-bold text-orange-400">{Math.round(macros.carbs_g)}g</p>
                   <p className="text-gray-400">Carbs</p>
                 </div>
                 <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-purple-500">{Math.round(photo.analysis.macros.fat_g)}g</p>
+                  <p className="font-bold text-purple-500">{Math.round(macros.fat_g)}g</p>
                   <p className="text-gray-400">Fat</p>
                 </div>
               </div>
               <div className="flex justify-around mt-2 text-xs text-gray-400">
-                <span>Fiber {Math.round(photo.analysis.macros.fiber_g)}g</span>
-                <span>Sugar {Math.round(photo.analysis.macros.sugar_g)}g</span>
-                <span>Sodium {Math.round(photo.analysis.macros.sodium_mg)}mg</span>
+                <span>Fiber {Math.round(macros.fiber_g)}g</span>
+                <span>Sugar {Math.round(macros.sugar_g)}g</span>
+                <span>Sodium {Math.round(macros.sodium_mg)}mg</span>
               </div>
             </div>
 
@@ -365,10 +414,19 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
                 </span>
                 <p className="text-[11px] text-gray-400 mb-2">
                   Green = found in the food database. A matched dish is counted whole; an
-                  unmatched dish is counted from its ingredients.
+                  unmatched dish is counted from its ingredients. Adjust a portion (g) and
+                  nutrition updates automatically.
                 </p>
                 <div className="space-y-2.5">
-                  {photo.analysis.dishes.map((dish, i) => <DishRow key={i} dish={dish} />)}
+                  {photo.analysis.dishes.map((dish, i) => (
+                    <DishRow
+                      key={i}
+                      dish={dish}
+                      grams={photo.dishGrams?.[i]}
+                      base={photo.dishBase?.[i]}
+                      onGrams={(g) => onDishGrams(i, g)}
+                    />
+                  ))}
                 </div>
                 {photo.analysis.unmatched?.length > 0 && (
                   <p className="text-xs text-yellow-700 mt-2.5">
@@ -387,7 +445,7 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
               </div>
             )}
 
-            <MicroGrid micros={photo.analysis.micros} />
+            <MicroGrid micros={micros} />
 
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Notes (optional)</label>
@@ -412,8 +470,11 @@ const ING_STYLE = {
   skipped: "bg-gray-200 text-gray-500 line-through",
 };
 
-function DishRow({ dish }) {
-  const grams = Math.round(dish.grams || 0);
+function DishRow({ dish, grams, base, onGrams }) {
+  // Editable portion. When there's no baseline weight (no dish grams and no ingredient
+  // grams) there's nothing to scale from, so the field is locked and the factor stays 1.
+  const locked = !(base > 0);
+  const factor = locked ? 1 : (grams || 0) / base;
   return (
     <div>
       {/* Dish header — highlighted green when the whole dish matched in USDA */}
@@ -423,7 +484,19 @@ function DishRow({ dish }) {
             dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
           }`}
         >
-          {dish.name}{grams > 0 ? ` · ${grams}g` : ""}
+          {dish.name}
+        </span>
+        <span className="flex items-center gap-0.5">
+          <input
+            type="number"
+            min="0"
+            inputMode="numeric"
+            value={Number.isFinite(grams) ? grams : 0}
+            onChange={(e) => onGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+            disabled={locked}
+            className="w-14 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400 disabled:bg-gray-100 disabled:text-gray-400"
+          />
+          <span className="text-[11px] text-gray-400">g</span>
         </span>
         {dish.matched ? (
           <span className="text-[10px] text-green-700 font-medium">matched</span>
@@ -433,11 +506,12 @@ function DishRow({ dish }) {
       </div>
 
       {/* Ingredients — de-emphasized when the dish matched (they weren't looked up),
-          colored by their own USDA outcome when the dish was decomposed. */}
+          colored by their own USDA outcome when the dish was decomposed. Grams scale
+          with the dish portion. */}
       {dish.ingredients?.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1 pl-3">
           {dish.ingredients.map((ing, i) => {
-            const g = Math.round(ing.grams || 0);
+            const g = Math.round((ing.grams || 0) * factor);
             const style = dish.matched
               ? "bg-transparent text-gray-400"
               : ING_STYLE[ing.status] || "bg-white text-gray-600";

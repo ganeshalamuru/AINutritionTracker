@@ -87,6 +87,8 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
             name=d.get("name", ""),
             grams=d.get("grams") or 0,
             matched=d.get("matched", False),
+            macros=MacrosData(**d.get("macros", {})),
+            micros=MicrosData(**d.get("micros", {})),
             ingredients=[IngredientBreakdown(**i) for i in d.get("ingredients", [])],
         ) for d in breakdown],
         unmatched=unmatched,

@@ -72,6 +72,10 @@ class DishBreakdown(BaseModel):
     name: str
     grams: float = 0
     matched: bool = False  # the whole dish matched in USDA (ingredients not looked up)
+    # This dish's own nutrient subtotal; summed across dishes it equals the meal totals.
+    # Lets the client rescale a dish by its edited portion without re-querying USDA.
+    macros: MacrosData = Field(default_factory=MacrosData)
+    micros: MicrosData = Field(default_factory=MicrosData)
     ingredients: List[IngredientBreakdown] = Field(default_factory=list)
 
 

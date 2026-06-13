@@ -6,6 +6,36 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 
 ---
 
+## Latest session (2026-06-13 #2): editable dish portions + per-dish nutrients
+
+Portion grams read **high** (they're LLM-estimated); the USDA nutrient layer is accurate,
+so the gram estimate is the main error source. The LogMeal review step now lets the user
+**edit each dish's portion (grams)**; its ingredients scale proportionally and all
+macros/micros recalculate **before logging** — and the corrected totals are what get saved.
+
+**Recompute is client-side, no extra USDA/network calls.** A dish's nutrient contribution
+is **linear in its grams** (whole-dish match `per_100g × g/100`, or decomposed
+`Σ per_100g_i × g_i/100` with ingredients scaled by the same factor), so scaling a dish's
+already-computed subtotal by `newGrams/baseGrams` is *mathematically identical* to re-running
+the lookup. No `POST /meals/recompute` endpoint was needed.
+
+- **Backend:** `usda_service.nutrients_for_meal` now attaches a per-dish nutrient subtotal
+  to every `breakdown` entry (new `macros`/`micros` dicts) — matched dishes reuse their dish
+  profile; decomposed dishes read each matched ingredient's already-cached per-100g profile
+  (no new lookups). Invariant: **Σ per-dish == meal totals**. `DishBreakdown`
+  (`schemas.py`) gained `macros`/`micros` (defaulted, wire-compatible); `meal_service`
+  maps them. Mock mode splits the canned totals across dishes by grams. **41 tests green**
+  (3 full-dict `dishes_out` assertions now compare structure via a `structure()` helper;
+  added `test_per_dish_nutrients_sum_to_total`).
+- **Frontend (`LogMeal.jsx`):** each dish gets an editable grams input (`DishRow`);
+  `setDishGrams` rescales from immutable baselines (`dishBase` = dish grams, or Σ ingredient
+  grams when the dish has no weight) so repeated edits never compound rounding. `scaledTotals`
+  re-sums per-dish `macros`/`micros` by `curGrams/baseGrams`; live totals (`liveMacros`/
+  `liveMicros`) drive the Macros panel, `MicroGrid`, and what `handleLog` saves. Ingredient
+  grams display scaled by the same factor (read-only — dish-portion editing only, by choice).
+
+---
+
 ## Latest session (2026-06-13): production hardening, dish breakdown, USDA resilience
 
 Four related changes; **`ARCHITECTURE.md` is authoritative** for structure. 40 tests green.
@@ -361,7 +391,11 @@ Micros displayed as raw values (no goal bars) in collapsible MicroGrid.
 
 ## What's Not Built Yet (potential next steps)
 
-- **Editable ingredients/grams before logging (highest-leverage next step).** The data layer (USDA matching) is accurate now; the biggest remaining error source is the LLM's per-ingredient **gram estimates**. A review step in `LogMeal` to adjust each ingredient's grams (and optionally swap the matched food), then re-run Stage 2 via a `POST /meals/recompute` endpoint, would let the user correct portions directly. `AnalyzeResponse` already returns `items[]` + `unmatched[]` to build this on.
+- **Editable dish portions — DONE (2026-06-13 #2).** Each dish's grams is editable in the
+  LogMeal review step; ingredients scale and macros/micros recalculate client-side before
+  logging (see that session entry above). Remaining extension: per-*ingredient* gram editing
+  and swapping a matched food (deliberately out of scope — dish-portion editing covers the
+  dominant error).
 - Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design); Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
 - Custom daily calorie/macro goals per profile
 - Edit meal nutrition values manually after logging
