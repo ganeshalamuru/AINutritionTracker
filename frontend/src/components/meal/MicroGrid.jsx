@@ -1,41 +1,72 @@
 import { useState } from "react";
 
-// Full micro label set. The AI reports only the micros notable for a given meal,
-// so we render just the ones with a value (see Section's non-zero filter).
+// Full micro label set with FDA adult Daily Values (DV). The AI reports only the
+// micros notable for a given meal, so we render just the ones with a value and sort
+// them by % of Daily Value so the meal's standout nutrients surface first.
 const VITAMINS = [
-  { key: "vitamin_a_mcg", label: "Vit A", unit: "mcg" },
-  { key: "vitamin_d_mcg", label: "Vit D", unit: "mcg" },
-  { key: "vitamin_e_mg", label: "Vit E", unit: "mg" },
-  { key: "vitamin_k_mcg", label: "Vit K", unit: "mcg" },
-  { key: "vitamin_c_mg", label: "Vit C", unit: "mg" },
-  { key: "vitamin_b1_mg", label: "B1", unit: "mg" },
-  { key: "vitamin_b2_mg", label: "B2", unit: "mg" },
-  { key: "vitamin_b3_mg", label: "B3", unit: "mg" },
-  { key: "vitamin_b6_mg", label: "B6", unit: "mg" },
-  { key: "vitamin_b12_mcg", label: "B12", unit: "mcg" },
-  { key: "folate_mcg", label: "Folate", unit: "mcg" },
+  { key: "vitamin_a_mcg", label: "Vitamin A", unit: "mcg", dv: 900 },
+  { key: "vitamin_d_mcg", label: "Vitamin D", unit: "mcg", dv: 20 },
+  { key: "vitamin_e_mg", label: "Vitamin E", unit: "mg", dv: 15 },
+  { key: "vitamin_k_mcg", label: "Vitamin K", unit: "mcg", dv: 120 },
+  { key: "vitamin_c_mg", label: "Vitamin C", unit: "mg", dv: 90 },
+  { key: "vitamin_b1_mg", label: "Thiamin (B1)", unit: "mg", dv: 1.2 },
+  { key: "vitamin_b2_mg", label: "Riboflavin (B2)", unit: "mg", dv: 1.3 },
+  { key: "vitamin_b3_mg", label: "Niacin (B3)", unit: "mg", dv: 16 },
+  { key: "vitamin_b6_mg", label: "Vitamin B6", unit: "mg", dv: 1.7 },
+  { key: "vitamin_b12_mcg", label: "Vitamin B12", unit: "mcg", dv: 2.4 },
+  { key: "folate_mcg", label: "Folate", unit: "mcg", dv: 400 },
 ];
 
 const MINERALS = [
-  { key: "calcium_mg", label: "Calcium", unit: "mg" },
-  { key: "iron_mg", label: "Iron", unit: "mg" },
-  { key: "magnesium_mg", label: "Magnesium", unit: "mg" },
-  { key: "potassium_mg", label: "Potassium", unit: "mg" },
-  { key: "zinc_mg", label: "Zinc", unit: "mg" },
-  { key: "phosphorus_mg", label: "Phosphorus", unit: "mg" },
+  { key: "calcium_mg", label: "Calcium", unit: "mg", dv: 1300 },
+  { key: "iron_mg", label: "Iron", unit: "mg", dv: 18 },
+  { key: "magnesium_mg", label: "Magnesium", unit: "mg", dv: 420 },
+  { key: "potassium_mg", label: "Potassium", unit: "mg", dv: 4700 },
+  { key: "zinc_mg", label: "Zinc", unit: "mg", dv: 11 },
+  { key: "phosphorus_mg", label: "Phosphorus", unit: "mg", dv: 1250 },
 ];
 
-function Section({ title, items, data }) {
-  const present = items.filter(({ key }) => Number(data?.[key]) > 0);
-  if (!present.length) return null;
+const round1 = (n) => Math.round((n || 0) * 10) / 10;
+const pctDv = (value, dv) => (dv ? (Number(value) / dv) * 100 : 0);
+
+// FDA labeling thresholds: >=20% DV = "high", 10-19% = "good source".
+const HIGH = 20;
+const GOOD = 10;
+function richColor(pct) {
+  if (pct >= HIGH) return "#22c55e"; // green-500
+  if (pct >= GOOD) return "#86efac"; // green-300
+  return "#d1d5db"; // gray-300
+}
+
+// Present (non-zero) items for a list, each with its %DV, sorted richest first.
+function presentItems(items, data) {
+  return items
+    .filter(({ key }) => Number(data?.[key]) > 0)
+    .map((item) => ({ ...item, value: Number(data[item.key]), pct: pctDv(data[item.key], item.dv) }))
+    .sort((a, b) => b.pct - a.pct);
+}
+
+function Section({ title, items }) {
+  if (!items.length) return null;
   return (
     <div>
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</p>
-      <div className="grid grid-cols-3 gap-2">
-        {present.map(({ key, label, unit }) => (
-          <div key={key} className="bg-gray-50 rounded-xl p-2 text-center">
-            <p className="text-xs font-semibold text-gray-700">{Math.round((data?.[key] || 0) * 10) / 10}<span className="font-normal text-gray-400">{unit}</span></p>
-            <p className="text-xs text-gray-500 mt-0.5">{label}</p>
+      <div className="space-y-2.5">
+        {items.map(({ key, label, unit, value, pct }) => (
+          <div key={key} className="flex flex-col gap-1">
+            <div className="flex justify-between items-baseline text-sm">
+              <span className="font-medium text-gray-700">{label}</span>
+              <span className="text-gray-500">
+                {round1(value)}{unit}
+                <span className="text-gray-400"> · {Math.round(pct)}%</span>
+              </span>
+            </div>
+            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+              <div
+                className="h-full rounded-full transition-all duration-500"
+                style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: richColor(pct) }}
+              />
+            </div>
           </div>
         ))}
       </div>
@@ -43,10 +74,35 @@ function Section({ title, items, data }) {
   );
 }
 
+// Headline row naming what the meal is a high (or at least good) source of.
+function RichIn({ items }) {
+  const high = items.filter((i) => i.pct >= HIGH);
+  const source = high.length ? high : items.filter((i) => i.pct >= GOOD);
+  if (!source.length) return null;
+  return (
+    <div className="flex flex-wrap items-center gap-1.5">
+      <span className="text-xs font-semibold text-gray-500">
+        {high.length ? "★ Rich in" : "Good source of"}
+      </span>
+      {source.map((i) => (
+        <span key={i.key} className="text-xs font-medium px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+          {i.label}
+        </span>
+      ))}
+    </div>
+  );
+}
+
 export default function MicroGrid({ micros, alwaysOpen = false }) {
   const [open, setOpen] = useState(false);
   const isOpen = alwaysOpen || open;
-  const hasAny = [...VITAMINS, ...MINERALS].some(({ key }) => Number(micros?.[key]) > 0);
+
+  const vitamins = presentItems(VITAMINS, micros);
+  const minerals = presentItems(MINERALS, micros);
+  const hasAny = vitamins.length > 0 || minerals.length > 0;
+  // Rich-in spans both groups, still ordered richest first.
+  const allPresent = [...vitamins, ...minerals].sort((a, b) => b.pct - a.pct);
+
   return (
     <div className="mt-3">
       {!alwaysOpen && (
@@ -64,8 +120,9 @@ export default function MicroGrid({ micros, alwaysOpen = false }) {
         <div className="mt-3 space-y-4">
           {hasAny ? (
             <>
-              <Section title="Vitamins" items={VITAMINS} data={micros} />
-              <Section title="Minerals" items={MINERALS} data={micros} />
+              <RichIn items={allPresent} />
+              <Section title="Vitamins" items={vitamins} />
+              <Section title="Minerals" items={minerals} />
             </>
           ) : (
             <p className="text-xs text-gray-400">No notable micronutrients.</p>
