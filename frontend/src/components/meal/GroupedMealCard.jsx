@@ -37,13 +37,20 @@ export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
       onConfirm={handleDelete}
       onCancel={() => setConfirming(false)}
     />
+    <div className="relative">
+      {/* stacked "deck" layers behind the card — signal a multi-meal session at a glance */}
+      <div className="absolute inset-x-4 -bottom-3 h-4 bg-white rounded-2xl border border-gray-100 shadow-sm -z-20" aria-hidden="true" />
+      <div className="absolute inset-x-2 -bottom-1.5 h-4 bg-white rounded-2xl border border-gray-100 shadow-sm -z-10" aria-hidden="true" />
     <div
-      className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
+      className="relative z-10 bg-white rounded-2xl shadow-sm border border-gray-100 p-4 cursor-pointer hover:shadow-md transition-shadow active:scale-[0.99]"
       onClick={onOpenDetail}
     >
       <div className="flex items-start justify-between gap-2 mb-2">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2 mb-1 flex-wrap">
+            <span className="text-xs px-2 py-0.5 rounded-full font-medium bg-indigo-100 text-indigo-700">
+              🍱 Session · {group.sub_meals.length} items
+            </span>
             {mealTypes.map((type) => (
               <span
                 key={type}
@@ -57,7 +64,6 @@ export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
           <p className="font-semibold text-gray-900 text-sm truncate">
             {group.sub_meals.map((s) => s.meal_name).join(", ")}
           </p>
-          <p className="text-xs text-gray-400 mt-0.5">{group.sub_meals.length} items</p>
         </div>
         <div className="text-right flex-shrink-0">
           <p className="font-bold text-gray-900">{Math.round(t.calories)}</p>
@@ -87,6 +93,7 @@ export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
           {deleting ? "..." : "Remove"}
         </button>
       </div>
+    </div>
     </div>
     </>
   );
