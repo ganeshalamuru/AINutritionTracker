@@ -1,6 +1,7 @@
 """FastAPI app entrypoint: load env, configure logging, assemble routers, and serve
 the built frontend. Startup/shutdown logic lives in core.lifespan; config access in
 core.config; per-domain logic in services/. This file stays a thin assembly."""
+import logging
 import os
 
 from dotenv import load_dotenv
@@ -11,23 +12,44 @@ from core.logging_config import configure_logging
 
 configure_logging()
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 
 from core.config import DIST_DIR
 from core.lifespan import lifespan
 from routers import profiles, meals, nutrition, config
 
+logger = logging.getLogger("nutriai")
+
 app = FastAPI(title="AI Nutrition Tracker", lifespan=lifespan)
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# The frontend is served same-origin (prod: FastAPI serves dist/ on :8000; dev: Vite
+# proxies /api -> :8001), so cross-origin requests aren't part of normal operation and
+# CORS stays locked down by default. Set CORS_ORIGINS (comma-separated) to allow specific
+# origins — e.g. a separate dev server pointed straight at the API.
+_cors_origins = [o.strip() for o in os.getenv("CORS_ORIGINS", "").split(",") if o.strip()]
+if _cors_origins:
+    app.add_middleware(
+        CORSMiddleware,
+        allow_origins=_cors_origins,
+        allow_methods=["*"],
+        allow_headers=["*"],
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_exception_handler(request: Request, exc: Exception):
+    """Last-resort handler: log the unexpected error and return a clean 500. FastAPI
+    still handles HTTPException (the explicit error mapping in meal_service) separately."""
+    logger.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"detail": "Internal server error"})
+
+
+@app.get("/api/health")
+async def health():
+    return {"status": "ok"}
 
 app.include_router(profiles.router, prefix="/api")
 app.include_router(meals.router, prefix="/api")

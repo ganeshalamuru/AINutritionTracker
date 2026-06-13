@@ -6,6 +6,49 @@ A fully local AI-powered nutrition tracker web app accessible from both desktop 
 
 ---
 
+## Latest session (2026-06-13): production hardening, dish breakdown, USDA resilience
+
+Four related changes; **`ARCHITECTURE.md` is authoritative** for structure. 40 tests green.
+
+1. **Production internals.** Expensive clients are now built once and reused instead of per
+   request: the **vision provider clients** (`vision_service`) are built in the app **lifespan**
+   and rebuilt only when a key/model changes (`PUT /api/config` → `vision_service.reload_clients`);
+   the request hot path reads them lock-free. USDA calls share a module-level `requests.Session`
+   (keep-alive). SQLite is tuned in `core/database.py`: `pool_pre_ping` + a `connect` listener
+   setting `WAL` / `busy_timeout=5000` / `synchronous=NORMAL` / `foreign_keys=ON` (prevents
+   `database is locked` under the threaded lookups; adds `nutrition.db-wal`/`-shm` sidecars,
+   gitignored). `main.py` gained `GET /api/health`, a global exception handler (clean logged
+   500s), and **CORS locked down** (wildcard removed; same-origin serving needs none — set
+   `CORS_ORIGINS` to re-open). Frontend axios timeout 25s → **45s** (`client.js`).
+
+2. **Dish-grouped analyze breakdown.** `AnalyzeResponse.items[]` (flat, `source`-tagged) was
+   replaced by **`dishes: [{name, grams, matched, ingredients:[{food, grams, status}]}]`** (new
+   `DishBreakdown`/`IngredientBreakdown` schemas; `MealItem` removed). `status` ∈
+   `matched | unmatched | skipped | not_looked_up`. `usda_service.nutrients_for_meal` returns
+   this structure (5th element); the math/cap/`_sum_ingredients` are unchanged. `LogMeal.jsx`
+   renders it hierarchically via a `DishRow`: a **matched dish** highlights its name (green
+   "matched"), its ingredients shown faint (not looked up); an **unmatched dish** shows each
+   ingredient colored by status (green/yellow/gray-strikethrough). Display-only — logging is
+   untouched.
+
+3. **USDA timeout hardening.** The earlier urllib3 `Retry` never retried the search (its default
+   `allowed_methods` excludes POST), so a single stall dropped the food. Replaced with an
+   **explicit retry loop** in `_search_usda` (catches `Timeout`/`ConnectionError`, `USDA_RETRIES`
+   with backoff, logged) and a split **`timeout=(USDA_CONNECT_TIMEOUT 3.05, USDA_TIMEOUT 10)`**.
+   Phase-A dish lookups are **gated to curated dishes** (`_normalize(name) in DISH_ALIASES`) —
+   un-curated names skip the speculative call and decompose directly.
+
+4. **Negative caching + alias prune.** Misses were never cached, so known-bad names
+   (`coconut chutney`, `chillies`) re-stalled USDA on every analyze. Now a **definitive miss**
+   (0 hits / no pick) is cached with a `{"__miss__": true}` sentinel (`usda_service._MISS`) so
+   repeat lookups short-circuit; **transient timeouts are NOT cached** (retried next time). The
+   per-meal cap treats a cached miss as free. `coconut chutney`/`chutney` pruned from
+   `DISH_ALIASES` (verified 0 FNDDS hits). **`CACHE_VERSION` → "7"** (lifespan purges
+   `food_cache` on bump). *Follow-up: audit the rest of `DISH_ALIASES` with
+   `python check_aliases.py <key>` — deferred.*
+
+---
+
 ## Tech Stack
 
 | Layer | Technology |
@@ -272,7 +315,8 @@ POST   /api/profiles              Create profile {name, pin, avatar_color}
 POST   /api/profiles/verify       Verify {profile_id, pin} → returns profile or 401
 DELETE /api/profiles/{id}         Soft-delete profile
 
-POST   /api/meals/analyze         Upload image → AI nutrition analysis (no DB write)
+GET    /api/health                {status:"ok"} — liveness check
+POST   /api/meals/analyze         Upload image → AI nutrition analysis (no DB write); returns dishes[] breakdown
 POST   /api/meals/log             Save single analyzed meal to DB
 POST   /api/meals/log-group       Save {group_id, meals:[...]} as grouped meal session
 GET    /api/meals/timeline        ?profile_id&page&limit — paginated, grouped by group_id

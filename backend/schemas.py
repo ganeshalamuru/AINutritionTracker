@@ -60,10 +60,19 @@ class MicrosData(BaseModel):
 
 # --- Meals ---
 
-class MealItem(BaseModel):
+class IngredientBreakdown(BaseModel):
     food: str
     grams: float = 0
-    source: Optional[str] = None  # "dish" (whole-dish match) | "ingredient" (decomposed)
+    # USDA outcome: matched | unmatched | skipped (over the lookup cap) |
+    # not_looked_up (its dish matched whole, so the ingredient wasn't searched)
+    status: str = "matched"
+
+
+class DishBreakdown(BaseModel):
+    name: str
+    grams: float = 0
+    matched: bool = False  # the whole dish matched in USDA (ingredients not looked up)
+    ingredients: List[IngredientBreakdown] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):
@@ -73,7 +82,7 @@ class AnalyzeResponse(BaseModel):
     estimated_serving: Optional[str] = None
     macros: MacrosData
     micros: MicrosData
-    items: List[MealItem] = Field(default_factory=list)
+    dishes: List[DishBreakdown] = Field(default_factory=list)
     unmatched: List[str] = Field(default_factory=list)
     skipped: List[str] = Field(default_factory=list)
     temp_image_token: Optional[str] = None

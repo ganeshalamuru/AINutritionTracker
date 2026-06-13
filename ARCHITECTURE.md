@@ -42,28 +42,28 @@ backend/
 ├── main.py                  # entrypoint: load env, configure logging, assemble routers, serve frontend
 │
 ├── core/                    # infrastructure & cross-cutting concerns (no business logic)
-│   ├── database.py          #   SQLAlchemy engine, SessionLocal, Base, get_db dependency
+│   ├── database.py          #   SQLAlchemy engine (pool_pre_ping + SQLite WAL/busy_timeout pragmas), SessionLocal, Base, get_db
 │   ├── logging_config.py    #   configure_logging(): one timestamped formatter for app + uvicorn
 │   ├── config.py            #   app_config table access + vision defaults + filesystem paths
 │   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/17-micro schema + convert/sum helpers
-│   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config
+│   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision clients
 │
 ├── models.py                # SQLAlchemy ORM: Profile, Meal, Macros, Micros, AppConfig
-├── schemas.py               # Pydantic request/response models (leaf module)
+├── schemas.py               # Pydantic request/response models (leaf module): AnalyzeResponse, DishBreakdown, ...
 │
 ├── routers/                 # thin HTTP layer — parse request, call a service, return result
 │   ├── profiles.py          #   /api/profiles ...
 │   ├── meals.py             #   /api/meals ...   (analyze, log, timeline, group, detail)
 │   ├── nutrition.py         #   /api/nutrition/daily | /monthly
-│   └── config.py            #   /api/config (GET/PUT API keys + vision provider/model)
+│   └── config.py            #   /api/config (GET/PUT keys + vision provider/model; rebuilds vision clients on change)
 │
 └── services/                # business logic — where the work actually happens
-    ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients)
-    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache, shared thread pool
+    ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients); shared clients
+    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache (+ negative caching), shared pool + Session
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
-        ├── config.py        #     USDA endpoint + tuning + DISH_DATA_TYPES + USDA_MAX_LOOKUPS + CACHE_VERSION
+        ├── config.py        #     USDA endpoint + tuning (timeouts/retries) + DISH_DATA_TYPES + USDA_MAX_LOOKUPS + CACHE_VERSION
         ├── aliases.py       #     FOOD_ALIASES + DISH_ALIASES + word-set vocabularies for name normalization
         ├── nutrient_map.py  #     USDA nutrientId -> our schema key
         └── mock.py          #     canned totals for MOCK_GEMINI mode
@@ -100,14 +100,18 @@ backend/
    (`asyncio.to_thread`, so the event loop never blocks). The vision model returns a list
    of dishes, each with a portion weight and a fallback base-ingredient breakdown.
 3. It then runs **Stage 2** — `usda_service.nutrients_for_meal` (also off-thread),
-   **dish-first**: each dish is looked up whole in USDA FNDDS (`DISH_ALIASES`, cache first)
-   and scaled by its grams; dishes with no dish-level match fall back to `_sum_ingredients`
-   over their breakdown (alias → head-noun gate → scale → sum). All lookups run in parallel
-   on a **shared module-level `ThreadPoolExecutor`**; a per-meal uncached-lookup budget
-   (`USDA_MAX_LOOKUPS`) bounds API usage.
-4. The assembled `AnalyzeResponse` (totals + a per-line `items` breakdown tagged
-   `source: "dish"|"ingredient"`, plus `unmatched`/`skipped`) goes back. No DB write yet —
-   the user reviews, then logs.
+   **dish-first**: a whole-dish lookup is attempted only for **curated** dishes (name in
+   `DISH_ALIASES`, confirmed to exist in FNDDS) — un-curated names skip the speculative call
+   and decompose straight to ingredients via `_sum_ingredients` (alias → head-noun gate →
+   scale → sum). All lookups run in parallel on a **shared module-level `ThreadPoolExecutor`**
+   over a shared `requests.Session`; a per-meal uncached-lookup budget (`USDA_MAX_LOOKUPS`)
+   bounds API usage. Both positive matches **and definitive misses** are cached (negative
+   caching) so a known-bad name isn't re-queried; transient timeouts are retried, not cached.
+4. The assembled `AnalyzeResponse` goes back as a **dish-grouped breakdown**:
+   `dishes: [{name, grams, matched, ingredients: [{food, grams, status}]}]` where `status` is
+   `matched | unmatched | skipped | not_looked_up`, plus aggregate `unmatched`/`skipped` name
+   lists. No DB write yet — the user reviews (the LogMeal UI highlights matched dishes vs.
+   per-ingredient outcomes), then logs.
 
 **`POST /api/meals/log` and `/log-group`** — `meal_service` writes the `Meal` (+ `Macros`,
 `Micros`) rows; grouped meals share a `group_id`. Temp images are kept or purged per request.
@@ -134,9 +138,10 @@ Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API key
 - `Macros` (7 fields) and `Micros` (17 fields) are 1:1 with a meal. Their column names
   are mirrored exactly by `core.nutrients.MACRO_KEYS` / `MICRO_KEYS`.
 - `app_config` is a simple key/value table; all access goes through `core.config`.
-- `food_cache` is the USDA lookup cache; the lifespan purges it when `CACHE_VERSION`
-  (in `services/nutrition_data/config.py`) changes, so improved matching isn't masked
-  by stale rows.
+- `food_cache` is the USDA lookup cache (per-100g profiles **and** miss sentinels for
+  negative caching); the lifespan purges it when `CACHE_VERSION` (in
+  `services/nutrition_data/config.py`) changes, so improved matching/aliases aren't masked
+  by stale rows (incl. stale cached misses).
 
 ---
 
@@ -149,12 +154,18 @@ Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API key
   confirming it matches in FNDDS via `python check_aliases.py <key>` (it audits dishes too).
   An unverified dish is harmless but wasteful — it just falls back to decomposition.
 - **`core` depends on nothing above it.** If `core` needs something from `services`,
-  the dependency is pointing the wrong way — move the shared piece down into `core`.
+  the dependency is pointing the wrong way — move the shared piece down into `core`. (The
+  lifespan's *startup* call into `vision_service.reload_clients` is a deliberate exception,
+  done via a local import so it isn't a module-load dependency.)
+- **Expensive clients are built once and reused, never per request.** The vision provider
+  clients (`vision_service`) are built in the lifespan and rebuilt only when a key/model
+  changes (`PUT /api/config` → `reload_clients`); USDA shares a `requests.Session` and a
+  thread pool; the DB engine is pooled. This is FastAPI's documented shared-resource pattern.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded**
-  (vision: 15s + one retry; USDA: 10s per call). Rate limits surface as HTTP 429, never
-  silent zeros.
-- **`MOCK_GEMINI=1`** short-circuits *both* stages (canned ingredient list + canned
-  totals, no network). The name is historical — it is provider-agnostic, not Gemini-only.
+  (vision: 15s + one retry; USDA: `(3.05s connect, 10s read)` + one retry on transient
+  Timeout/ConnectionError). Rate limits surface as HTTP 429, never silent zeros.
+- **`MOCK_GEMINI=1`** short-circuits *both* stages (canned dish list + canned totals, no
+  network). The name is historical — it is provider-agnostic, not Gemini-only.
 - **Logging** is timestamped and thread-named (`core.logging_config`); parallel USDA
   workers log under `usda-lookup_*` so they're distinguishable from the request thread.
 
@@ -163,21 +174,28 @@ Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API key
 ## Config & secrets
 
 API keys (`groq_api_key`, `gemini_api_key`, `usda_api_key`) and the vision
-provider/model live in the `app_config` table, editable via Settings (`PUT /api/config`)
+provider/model live in the `app_config` table, editable via Settings (`PUT /api/config`,
+which also calls `vision_service.reload_clients` so the change takes effect immediately)
 or seeded from env vars (`GROQ_API_KEY` / `GEMINI_API_KEY` / `USDA_API_KEY`) on first
 launch by `core.config.seed_defaults`. `GET /api/config` reports only whether each key
-is set — it never returns key values.
+is set — it never returns key values. CORS is locked down by default (same-origin serving);
+set `CORS_ORIGINS` (comma-separated) only if a separate origin must reach the API.
+`GET /api/health` returns `{"status":"ok"}`; a global exception handler logs unhandled
+errors and returns a clean 500.
 
 ---
 
 ## Tests
 
-`backend/tests/` — stdlib `unittest`, no network (USDA `requests.post` is stubbed; the
-cache points at a temp DB so the real `nutrition.db` is untouched). Run from `backend/`:
+`backend/tests/` — stdlib `unittest`, no network (USDA calls via the shared
+`usda_service._SESSION.post` are stubbed; the cache points at a temp DB so the real
+`nutrition.db` is untouched). Run from `backend/`:
 
 ```
 python -m unittest discover -s tests
 ```
 
-`test_vision_service.py` covers Stage-1 parsing; `test_usda_service.py` covers aliasing,
-matching, the cache, the lookup cap, and rate-limit propagation.
+`test_vision_service.py` covers Stage-1 dish parsing and `reload_clients`;
+`test_usda_service.py` covers aliasing, matching, the cache (incl. negative caching),
+the lookup cap, the curated dish-lookup gate, transient-timeout retries, and rate-limit
+propagation.

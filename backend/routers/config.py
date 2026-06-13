@@ -7,6 +7,7 @@ from core import config
 from core.config import DEFAULT_PROVIDER, DEFAULT_MODEL
 from core.database import get_db
 from schemas import ConfigUpdate
+from services.vision_service import reload_clients
 
 router = APIRouter(prefix="/config", tags=["config"])
 
@@ -29,4 +30,7 @@ def update_config(data: ConfigUpdate, db: Session = Depends(get_db)):
         if value is not None:
             config.set_value(db, key, value)
     db.commit()
+    # A key/provider/model may have changed — rebuild the vision clients so the next
+    # /analyze uses the new credentials without restarting the app.
+    reload_clients(db)
     return {"ok": True}

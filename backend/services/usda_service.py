@@ -18,6 +18,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 
 import requests
+from requests.adapters import HTTPAdapter
 from sqlalchemy import text
 
 from core.database import engine
@@ -33,6 +34,9 @@ from services.nutrition_data import (
     DISH_DATA_TYPES,
     USDA_PAGE_SIZE,
     USDA_TIMEOUT,
+    USDA_CONNECT_TIMEOUT,
+    USDA_RETRIES,
+    USDA_RETRY_BACKOFF,
     USDA_MAX_WORKERS,
     USDA_MAX_LOOKUPS,
     CACHE_VERSION,
@@ -54,6 +58,22 @@ logger = logging.getLogger("nutriai.nutrition_db")
 # instead of per /analyze call. The thread_name_prefix keeps each worker's log lines
 # distinguishable (the formatter prints %(threadName)s).
 _LOOKUP_POOL = ThreadPoolExecutor(max_workers=USDA_MAX_WORKERS, thread_name_prefix="usda-lookup")
+
+# A meal fires up to ~8 ingredient + dish lookups, each a POST to api.nal.usda.gov.
+# A shared Session keeps the HTTPS connection alive across the parallel workers and
+# across meals (no fresh TCP/TLS handshake per call); the adapter pool is sized to the
+# worker count. We do NOT use urllib3's Retry here: its default allowed_methods excludes
+# POST, so it would silently never retry the search. Transient errors are retried
+# explicitly in _search_usda instead (see USDA_RETRIES), which also keeps the retry in
+# the logs.
+_SESSION = requests.Session()
+_adapter = HTTPAdapter(
+    pool_connections=USDA_MAX_WORKERS,
+    pool_maxsize=USDA_MAX_WORKERS,
+    max_retries=0,
+)
+_SESSION.mount("https://", _adapter)
+_SESSION.mount("http://", _adapter)
 
 
 class UsdaRateLimitError(Exception):
@@ -97,6 +117,12 @@ def _extract_per_100g(food: dict) -> dict:
 # --- cache (food name -> per-100g nutrient profile) ---
 
 _cache_ready = False
+
+# Stored as the cached value for a DEFINITIVE miss (the search succeeded but returned 0
+# hits / no acceptable match). Lets repeat lookups of a known-bad name short-circuit
+# without re-hitting the slow USDA API. Transient failures (timeouts/connection errors)
+# are deliberately NOT cached this way — they must be retried on the next analyze.
+_MISS = {"__miss__": True}
 
 
 def _ensure_cache_table():
@@ -227,12 +253,25 @@ def _search_usda(query: str, api_key: str, require_all: bool, data_types: list |
     }
     logger.info("request  -> search %r (%s)", query, "strict" if require_all else "loose")
     start = time.monotonic()
-    resp = requests.post(
-        USDA_SEARCH_URL,
-        params={"api_key": api_key or "DEMO_KEY"},
-        json=payload,
-        timeout=USDA_TIMEOUT,
-    )
+    # Retry transient network failures (Timeout/ConnectionError) on a fresh socket; USDA
+    # search stalls intermittently and a retry usually clears it. Rate limits and HTTP
+    # errors come back as a real response and are handled below (not retried here).
+    for attempt in range(USDA_RETRIES + 1):
+        try:
+            resp = _SESSION.post(
+                USDA_SEARCH_URL,
+                params={"api_key": api_key or "DEMO_KEY"},
+                json=payload,
+                timeout=(USDA_CONNECT_TIMEOUT, USDA_TIMEOUT),
+            )
+            break
+        except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
+            if attempt < USDA_RETRIES:
+                logger.warning("retry %d/%d <- search %r | %s: %s",
+                               attempt + 1, USDA_RETRIES, query, type(e).__name__, e)
+                time.sleep(USDA_RETRY_BACKOFF * (attempt + 1))
+                continue
+            raise
     elapsed = time.monotonic() - start
 
     body = {}
@@ -268,6 +307,9 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
 
     cached = _cache_get(query)
     if cached is not None:
+        if cached.get("__miss__"):
+            logger.info("cache hit %r (known miss)", query)
+            return None
         logger.info("cache hit %r", query)
         return cached
 
@@ -292,6 +334,7 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
     food = _pick_best(foods, search_q)
     if food is None:
         logger.info("no match %r%s", query, via)
+        _cache_put(query, None, _MISS)
         return None
 
     per_100g = _extract_per_100g(food)
@@ -314,6 +357,9 @@ def lookup_dish(dish_name: str, api_key: str) -> dict | None:
     cache_key = "dish::" + name
     cached = _cache_get(cache_key)
     if cached is not None:
+        if cached.get("__miss__"):
+            logger.info("cache hit %r (dish, known miss)", name)
+            return None
         logger.info("cache hit %r (dish)", name)
         return cached
 
@@ -336,6 +382,7 @@ def lookup_dish(dish_name: str, api_key: str) -> dict | None:
     food = _pick_best(foods, search_q)
     if food is None:
         logger.info("no dish match %r%s", name, via)
+        _cache_put(cache_key, None, _MISS)
         return None
 
     per_100g = _extract_per_100g(food)
@@ -424,33 +471,44 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
     has no dish-level match for (or with no portion weight) fall back to summing their
     base-ingredient breakdown — so coverage is never worse than pure decomposition.
 
-    Returns (macros, micros, unmatched, skipped, items):
+    Returns (macros, micros, unmatched, skipped, breakdown):
       - macros/micros: full schema dicts (default 0)
       - unmatched: base ingredients USDA couldn't resolve (from the fallback path)
       - skipped: ingredients not looked up because the meal exceeded the per-meal
         uncached-lookup budget (USDA_MAX_LOOKUPS), largest portions kept
-      - items: the flat resolved breakdown for the UI — one {food, grams, source} line
-        per matched dish ("dish") and per fallback ingredient ("ingredient")
-    In mock mode returns canned totals + one dish line per dish, no API call. Raises
+      - breakdown: the dish-grouped resolution for the UI — one entry per dish:
+        {name, grams, matched, ingredients:[{food, grams, status}]} where `matched` is
+        True if the whole dish resolved in USDA (its ingredients then carry status
+        "not_looked_up"), and each fallback ingredient's status is
+        "matched" | "unmatched" | "skipped".
+    In mock mode returns canned totals + one matched entry per dish, no API call. Raises
     UsdaRateLimitError if USDA throttles the key.
     """
     if _is_mock():
         logger.info("mock mode -> canned nutrient totals (no USDA call)")
         macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
         micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
-        items = [{"food": d["name"].strip(), "grams": d.get("grams") or 0, "source": "dish"}
-                 for d in (dishes or []) if (d.get("name") or "").strip()]
-        return macros, micros, [], [], items
+        breakdown = [
+            {"name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": True,
+             "ingredients": [{"food": (it.get("food") or "").strip(),
+                              "grams": it.get("grams") or 0, "status": "not_looked_up"}
+                             for it in (d.get("items") or []) if (it.get("food") or "").strip()]}
+            for d in (dishes or []) if (d.get("name") or "").strip()
+        ]
+        return macros, micros, [], [], breakdown
 
     totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
-    items: list = []
     budget = USDA_MAX_LOOKUPS
 
     valid_dishes = [d for d in (dishes or []) if (d.get("name") or "").strip()]
 
-    # Phase A — dish-first. Cached dish lookups are free; cap uncached dish lookups at
-    # the budget, largest portions first. Dishes with no portion weight skip to Phase B.
-    dish_candidates = [d for d in valid_dishes if (d.get("grams") or 0) > 0]
+    # Phase A — dish-first, but only for CURATED dishes (names in DISH_ALIASES, confirmed
+    # to exist in USDA's FNDDS). A speculative whole-dish lookup for an un-curated name
+    # almost always misses and just burns a slow API call, so those skip straight to
+    # Phase B decomposition. Cached dish lookups are free; cap uncached ones at the budget,
+    # largest portions first. Dishes with no portion weight also skip to Phase B.
+    dish_candidates = [d for d in valid_dishes
+                       if (d.get("grams") or 0) > 0 and _normalize(d["name"]) in DISH_ALIASES]
     dish_cached = [d for d in dish_candidates if not _uncached_dish(d["name"])]
     dish_uncached = sorted((d for d in dish_candidates if _uncached_dish(d["name"])),
                            key=lambda d: d["grams"], reverse=True)
@@ -468,7 +526,6 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         factor = grams / 100.0
         for key in totals:
             totals[key] += per_100g.get(key, 0) * factor
-        items.append({"food": d["name"].strip(), "grams": grams, "source": "dish"})
         matched_ids.add(id(d))
 
     # Phase B — decompose every dish that didn't match at the dish level (includes
@@ -478,11 +535,34 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         if id(d) not in matched_ids:
             fallback_items.extend(d.get("items") or [])
 
-    ing_totals, unmatched, skipped, ing_lines = _sum_ingredients(fallback_items, api_key, budget)
+    ing_totals, unmatched, skipped, _ = _sum_ingredients(fallback_items, api_key, budget)
     for key in totals:
         totals[key] += ing_totals[key]
-    items.extend(ing_lines)
+
+    # Assemble the dish-grouped breakdown for the UI. A matched dish highlights its name
+    # (ingredients were not looked up -> "not_looked_up"); an unmatched dish carries each
+    # decomposed ingredient's outcome (name-based, since lookups are deduped per meal).
+    unmatched_set, skipped_set = set(unmatched), set(skipped)
+    breakdown: list = []
+    for d in valid_dishes:
+        matched = id(d) in matched_ids
+        ingredients = []
+        for it in (d.get("items") or []):
+            food = (it.get("food") or "").strip()
+            if not food:
+                continue
+            if matched:
+                status = "not_looked_up"
+            elif food in skipped_set:
+                status = "skipped"
+            elif food in unmatched_set:
+                status = "unmatched"
+            else:
+                status = "matched"
+            ingredients.append({"food": food, "grams": it.get("grams") or 0, "status": status})
+        breakdown.append({"name": d["name"].strip(), "grams": d.get("grams") or 0,
+                          "matched": matched, "ingredients": ingredients})
 
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
     micros = {k: round(totals[k], 4) for k in MICRO_KEYS}
-    return macros, micros, unmatched, skipped, items
+    return macros, micros, unmatched, skipped, breakdown

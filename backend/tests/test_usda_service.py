@@ -1,7 +1,7 @@
 """Unit tests for the USDA nutrient-lookup stage (services/usda_service.py).
 
-No network: every external USDA call is stubbed via `requests.post`. The cache is
-pointed at a throwaway temp SQLite DB so tests never touch the real nutrition.db.
+No network: every external USDA call is stubbed via the shared `nd._SESSION.post`. The
+cache is pointed at a throwaway temp SQLite DB so tests never touch the real nutrition.db.
 
 Run from the backend/ directory:
     python -m unittest tests.test_usda_service
@@ -110,7 +110,7 @@ class NutritionDbTest(unittest.TestCase):
             calls.append((json["query"], json["requireAllWords"]))
             return FakeResp(200, {"foods": [hit]})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             nd.lookup_nutrients("basmati rice", "key")
         # 'basmati rice' is aliased to the generic cooked-rice query, sent strict.
         self.assertEqual(calls, [("rice white cooked", True)])
@@ -136,7 +136,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": cands})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             per = nd.lookup_nutrients("butter", "key")
         self.assertEqual(per["calories"], 717)
 
@@ -146,7 +146,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": [hit]})
 
-        with patch.object(nd.requests, "post", side_effect=post) as m:
+        with patch.object(nd._SESSION, "post", side_effect=post) as m:
             per = nd.lookup_nutrients("onion", "key")
             self.assertEqual(per["calories"], 40)
             # second call served from cache -> no extra POST
@@ -162,7 +162,7 @@ class NutritionDbTest(unittest.TestCase):
             calls.append((json["query"], json["requireAllWords"]))
             return FakeResp(200, {"foods": [hit]} if json["query"] == "salmon" else {"foods": []})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             per = nd.lookup_nutrients("salmon, grilled", "key")
         self.assertEqual(calls, [("salmon, grilled", True), ("salmon", False)])
         self.assertEqual(per["calories"], 200)
@@ -177,7 +177,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": greens})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             self.assertIsNone(nd.lookup_nutrients("mint leaves", "key"))
 
     def test_first_word_ranking_beats_data_type(self):
@@ -191,7 +191,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": foods})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             per = nd.lookup_nutrients("yogurt", "key")
         self.assertEqual(per["calories"], 61)
 
@@ -201,7 +201,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": [hit]})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             # alias 'onions cooked' -> noun 'onions' (stem 'onion') matches 'Onions'
             self.assertIsNotNone(nd.lookup_nutrients("onion", "key"))
 
@@ -209,12 +209,52 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(200, {"foods": []})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             self.assertIsNone(nd.lookup_nutrients("nonexistent food", "key"))
+
+    # --- negative caching: a definitive miss is remembered, a timeout is not ---
+
+    def test_miss_is_negative_cached(self):
+        # A 0-hit search is remembered so a repeat lookup makes no further API call.
+        with patch.object(nd._SESSION, "post",
+                          side_effect=lambda *a, **k: FakeResp(200, {"foods": []})) as m:
+            self.assertIsNone(nd.lookup_nutrients("nonexistent food", "key"))
+            self.assertIsNone(nd.lookup_nutrients("nonexistent food", "key"))  # served from miss cache
+        self.assertEqual(m.call_count, 1)
+
+    def test_timeout_is_not_cached(self):
+        # A transient timeout must NOT be remembered as a miss — the next lookup retries
+        # and can succeed once USDA responds.
+        with patch.object(nd._SESSION, "post", side_effect=nd.requests.exceptions.Timeout()):
+            self.assertIsNone(nd.lookup_nutrients("onion", "key"))
+        hit = food("SR Legacy", "Onions, raw", 1, {1008: 40})
+        with patch.object(nd._SESSION, "post",
+                          side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})) as m:
+            per = nd.lookup_nutrients("onion", "key")  # retried, not blocked by a cached miss
+        self.assertEqual(per["calories"], 40)
+        self.assertGreaterEqual(m.call_count, 1)
+
+    def test_dish_miss_is_negative_cached(self):
+        # A curated dish that returns 0 dish hits is remembered; a second meal with the
+        # same dish does no dish search at all.
+        dish_searches = []
+
+        def post(url, params=None, json=None, timeout=None):
+            if json["dataType"] == nd.DISH_DATA_TYPES:
+                dish_searches.append(json["query"])
+                return FakeResp(200, {"foods": []})
+            return FakeResp(200, {"foods": []})  # ingredients also miss (irrelevant here)
+
+        dishes = [{"name": "dal", "grams": 100, "items": [{"food": "lentils", "grams": 100}]}]
+        with patch.object(nd._SESSION, "post", side_effect=post):
+            nd.nutrients_for_meal(dishes, "key")
+            self.assertEqual(dish_searches, ["dal"])          # looked up once
+            nd.nutrients_for_meal(dishes, "key")              # second meal, same dish
+        self.assertEqual(dish_searches, ["dal"])              # still 1 -> served from miss cache
 
     def test_clear_cache_empties_table(self):
         hit = food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})
-        with patch.object(nd.requests, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})) as m:
+        with patch.object(nd._SESSION, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})) as m:
             nd.lookup_nutrients("rice", "key")
             nd.clear_cache()
             nd.lookup_nutrients("rice", "key")  # cache empty -> hits API again
@@ -226,7 +266,7 @@ class NutritionDbTest(unittest.TestCase):
         def post(url, params=None, json=None, timeout=None):
             return FakeResp(429, {"error": {"code": "OVER_RATE_LIMIT", "message": "x"}})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             with self.assertRaises(nd.UsdaRateLimitError):
                 nd.lookup_nutrients("anything", "key")
 
@@ -235,7 +275,7 @@ class NutritionDbTest(unittest.TestCase):
             return FakeResp(429, {"error": {"code": "OVER_RATE_LIMIT"}})
 
         dishes = [{"name": "rice bowl", "grams": 100, "items": [{"food": "rice", "grams": 100}]}]
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             with self.assertRaises(nd.UsdaRateLimitError):
                 nd.nutrients_for_meal(dishes, "key")
 
@@ -253,7 +293,7 @@ class NutritionDbTest(unittest.TestCase):
             {"food": "white rice, cooked", "grams": 50},   # deduped name, +0.5x
             {"food": "mystery sauce", "grams": 30},         # unmatched
         ]
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             totals, unmatched, skipped, lines = nd._sum_ingredients(items, "key", 8)
 
         self.assertAlmostEqual(totals["calories"], 250.0)   # (200+50)/100 * 100
@@ -284,48 +324,108 @@ class NutritionDbTest(unittest.TestCase):
 
         dishes = [{"name": "idli", "grams": 160,
                    "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}]}]
-        with patch.object(nd.requests, "post", side_effect=post):
-            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
+        with patch.object(nd._SESSION, "post", side_effect=post):
+            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes, "key")
 
         self.assertAlmostEqual(macros["calories"], 240.0)  # 150 * 160/100, NOT rice+urad
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
-        self.assertEqual(items, [{"food": "idli", "grams": 160, "source": "dish"}])
+        # matched dish -> name highlighted, ingredients carried but not looked up
+        self.assertEqual(dishes_out, [{
+            "name": "idli", "grams": 160, "matched": True,
+            "ingredients": [
+                {"food": "rice", "grams": 90, "status": "not_looked_up"},
+                {"food": "urad dal", "grams": 30, "status": "not_looked_up"},
+            ],
+        }])
         self.assertEqual(ingredient_queries, [])  # fallback never ran
 
-    def test_dish_miss_falls_back_to_ingredients(self):
+    def test_curated_dish_miss_falls_back_to_ingredients(self):
+        # 'dal' is curated (in DISH_ALIASES) so it IS looked up at the dish level; when
+        # that misses it decomposes to its ingredients.
+        dish_searched = []
+
         def post(url, params=None, json=None, timeout=None):
             q = json["query"]
-            if json["dataType"] == nd.DISH_DATA_TYPES:           # no dish match
+            if json["dataType"] == nd.DISH_DATA_TYPES:           # curated dish search, no match
+                dish_searched.append(q)
                 return FakeResp(200, {"foods": []})
             if "rice" in q:                                       # ingredient fallback
                 return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})]})
             return FakeResp(200, {"foods": []})
 
-        dishes = [{"name": "mystery dish", "grams": 100,
+        dishes = [{"name": "dal", "grams": 100,
                    "items": [{"food": "rice", "grams": 200}, {"food": "secret spice", "grams": 5}]}]
-        with patch.object(nd.requests, "post", side_effect=post):
-            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
+        with patch.object(nd._SESSION, "post", side_effect=post):
+            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes, "key")
 
-        self.assertAlmostEqual(macros["calories"], 260.0)  # rice 130 * 200/100
+        self.assertEqual(dish_searched, ["dal"])             # curated -> dish lookup attempted
+        self.assertAlmostEqual(macros["calories"], 260.0)    # rice 130 * 200/100
         self.assertEqual(unmatched, ["secret spice"])
         self.assertEqual(skipped, [])
-        self.assertEqual([(i["food"], i["source"]) for i in items], [
-            ("rice", "ingredient"), ("secret spice", "ingredient"),
-        ])
+        # dish missed -> not matched, each ingredient carries its own USDA outcome
+        self.assertEqual(dishes_out, [{
+            "name": "dal", "grams": 100, "matched": False,
+            "ingredients": [
+                {"food": "rice", "grams": 200, "status": "matched"},
+                {"food": "secret spice", "grams": 5, "status": "unmatched"},
+            ],
+        }])
+
+    def test_uncurated_dish_skips_dish_lookup(self):
+        # A dish name not in DISH_ALIASES gets NO speculative whole-dish lookup; it
+        # decomposes straight to ingredients (saves a slow, almost-always-missing call).
+        dish_searches = []
+
+        def post(url, params=None, json=None, timeout=None):
+            if json["dataType"] == nd.DISH_DATA_TYPES:
+                dish_searches.append(json["query"])
+            if "rice" in json["query"]:
+                return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})]})
+            return FakeResp(200, {"foods": []})
+
+        dishes = [{"name": "mystery dish", "grams": 100,
+                   "items": [{"food": "rice", "grams": 200}, {"food": "secret spice", "grams": 5}]}]
+        with patch.object(nd._SESSION, "post", side_effect=post):
+            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes, "key")
+
+        self.assertEqual(dish_searches, [])                  # no dish-level lookup attempted
+        self.assertAlmostEqual(macros["calories"], 260.0)    # decomposed: rice 130 * 200/100
+        self.assertEqual(unmatched, ["secret spice"])
+        self.assertEqual(dishes_out[0]["matched"], False)
+
+    # --- transient-failure retries ---
+
+    def test_search_retries_on_timeout_then_succeeds(self):
+        hit = food("SR Legacy", "Onions, raw", 1, {1008: 40})
+        with patch.object(nd._SESSION, "post",
+                          side_effect=[nd.requests.exceptions.Timeout(), FakeResp(200, {"foods": [hit]})]) as m:
+            per = nd.lookup_nutrients("onion", "key")
+        self.assertEqual(m.call_count, 2)                    # retried once, then succeeded
+        self.assertIsNotNone(per)
+        self.assertEqual(per["calories"], 40)
+
+    def test_search_exhausts_retries_returns_none(self):
+        with patch.object(nd._SESSION, "post",
+                          side_effect=nd.requests.exceptions.Timeout()) as m:
+            self.assertIsNone(nd.lookup_nutrients("onion", "key"))
+        self.assertEqual(m.call_count, nd.USDA_RETRIES + 1)  # all attempts timed out
 
     def test_mock_mode_returns_canned_totals_without_network(self):
         os.environ["MOCK_GEMINI"] = "1"
         try:
             # requests.post is NOT patched — a network call here would error/hang.
             dishes = [{"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]}]
-            macros, micros, unmatched, skipped, items = nd.nutrients_for_meal(dishes, "key")
+            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes, "key")
         finally:
             os.environ.pop("MOCK_GEMINI", None)
         self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
-        self.assertEqual(items, [{"food": "idli", "grams": 160, "source": "dish"}])
+        self.assertEqual(dishes_out, [{
+            "name": "idli", "grams": 160, "matched": True,
+            "ingredients": [{"food": "rice", "grams": 90, "status": "not_looked_up"}],
+        }])
 
     # --- spices: model wording -> USDA wording ---
 
@@ -336,7 +436,7 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(nd._aliased("cinnamon stick"), "cinnamon ground")
 
         hit = food("SR Legacy", "Spices, turmeric, ground", 1, {1008: 312, 1089: 55})
-        with patch.object(nd.requests, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})):
+        with patch.object(nd._SESSION, "post", side_effect=lambda *a, **k: FakeResp(200, {"foods": [hit]})):
             per = nd.lookup_nutrients("turmeric powder", "key")
         self.assertIsNotNone(per)
         self.assertEqual(per["calories"], 312)
@@ -362,7 +462,7 @@ class NutritionDbTest(unittest.TestCase):
             {"food": "beta", "grams": 200},
             {"food": "gamma", "grams": 10},   # smallest -> dropped when budget=2
         ]
-        with patch.object(nd.requests, "post", side_effect=post) as m:
+        with patch.object(nd._SESSION, "post", side_effect=post) as m:
             totals, unmatched, skipped, lines = nd._sum_ingredients(items, "key", 2)
 
         self.assertEqual(skipped, ["gamma"])
@@ -379,7 +479,7 @@ class NutritionDbTest(unittest.TestCase):
                 return FakeResp(200, {"foods": [food("SR Legacy", "Rice, white, cooked", 1, {1008: 130})]})
             return FakeResp(200, {"foods": [food("SR Legacy", q, 2, {1008: 100})]})
 
-        with patch.object(nd.requests, "post", side_effect=post):
+        with patch.object(nd._SESSION, "post", side_effect=post):
             nd.lookup_nutrients("rice", "key")   # pre-cache "rice"
             items = [
                 {"food": "rice", "grams": 100},    # cached -> free, always counted

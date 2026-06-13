@@ -26,6 +26,10 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         config.seed_defaults(db)
+        # Build the vision provider clients once, now that config is seeded. Imported
+        # locally (like usda_service above) to keep core's import graph free of services.
+        from services.vision_service import reload_clients
+        reload_clients(db)
     finally:
         db.close()
 

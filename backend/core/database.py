@@ -1,9 +1,32 @@
-from sqlalchemy import create_engine
+from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker, DeclarativeBase
 
 DATABASE_URL = "sqlite:///./nutrition.db"
 
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
+# File-based SQLite already gets SQLAlchemy's QueuePool by default, so basic connection
+# pooling is in place. The production-meaningful tuning for SQLite isn't pool size but
+# the per-connection PRAGMAs below (set in the `connect` listener): under this app's
+# concurrent access (the USDA ThreadPoolExecutor + asyncio.to_thread workers all touch
+# the DB), WAL mode + busy_timeout are what actually prevent "database is locked".
+# pool_pre_ping transparently discards any connection that has gone stale.
+engine = create_engine(
+    DATABASE_URL,
+    connect_args={"check_same_thread": False},
+    pool_pre_ping=True,
+)
+
+
+@event.listens_for(engine, "connect")
+def _set_sqlite_pragmas(dbapi_conn, _connection_record):
+    """Apply SQLite reliability/concurrency pragmas on every new connection."""
+    cursor = dbapi_conn.cursor()
+    cursor.execute("PRAGMA journal_mode=WAL")     # readers don't block the writer
+    cursor.execute("PRAGMA busy_timeout=5000")    # wait up to 5s for a lock vs. erroring
+    cursor.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster than FULL
+    cursor.execute("PRAGMA foreign_keys=ON")
+    cursor.close()
+
+
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 

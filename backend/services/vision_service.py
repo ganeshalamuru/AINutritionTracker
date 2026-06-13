@@ -11,9 +11,11 @@ import json
 import logging
 import os
 import re
+import threading
 import time
 import google.generativeai as genai
 
+from core import config
 from core.config import DEFAULT_PROVIDER, DEFAULT_MODEL
 from core.logging_config import configure_logging
 
@@ -21,6 +23,49 @@ from core.logging_config import configure_logging
 # here too so logs still show when this module is imported standalone, e.g. tests).
 configure_logging()
 logger = logging.getLogger("nutriai.vision")
+
+# --- shared vision clients ---
+#
+# A vision client carries its own HTTP connection pool, so we build it ONCE per process
+# and reuse it across every /analyze. Following FastAPI's documented pattern for shared
+# resources, the registry is populated in the app lifespan (core.lifespan calls
+# reload_clients at startup) and rebuilt only when a key/provider/model changes in
+# config (routers.config calls reload_clients after PUT /api/config). The lock serializes
+# those rare rebuilds; the request hot path (_groq_analyze / _gemini_analyze) just reads
+# the global, which is atomic under the GIL — no per-call lock or key comparison.
+_lock = threading.Lock()
+_groq_client = None      # built from groq_api_key
+_gemini_model = None     # built from (gemini_api_key, vision_model)
+
+
+def _build_groq(api_key: str):
+    from groq import Groq  # lazy: keep the module importable without the SDK installed
+    return Groq(api_key=api_key)
+
+
+def _build_gemini(api_key: str, model: str):
+    genai.configure(api_key=api_key)  # process-global key (matches the one-key reality)
+    return genai.GenerativeModel(
+        model,
+        generation_config={"max_output_tokens": 512, "temperature": 0},
+    )
+
+
+def reload_clients(db):
+    """(Re)build the vision provider clients from current config. Called once at startup
+    (core.lifespan) and again after every PUT /api/config. A client is built for each
+    provider that has a key, so switching provider in Settings is ready immediately. The
+    lock serializes rebuilds; dispatch reads the resulting globals without locking."""
+    _, model = config.get_vision_config(db)
+    groq_key = config.get_value(db, "groq_api_key")
+    gemini_key = config.get_value(db, "gemini_api_key")
+    with _lock:
+        global _groq_client, _gemini_model
+        _groq_client = _build_groq(groq_key) if groq_key else None
+        _gemini_model = _build_gemini(gemini_key, model) if gemini_key else None
+    logger.info("vision clients reloaded (groq=%s, gemini=%s, model=%s)",
+                _groq_client is not None, _gemini_model is not None, model)
+
 
 # Per-call timeout (seconds) and retry budget. The app used to hang forever when
 # the model never responded — cap each call and retry at most once.
@@ -125,13 +170,13 @@ def _parse_compact(text: str) -> dict:
 
 
 # Provider functions return (parsed_result, raw_response_text) so the caller can
-# log the model's raw output uniformly.
-def _gemini_analyze(image_bytes: bytes, api_key: str, prompt: str, model: str) -> tuple[dict, str]:
-    genai.configure(api_key=api_key)
-    gen_model = genai.GenerativeModel(
-        model,
-        generation_config={"max_output_tokens": 512, "temperature": 0},
-    )
+# log the model's raw output uniformly. They read the shared client built by
+# reload_clients (no per-call construction) — `model` is passed through for logging/Groq;
+# the Gemini model is already baked into _gemini_model at build time.
+def _gemini_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+    gen_model = _gemini_model
+    if gen_model is None:
+        raise RuntimeError("Gemini client not initialized — set the Gemini API key in Settings.")
     image_part = {"mime_type": "image/jpeg", "data": image_bytes}
     response = gen_model.generate_content(
         [prompt, image_part],
@@ -141,10 +186,10 @@ def _gemini_analyze(image_bytes: bytes, api_key: str, prompt: str, model: str) -
     return _parse_compact(raw), raw
 
 
-def _groq_analyze(image_bytes: bytes, api_key: str, prompt: str, model: str) -> tuple[dict, str]:
-    from groq import Groq
-
-    client = Groq(api_key=api_key)
+def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+    client = _groq_client
+    if client is None:
+        raise RuntimeError("Groq client not initialized — set the Groq API key in Settings.")
     b64 = base64.b64encode(image_bytes).decode()
     response = client.chat.completions.create(
         model=model,
@@ -177,7 +222,6 @@ PROVIDERS = {
 
 def analyze_meal_image(
     image_bytes: bytes,
-    api_key: str,
     user_note: str = "",
     model: str = DEFAULT_MODEL,
     provider: str = DEFAULT_PROVIDER,
@@ -201,7 +245,7 @@ def analyze_meal_image(
     for attempt in range(MAX_RETRIES + 1):
         start = time.monotonic()
         try:
-            result, raw = analyze(image_bytes, api_key, prompt, model)
+            result, raw = analyze(image_bytes, prompt, model)
             elapsed = time.monotonic() - start
             logger.info(
                 "response <- provider=%s model=%s | %.2fs | raw=%s",

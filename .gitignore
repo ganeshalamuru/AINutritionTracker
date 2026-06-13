@@ -16,8 +16,10 @@ env/
 .env.example
 backend/.env
 
-# Database
+# Database (incl. WAL/SHM sidecar files from WAL journal mode)
 backend/nutrition.db
+backend/nutrition.db-wal
+backend/nutrition.db-shm
 
 # Uploaded images (temp staging)
 backend/uploads/

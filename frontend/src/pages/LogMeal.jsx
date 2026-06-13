@@ -358,40 +358,27 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
               </div>
             </div>
 
-            {photo.analysis.items?.length > 0 && (
+            {photo.analysis.dishes?.length > 0 && (
               <div className="bg-gray-50 rounded-xl p-3">
-                <span className="text-xs font-semibold text-gray-700 block mb-1.5">
-                  Identified ingredients
+                <span className="text-xs font-semibold text-gray-700 block mb-1">
+                  Breakdown
                 </span>
-                <div className="flex flex-wrap gap-1.5">
-                  {photo.analysis.items.map((it, i) => {
-                    const isSkipped = photo.analysis.skipped?.includes(it.food);
-                    const isUnmatched = photo.analysis.unmatched?.includes(it.food);
-                    const isDish = it.source === "dish";
-                    const style = isSkipped
-                      ? "bg-gray-200 text-gray-500 line-through"
-                      : isUnmatched
-                      ? "bg-yellow-100 text-yellow-700"
-                      : isDish
-                      ? "bg-green-50 text-green-700"
-                      : "bg-white text-gray-600";
-                    return (
-                      <span key={i} className={`text-xs px-2 py-1 rounded-full ${style}`}>
-                        {it.food} · {Math.round(it.grams)}g
-                        {isDish && <span className="ml-1 opacity-60">dish</span>}
-                      </span>
-                    );
-                  })}
+                <p className="text-[11px] text-gray-400 mb-2">
+                  Green = found in the food database. A matched dish is counted whole; an
+                  unmatched dish is counted from its ingredients.
+                </p>
+                <div className="space-y-2.5">
+                  {photo.analysis.dishes.map((dish, i) => <DishRow key={i} dish={dish} />)}
                 </div>
                 {photo.analysis.unmatched?.length > 0 && (
-                  <p className="text-xs text-yellow-700 mt-2">
+                  <p className="text-xs text-yellow-700 mt-2.5">
                     Couldn't find {photo.analysis.unmatched.length} item
                     {photo.analysis.unmatched.length > 1 ? "s" : ""} in the food database —
                     totals may be undercounted.
                   </p>
                 )}
                 {photo.analysis.skipped?.length > 0 && (
-                  <p className="text-xs text-gray-500 mt-2">
+                  <p className="text-xs text-gray-500 mt-1.5">
                     {photo.analysis.skipped.length} ingredient
                     {photo.analysis.skipped.length > 1 ? "s" : ""} over the lookup limit —
                     not counted.
@@ -414,6 +401,54 @@ function PhotoCard({ photo, onUpdate, onRemove, onRetry }) {
           </>
         )}
       </div>
+    </div>
+  );
+}
+
+// Status colors for a decomposed ingredient (only used when its dish did NOT match).
+const ING_STYLE = {
+  matched: "bg-green-50 text-green-700",
+  unmatched: "bg-yellow-100 text-yellow-700",
+  skipped: "bg-gray-200 text-gray-500 line-through",
+};
+
+function DishRow({ dish }) {
+  const grams = Math.round(dish.grams || 0);
+  return (
+    <div>
+      {/* Dish header — highlighted green when the whole dish matched in USDA */}
+      <div className="flex items-center gap-1.5 flex-wrap">
+        <span
+          className={`text-xs px-2 py-1 rounded-full font-medium ${
+            dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
+          }`}
+        >
+          {dish.name}{grams > 0 ? ` · ${grams}g` : ""}
+        </span>
+        {dish.matched ? (
+          <span className="text-[10px] text-green-700 font-medium">matched</span>
+        ) : (
+          <span className="text-[10px] text-gray-400">from ingredients</span>
+        )}
+      </div>
+
+      {/* Ingredients — de-emphasized when the dish matched (they weren't looked up),
+          colored by their own USDA outcome when the dish was decomposed. */}
+      {dish.ingredients?.length > 0 && (
+        <div className="flex flex-wrap gap-1 mt-1 pl-3">
+          {dish.ingredients.map((ing, i) => {
+            const g = Math.round(ing.grams || 0);
+            const style = dish.matched
+              ? "bg-transparent text-gray-400"
+              : ING_STYLE[ing.status] || "bg-white text-gray-600";
+            return (
+              <span key={i} className={`text-[11px] px-1.5 py-0.5 rounded-full ${style}`}>
+                {ing.food}{g > 0 ? ` · ${g}g` : ""}
+              </span>
+            );
+          })}
+        </div>
+      )}
     </div>
   );
 }

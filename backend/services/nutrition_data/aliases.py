@@ -168,7 +168,7 @@ DISH_ALIASES = {
     "chicken curry": "chicken curry",
     "butter chicken": "chicken curry",
     "raita": "raita",
-    "coconut chutney": "coconut chutney",
-    "chutney": "chutney",
+    # Chutneys aren't in FNDDS (verified: 0 hits) — left un-curated so they skip the
+    # speculative dish lookup and decompose to ingredients (coconut, etc.) directly.
     "idli sambar": "idli",
 }

@@ -15,8 +15,8 @@ from core.config import UPLOADS_DIR, BACKEND_DIR
 from core.nutrients import to_macros_data, to_micros_data, sum_macros, sum_micros
 from models import Meal, Macros, Micros
 from schemas import (
-    AnalyzeResponse, MealItem, MealLogRequest, MealLogResponse, LogGroupRequest,
-    MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
+    AnalyzeResponse, DishBreakdown, IngredientBreakdown, MealLogRequest, MealLogResponse,
+    LogGroupRequest, MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
     TimelineResponse, MacrosData, MicrosData,
 )
 from services.vision_service import analyze_meal_image
@@ -41,7 +41,10 @@ def _map_vision_error(e: Exception) -> HTTPException:
 
 async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str]) -> AnalyzeResponse:
     provider, model = config.get_vision_config(db)
-    api_key = config.get_api_key(db, provider)
+    # Guard only: raises 503 "set your key" if the provider's key isn't configured. The
+    # vision client itself is built once at startup / on config change (vision_service),
+    # so the key no longer flows into the call.
+    config.get_api_key(db, provider)
 
     token = str(uuid.uuid4())
     temp_path = os.path.join(UPLOADS_DIR, f"{token}.jpg")
@@ -51,7 +54,7 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
     # Stage 1: vision model identifies each dish + its base-ingredient fallback (no nutrients).
     try:
         result = await asyncio.to_thread(
-            analyze_meal_image, image_bytes, api_key, user_note or "", model, provider
+            analyze_meal_image, image_bytes, user_note or "", model, provider
         )
     except Exception as e:
         os.remove(temp_path)
@@ -80,8 +83,12 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         estimated_serving=result.get("estimated_serving"),
         macros=MacrosData(**macros_d),
         micros=MicrosData(**micros_d),
-        items=[MealItem(food=i.get("food", ""), grams=i.get("grams") or 0, source=i.get("source"))
-               for i in breakdown],
+        dishes=[DishBreakdown(
+            name=d.get("name", ""),
+            grams=d.get("grams") or 0,
+            matched=d.get("matched", False),
+            ingredients=[IngredientBreakdown(**i) for i in d.get("ingredients", [])],
+        ) for d in breakdown],
         unmatched=unmatched,
         skipped=skipped,
         temp_image_token=token,
