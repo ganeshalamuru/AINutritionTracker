@@ -1,6 +1,7 @@
 """FastAPI app entrypoint: load env, configure logging, assemble routers, and serve
 the built frontend. Startup/shutdown logic lives in core.lifespan; config access in
 core.config; per-domain logic in services/. This file stays a thin assembly."""
+
 import logging
 import os
 
@@ -14,16 +15,25 @@ configure_logging()
 
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
 
 from core.config import DIST_DIR
 from core.lifespan import lifespan
-from routers import profiles, meals, nutrition, config
+from routers import config, meals, nutrition, profiles
 
 logger = logging.getLogger("nutriai")
 
-app = FastAPI(title="AI Nutrition Tracker", lifespan=lifespan)
+# Interactive docs are on by default (local/dev convenience) and hidden when the app is
+# run as a shared deployment — set APP_ENV=production to disable /docs, /redoc, /openapi.json.
+_docs_on = os.getenv("APP_ENV", "development").lower() != "production"
+app = FastAPI(
+    title="AI Nutrition Tracker",
+    lifespan=lifespan,
+    docs_url="/docs" if _docs_on else None,
+    redoc_url="/redoc" if _docs_on else None,
+    openapi_url="/openapi.json" if _docs_on else None,
+)
 
 # The frontend is served same-origin (prod: FastAPI serves dist/ on :8000; dev: Vite
 # proxies /api -> :8001), so cross-origin requests aren't part of normal operation and
@@ -50,6 +60,7 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.get("/api/health")
 async def health():
     return {"status": "ok"}
+
 
 app.include_router(profiles.router, prefix="/api")
 app.include_router(meals.router, prefix="/api")

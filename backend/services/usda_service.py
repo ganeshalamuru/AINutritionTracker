@@ -11,6 +11,7 @@ all items into the same 7-macro / 17-micro schema the rest of the app uses.
 Lookups are cached in SQLite (`food_cache`) so repeated foods cost no API calls and
 we stay well under USDA's free-tier ~1,000 req/hour limit.
 """
+
 import json
 import logging
 import os
@@ -24,31 +25,30 @@ from sqlalchemy import text
 from core.database import engine
 from core.logging_config import configure_logging
 from core.nutrients import MACRO_KEYS, MICRO_KEYS
+
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
 # Re-imported here so the public surface (USDA_*, FOOD_ALIASES, CACHE_VERSION, ...) and
 # all consumers (lifespan, check_aliases.py, tests) keep working unchanged.
 from services.nutrition_data import (
-    USDA_SEARCH_URL,
-    USDA_DATA_TYPES,
     DATA_TYPE_RANK,
-    DISH_DATA_TYPES,
-    USDA_PAGE_SIZE,
-    USDA_TIMEOUT,
-    USDA_CONNECT_TIMEOUT,
-    USDA_RETRIES,
-    USDA_RETRY_BACKOFF,
-    USDA_MAX_WORKERS,
-    USDA_MAX_LOOKUPS,
-    CACHE_VERSION,
-    COOKING_ADJECTIVES,
-    SIMPLIFY_STRIP_WORDS,
-    GENERIC_WORDS,
-    FOOD_ALIASES,
     DISH_ALIASES,
-    FDC_NUTRIENT_MAP,
+    DISH_DATA_TYPES,
     ENERGY_FALLBACK_IDS,
+    FDC_NUTRIENT_MAP,
+    FOOD_ALIASES,
+    GENERIC_WORDS,
     MOCK_MACROS,
     MOCK_MICROS,
+    SIMPLIFY_STRIP_WORDS,
+    USDA_CONNECT_TIMEOUT,
+    USDA_DATA_TYPES,
+    USDA_MAX_LOOKUPS,
+    USDA_MAX_WORKERS,
+    USDA_PAGE_SIZE,
+    USDA_RETRIES,
+    USDA_RETRY_BACKOFF,
+    USDA_SEARCH_URL,
+    USDA_TIMEOUT,
 )
 
 configure_logging()
@@ -133,10 +133,12 @@ def _ensure_cache_table():
         return
     try:
         with engine.begin() as conn:
-            conn.execute(text(
-                "CREATE TABLE IF NOT EXISTS food_cache ("
-                "query TEXT PRIMARY KEY, fdc_id INTEGER, nutrients_json TEXT, fetched_at REAL)"
-            ))
+            conn.execute(
+                text(
+                    "CREATE TABLE IF NOT EXISTS food_cache ("
+                    "query TEXT PRIMARY KEY, fdc_id INTEGER, nutrients_json TEXT, fetched_at REAL)"
+                )
+            )
         _cache_ready = True
     except Exception as e:
         logger.warning("could not ensure food_cache table: %s", e)
@@ -243,13 +245,17 @@ def _pick_best(foods: list, query: str) -> dict | None:
     return min(survivors, key=rank)
 
 
-def _search_usda(query: str, api_key: str, require_all: bool, data_types: list | None = None) -> list:
+def _search_usda(
+    query: str, api_key: str, require_all: bool, data_types: list | None = None
+) -> list:
     """One external call to USDA /foods/search. Logs the request and response, and
     raises UsdaRateLimitError on a throttle. Returns the candidate food list.
     `data_types` defaults to the ingredient set; the dish lookup passes DISH_DATA_TYPES."""
     payload = {
-        "query": query, "dataType": data_types or USDA_DATA_TYPES,
-        "pageSize": USDA_PAGE_SIZE, "requireAllWords": require_all,
+        "query": query,
+        "dataType": data_types or USDA_DATA_TYPES,
+        "pageSize": USDA_PAGE_SIZE,
+        "requireAllWords": require_all,
     }
     logger.info("request  -> search %r (%s)", query, "strict" if require_all else "loose")
     start = time.monotonic()
@@ -267,8 +273,14 @@ def _search_usda(query: str, api_key: str, require_all: bool, data_types: list |
             break
         except (requests.exceptions.Timeout, requests.exceptions.ConnectionError) as e:
             if attempt < USDA_RETRIES:
-                logger.warning("retry %d/%d <- search %r | %s: %s",
-                               attempt + 1, USDA_RETRIES, query, type(e).__name__, e)
+                logger.warning(
+                    "retry %d/%d <- search %r | %s: %s",
+                    attempt + 1,
+                    USDA_RETRIES,
+                    query,
+                    type(e).__name__,
+                    e,
+                )
                 time.sleep(USDA_RETRY_BACKOFF * (attempt + 1))
                 continue
             raise
@@ -280,8 +292,9 @@ def _search_usda(query: str, api_key: str, require_all: bool, data_types: list |
     except Exception:
         pass
 
-    over_limit = (resp.status_code in (429, 403)
-                  or (body.get("error") or {}).get("code") == "OVER_RATE_LIMIT")
+    over_limit = (
+        resp.status_code in (429, 403) or (body.get("error") or {}).get("code") == "OVER_RATE_LIMIT"
+    )
     if over_limit:
         logger.warning("response <- %r | rate limited (HTTP %d)", query, resp.status_code)
         raise UsdaRateLimitError(f"USDA rate limit (HTTP {resp.status_code}) for {query!r}")
@@ -292,8 +305,11 @@ def _search_usda(query: str, api_key: str, require_all: bool, data_types: list |
 
     foods = body.get("foods") or []
     logger.info("response <- %r | %d hits | %.2fs", query, len(foods), elapsed)
-    logger.debug("candidates %r: %s", query,
-                 [(f.get("dataType"), f.get("fdcId"), f.get("description")) for f in foods[:USDA_PAGE_SIZE]])
+    logger.debug(
+        "candidates %r: %s",
+        query,
+        [(f.get("dataType"), f.get("fdcId"), f.get("description")) for f in foods[:USDA_PAGE_SIZE]],
+    )
     return foods
 
 
@@ -338,8 +354,9 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
         return None
 
     per_100g = _extract_per_100g(food)
-    logger.info("matched %r%s -> %s [%s]",
-                query, via, food.get("description"), food.get("dataType"))
+    logger.info(
+        "matched %r%s -> %s [%s]", query, via, food.get("description"), food.get("dataType")
+    )
     _cache_put(query, food.get("fdcId"), per_100g)
     return per_100g
 
@@ -372,7 +389,9 @@ def lookup_dish(dish_name: str, api_key: str) -> dict | None:
             simpler = _simplify(search_q)
             if simpler:
                 logger.info("retry %r (dish, loose)", simpler)
-                foods = _search_usda(simpler, api_key, require_all=False, data_types=DISH_DATA_TYPES)
+                foods = _search_usda(
+                    simpler, api_key, require_all=False, data_types=DISH_DATA_TYPES
+                )
     except UsdaRateLimitError:
         raise
     except Exception as e:
@@ -386,8 +405,9 @@ def lookup_dish(dish_name: str, api_key: str) -> dict | None:
         return None
 
     per_100g = _extract_per_100g(food)
-    logger.info("matched dish %r%s -> %s [%s]",
-                name, via, food.get("description"), food.get("dataType"))
+    logger.info(
+        "matched dish %r%s -> %s [%s]", name, via, food.get("description"), food.get("dataType")
+    )
     _cache_put(cache_key, food.get("fdcId"), per_100g)
     return per_100g
 
@@ -419,8 +439,11 @@ def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict
     lines: list = []
     unmatched: list = []
 
-    valid = [it for it in (items or [])
-             if (it.get("food") or "").strip() and _is_number(it.get("grams")) and it.get("grams") > 0]
+    valid = [
+        it
+        for it in (items or [])
+        if (it.get("food") or "").strip() and _is_number(it.get("grams")) and it.get("grams") > 0
+    ]
     if not valid:
         return totals, unmatched, [], lines
 
@@ -431,18 +454,22 @@ def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict
         grams_by_name[name] = grams_by_name.get(name, 0.0) + it["grams"]
 
     cached = {n for n in grams_by_name if _cache_get(_normalize(n)) is not None}
-    uncached = sorted((n for n in grams_by_name if n not in cached),
-                      key=lambda n: grams_by_name[n], reverse=True)
+    uncached = sorted(
+        (n for n in grams_by_name if n not in cached), key=lambda n: grams_by_name[n], reverse=True
+    )
     budget = max(budget, 0)
     to_lookup = list(cached) + uncached[:budget]
     skipped = uncached[budget:]
     if skipped:
-        logger.info("lookup cap reached -> skipping %d smaller ingredient(s): %s",
-                    len(skipped), skipped)
+        logger.info(
+            "lookup cap reached -> skipping %d smaller ingredient(s): %s", len(skipped), skipped
+        )
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
-    results = list(_LOOKUP_POOL.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup))
+    results = list(
+        _LOOKUP_POOL.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup)
+    )
     profiles = dict(results)  # name -> per_100g | None
 
     skipped_set = set(skipped)
@@ -498,15 +525,25 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         n = len(mock_dishes)
         shares = [(w / total_w if total_w > 0 else 1.0 / n) for w in weights] if n else []
         breakdown = []
-        for d, share in zip(mock_dishes, shares):
-            breakdown.append({
-                "name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": True,
-                "macros": {k: round(macros[k] * share, 2) for k in MACRO_KEYS},
-                "micros": {k: round(micros[k] * share, 4) for k in MICRO_KEYS},
-                "ingredients": [{"food": (it.get("food") or "").strip(),
-                                 "grams": it.get("grams") or 0, "status": "not_looked_up"}
-                                for it in (d.get("items") or []) if (it.get("food") or "").strip()],
-            })
+        for d, share in zip(mock_dishes, shares, strict=True):
+            breakdown.append(
+                {
+                    "name": d["name"].strip(),
+                    "grams": d.get("grams") or 0,
+                    "matched": True,
+                    "macros": {k: round(macros[k] * share, 2) for k in MACRO_KEYS},
+                    "micros": {k: round(micros[k] * share, 4) for k in MICRO_KEYS},
+                    "ingredients": [
+                        {
+                            "food": (it.get("food") or "").strip(),
+                            "grams": it.get("grams") or 0,
+                            "status": "not_looked_up",
+                        }
+                        for it in (d.get("items") or [])
+                        if (it.get("food") or "").strip()
+                    ],
+                }
+            )
         return macros, micros, [], [], breakdown
 
     totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
@@ -519,17 +556,28 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
     # almost always misses and just burns a slow API call, so those skip straight to
     # Phase B decomposition. Cached dish lookups are free; cap uncached ones at the budget,
     # largest portions first. Dishes with no portion weight also skip to Phase B.
-    dish_candidates = [d for d in valid_dishes
-                       if (d.get("grams") or 0) > 0 and _normalize(d["name"]) in DISH_ALIASES]
+    dish_candidates = [
+        d
+        for d in valid_dishes
+        if (d.get("grams") or 0) > 0 and _normalize(d["name"]) in DISH_ALIASES
+    ]
     dish_cached = [d for d in dish_candidates if not _uncached_dish(d["name"])]
-    dish_uncached = sorted((d for d in dish_candidates if _uncached_dish(d["name"])),
-                           key=lambda d: d["grams"], reverse=True)
+    dish_uncached = sorted(
+        (d for d in dish_candidates if _uncached_dish(d["name"])),
+        key=lambda d: d["grams"],
+        reverse=True,
+    )
     dish_lookup = dish_cached + dish_uncached[:budget]
     budget -= min(len(dish_uncached), budget)
 
     # Parallel dish lookups (UsdaRateLimitError propagates when we iterate).
-    dish_pairs = list(zip(dish_lookup,
-                          _LOOKUP_POOL.map(lambda d: lookup_dish(d["name"], api_key), dish_lookup)))
+    dish_pairs = list(
+        zip(
+            dish_lookup,
+            _LOOKUP_POOL.map(lambda d: lookup_dish(d["name"], api_key), dish_lookup),
+            strict=True,
+        )
+    )
     matched_ids = set()
     dish_profile: dict[int, dict] = {}  # id(dish) -> per-100g profile, for per-dish subtotals
     for d, per_100g in dish_pairs:
@@ -571,7 +619,7 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
             factor = (d.get("grams") or 0) / 100.0
             for key in dish_totals:
                 dish_totals[key] = per_100g.get(key, 0) * factor
-        for it in (d.get("items") or []):
+        for it in d.get("items") or []:
             food = (it.get("food") or "").strip()
             if not food:
                 continue
@@ -589,12 +637,16 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
                     for key in dish_totals:
                         dish_totals[key] += per_100g.get(key, 0) * factor
             ingredients.append({"food": food, "grams": it.get("grams") or 0, "status": status})
-        breakdown.append({
-            "name": d["name"].strip(), "grams": d.get("grams") or 0, "matched": matched,
-            "macros": {k: round(dish_totals[k], 2) for k in MACRO_KEYS},
-            "micros": {k: round(dish_totals[k], 4) for k in MICRO_KEYS},
-            "ingredients": ingredients,
-        })
+        breakdown.append(
+            {
+                "name": d["name"].strip(),
+                "grams": d.get("grams") or 0,
+                "matched": matched,
+                "macros": {k: round(dish_totals[k], 2) for k in MACRO_KEYS},
+                "micros": {k: round(dish_totals[k], 4) for k in MICRO_KEYS},
+                "ingredients": ingredients,
+            }
+        )
 
     macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
     micros = {k: round(totals[k], 4) for k in MICRO_KEYS}

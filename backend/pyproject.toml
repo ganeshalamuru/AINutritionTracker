@@ -1,0 +1,27 @@
+# Ruff config only — runtime dependencies stay in requirements.txt (start.ps1/start.sh
+# install from there). Install the linter with: python -m pip install ruff
+[tool.ruff]
+line-length = 100
+target-version = "py314"
+
+[tool.ruff.lint]
+# pycodestyle, pyflakes, isort, flake8-bugbear, pyupgrade
+select = ["E", "F", "I", "B", "UP"]
+
+[tool.ruff.lint.flake8-bugbear]
+# FastAPI's Depends/File/Form/Query are called in argument defaults by design — that's
+# the framework idiom, not the B008 mutable-default footgun.
+extend-immutable-calls = [
+    "fastapi.Depends", "fastapi.File", "fastapi.Form", "fastapi.Query", "fastapi.Path",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# main.py intentionally calls load_dotenv()/configure_logging() before importing app
+# modules, so imports aren't all at the top of the file.
+"main.py" = ["E402"]
+# Tests stub modules / set up the cache DB before importing the code under test, and
+# carry long literal JSON fixtures that don't wrap cleanly.
+"tests/*" = ["E402", "E501"]
+# The NUTRITION_PROMPT literal embeds compact-JSON schema/examples that must stay on one
+# line each; they can't be wrapped without changing the prompt the model receives.
+"services/vision_service.py" = ["E501"]

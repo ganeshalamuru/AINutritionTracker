@@ -1,5 +1,5 @@
-from sqlalchemy import create_engine, event
-from sqlalchemy.orm import sessionmaker, DeclarativeBase
+from sqlalchemy import MetaData, create_engine, event
+from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
 DATABASE_URL = "sqlite:///./nutrition.db"
 
@@ -20,9 +20,9 @@ engine = create_engine(
 def _set_sqlite_pragmas(dbapi_conn, _connection_record):
     """Apply SQLite reliability/concurrency pragmas on every new connection."""
     cursor = dbapi_conn.cursor()
-    cursor.execute("PRAGMA journal_mode=WAL")     # readers don't block the writer
-    cursor.execute("PRAGMA busy_timeout=5000")    # wait up to 5s for a lock vs. erroring
-    cursor.execute("PRAGMA synchronous=NORMAL")   # safe with WAL, much faster than FULL
+    cursor.execute("PRAGMA journal_mode=WAL")  # readers don't block the writer
+    cursor.execute("PRAGMA busy_timeout=5000")  # wait up to 5s for a lock vs. erroring
+    cursor.execute("PRAGMA synchronous=NORMAL")  # safe with WAL, much faster than FULL
     cursor.execute("PRAGMA foreign_keys=ON")
     cursor.close()
 
@@ -30,8 +30,19 @@ def _set_sqlite_pragmas(dbapi_conn, _connection_record):
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 
 
+# Deterministic names for indexes/constraints (consistency + forward-compatible with
+# migrations). Applies to freshly created constraints; harmless to the existing DB file.
+_NAMING_CONVENTION = {
+    "ix": "ix_%(column_0_label)s",
+    "uq": "uq_%(table_name)s_%(column_0_name)s",
+    "ck": "ck_%(table_name)s_%(constraint_name)s",
+    "fk": "fk_%(table_name)s_%(column_0_name)s_%(referred_table_name)s",
+    "pk": "pk_%(table_name)s",
+}
+
+
 class Base(DeclarativeBase):
-    pass
+    metadata = MetaData(naming_convention=_NAMING_CONVENTION)
 
 
 def get_db():

@@ -2,28 +2,39 @@
 grouped meals, and the timeline/group/detail read models. Routers call into here and
 stay thin — they only parse the request and return what these functions build.
 """
+
 import asyncio
 import os
 import uuid
-from typing import Optional
 
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
 from core import config
-from core.config import UPLOADS_DIR, BACKEND_DIR
-from core.nutrients import to_macros_data, to_micros_data, sum_macros, sum_micros
-from models import Meal, Macros, Micros
+from core.config import BACKEND_DIR, UPLOADS_DIR
+from core.nutrients import sum_macros, sum_micros, to_macros_data, to_micros_data
+from models import Macros, Meal, Micros
 from schemas import (
-    AnalyzeResponse, DishBreakdown, IngredientBreakdown, MealLogRequest, MealLogResponse,
-    LogGroupRequest, MealPatch, MealDetail, MealSummary, MealSubSummary, MealGroupSummary,
-    TimelineResponse, MacrosData, MicrosData,
+    AnalyzeResponse,
+    DishBreakdown,
+    IngredientBreakdown,
+    LogGroupRequest,
+    MacrosData,
+    MealDetail,
+    MealGroupSummary,
+    MealLogRequest,
+    MealLogResponse,
+    MealPatch,
+    MealSubSummary,
+    MealSummary,
+    MicrosData,
+    TimelineResponse,
 )
+from services.usda_service import UsdaRateLimitError, nutrients_for_meal
 from services.vision_service import analyze_meal_image
-from services.usda_service import nutrients_for_meal, UsdaRateLimitError
-
 
 # --- analyze (Stage 1 perception + Stage 2 nutrient lookup) ---
+
 
 def _map_vision_error(e: Exception) -> HTTPException:
     """Translate a vision-provider failure into an HTTP error. The vision service has
@@ -31,15 +42,23 @@ def _map_vision_error(e: Exception) -> HTTPException:
     err = str(e).lower()
     raw = str(e)
     if "429" in err or "rate" in err or "per_minute" in err or "requests_per_minute" in err:
-        return HTTPException(status_code=429, detail=f"Rate limit hit — wait 60 seconds and try again. ({raw})")
+        return HTTPException(
+            status_code=429, detail=f"Rate limit hit — wait 60 seconds and try again. ({raw})"
+        )
     if "quota" in err or "daily" in err or "resource_exhausted" in err or "per_day" in err:
-        return HTTPException(status_code=429, detail=f"Daily quota exhausted — resets on the provider's reset schedule. ({raw})")
+        return HTTPException(
+            status_code=429,
+            detail=f"Daily quota exhausted — resets on the provider's reset schedule. ({raw})",
+        )
     if "timeout" in err or "timed out" in err or "deadline" in err or "504" in err:
-        return HTTPException(status_code=504, detail=f"AI analysis timed out — the model didn't respond. Try again. ({raw})")
+        return HTTPException(
+            status_code=504,
+            detail=f"AI analysis timed out — the model didn't respond. Try again. ({raw})",
+        )
     return HTTPException(status_code=502, detail=f"AI analysis failed: {raw}")
 
 
-async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str]) -> AnalyzeResponse:
+async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) -> AnalyzeResponse:
     provider, model = config.get_vision_config(db)
     # Guard only: raises 503 "set your key" if the provider's key isn't configured. The
     # vision client itself is built once at startup / on config change (vision_service),
@@ -58,7 +77,7 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         )
     except Exception as e:
         os.remove(temp_path)
-        raise _map_vision_error(e)
+        raise _map_vision_error(e) from e
 
     # Stage 2: turn the dish list into real nutrient numbers via the USDA food database
     # (dish-first, decomposing into base ingredients only when a dish has no match).
@@ -72,9 +91,9 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         raise HTTPException(
             status_code=429,
             detail="USDA rate limit reached — add your free FoodData Central key in "
-                   "Settings → USDA Food Database Key. "
-                   f"({e})",
-        )
+            "Settings → USDA Food Database Key. "
+            f"({e})",
+        ) from e
 
     return AnalyzeResponse(
         meal_name=result.get("meal_name", "Unknown meal"),
@@ -83,14 +102,17 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
         estimated_serving=result.get("estimated_serving"),
         macros=MacrosData(**macros_d),
         micros=MicrosData(**micros_d),
-        dishes=[DishBreakdown(
-            name=d.get("name", ""),
-            grams=d.get("grams") or 0,
-            matched=d.get("matched", False),
-            macros=MacrosData(**d.get("macros", {})),
-            micros=MicrosData(**d.get("micros", {})),
-            ingredients=[IngredientBreakdown(**i) for i in d.get("ingredients", [])],
-        ) for d in breakdown],
+        dishes=[
+            DishBreakdown(
+                name=d.get("name", ""),
+                grams=d.get("grams") or 0,
+                matched=d.get("matched", False),
+                macros=MacrosData(**d.get("macros", {})),
+                micros=MicrosData(**d.get("micros", {})),
+                ingredients=[IngredientBreakdown(**i) for i in d.get("ingredients", [])],
+            )
+            for d in breakdown
+        ],
         unmatched=unmatched,
         skipped=skipped,
         temp_image_token=token,
@@ -100,7 +122,8 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: Optional[str
 
 # --- logging meals ---
 
-def _create_meal_record(db: Session, data: MealLogRequest, group_id: Optional[str] = None) -> Meal:
+
+def _create_meal_record(db: Session, data: MealLogRequest, group_id: str | None = None) -> Meal:
     image_path = None
     if data.temp_image_token and data.keep_image:
         temp_path = os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg")
@@ -160,13 +183,11 @@ def log_group(db: Session, data: LogGroupRequest) -> dict:
 
 # --- read models ---
 
-def build_timeline(db: Session, profile_id: int, page: int, limit: int,
-                   date_from: Optional[str], date_to: Optional[str]) -> TimelineResponse:
-    query = (
-        db.query(Meal)
-        .filter(Meal.profile_id == profile_id)
-        .order_by(Meal.logged_at.desc())
-    )
+
+def build_timeline(
+    db: Session, profile_id: int, page: int, limit: int, date_from: str | None, date_to: str | None
+) -> TimelineResponse:
+    query = db.query(Meal).filter(Meal.profile_id == profile_id).order_by(Meal.logged_at.desc())
     if date_from:
         query = query.filter(Meal.logged_at >= date_from)
     if date_to:
@@ -185,40 +206,54 @@ def build_timeline(db: Session, profile_id: int, page: int, limit: int,
         if m.group_id:
             if m.group_id in group_index:
                 group = items[group_index[m.group_id]]
-                group.sub_meals.append(MealSubSummary(
-                    id=m.id, meal_name=m.meal_name, meal_type=m.meal_type,
-                    logged_at=m.logged_at, macros=md,
-                ))
+                group.sub_meals.append(
+                    MealSubSummary(
+                        id=m.id,
+                        meal_name=m.meal_name,
+                        meal_type=m.meal_type,
+                        logged_at=m.logged_at,
+                        macros=md,
+                    )
+                )
                 group.total_macros = sum_macros(group.total_macros, md)
                 group.total_micros = sum_micros(group.total_micros, mic)
             else:
                 group_index[m.group_id] = len(items)
-                items.append(MealGroupSummary(
-                    group_id=m.group_id,
-                    logged_at=m.logged_at,
-                    sub_meals=[MealSubSummary(
-                        id=m.id, meal_name=m.meal_name, meal_type=m.meal_type,
-                        logged_at=m.logged_at, macros=md,
-                    )],
-                    total_macros=md,
-                    total_micros=mic,
-                ))
+                items.append(
+                    MealGroupSummary(
+                        group_id=m.group_id,
+                        logged_at=m.logged_at,
+                        sub_meals=[
+                            MealSubSummary(
+                                id=m.id,
+                                meal_name=m.meal_name,
+                                meal_type=m.meal_type,
+                                logged_at=m.logged_at,
+                                macros=md,
+                            )
+                        ],
+                        total_macros=md,
+                        total_micros=mic,
+                    )
+                )
         else:
-            items.append(MealSummary(
-                id=m.id,
-                meal_name=m.meal_name,
-                meal_type=m.meal_type,
-                logged_at=m.logged_at,
-                calories=md.calories,
-                protein_g=md.protein_g,
-                carbs_g=md.carbs_g,
-                fat_g=md.fat_g,
-                fiber_g=md.fiber_g,
-                sugar_g=md.sugar_g,
-                sodium_mg=md.sodium_mg,
-                has_image=m.image_path is not None,
-                group_id=None,
-            ))
+            items.append(
+                MealSummary(
+                    id=m.id,
+                    meal_name=m.meal_name,
+                    meal_type=m.meal_type,
+                    logged_at=m.logged_at,
+                    calories=md.calories,
+                    protein_g=md.protein_g,
+                    carbs_g=md.carbs_g,
+                    fat_g=md.fat_g,
+                    fiber_g=md.fiber_g,
+                    sugar_g=md.sugar_g,
+                    sodium_mg=md.sodium_mg,
+                    has_image=m.image_path is not None,
+                    group_id=None,
+                )
+            )
 
     return TimelineResponse(items=items, total=total, page=page, limit=limit)
 
@@ -233,8 +268,15 @@ def get_group(db: Session, group_id: str) -> MealGroupSummary:
     for m in meals:
         md = to_macros_data(m.macros)
         mic = to_micros_data(m.micros)
-        sub_meals.append(MealSubSummary(
-            id=m.id, meal_name=m.meal_name, meal_type=m.meal_type, logged_at=m.logged_at, macros=md))
+        sub_meals.append(
+            MealSubSummary(
+                id=m.id,
+                meal_name=m.meal_name,
+                meal_type=m.meal_type,
+                logged_at=m.logged_at,
+                macros=md,
+            )
+        )
         total_macros = sum_macros(total_macros, md)
         total_micros = sum_micros(total_micros, mic)
     return MealGroupSummary(

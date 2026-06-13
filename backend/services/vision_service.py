@@ -6,6 +6,7 @@ Gemini, or a future Ollama) and returns ONLY a decomposed ingredient list — it
 NOT estimate nutrients (the model hallucinated those). The real per-100g numbers come
 from the USDA lookup in usda_service.py.
 """
+
 import base64
 import json
 import logging
@@ -13,10 +14,11 @@ import os
 import re
 import threading
 import time
+
 import google.generativeai as genai
 
 from core import config
-from core.config import DEFAULT_PROVIDER, DEFAULT_MODEL
+from core.config import DEFAULT_MODEL, DEFAULT_PROVIDER
 from core.logging_config import configure_logging
 
 # Logger for all model traffic. Shares the app's timestamped formatter (configured
@@ -34,12 +36,13 @@ logger = logging.getLogger("nutriai.vision")
 # those rare rebuilds; the request hot path (_groq_analyze / _gemini_analyze) just reads
 # the global, which is atomic under the GIL — no per-call lock or key comparison.
 _lock = threading.Lock()
-_groq_client = None      # built from groq_api_key
-_gemini_model = None     # built from (gemini_api_key, vision_model)
+_groq_client = None  # built from groq_api_key
+_gemini_model = None  # built from (gemini_api_key, vision_model)
 
 
 def _build_groq(api_key: str):
     from groq import Groq  # lazy: keep the module importable without the SDK installed
+
     return Groq(api_key=api_key)
 
 
@@ -63,8 +66,12 @@ def reload_clients(db):
         global _groq_client, _gemini_model
         _groq_client = _build_groq(groq_key) if groq_key else None
         _gemini_model = _build_gemini(gemini_key, model) if gemini_key else None
-    logger.info("vision clients reloaded (groq=%s, gemini=%s, model=%s)",
-                _groq_client is not None, _gemini_model is not None, model)
+    logger.info(
+        "vision clients reloaded (groq=%s, gemini=%s, model=%s)",
+        _groq_client is not None,
+        _gemini_model is not None,
+        model,
+    )
 
 
 # Per-call timeout (seconds) and retry budget. The app used to hang forever when
@@ -79,12 +86,21 @@ MOCK_RESPONSE = {
     "meal_type": "lunch",
     "confidence": "high",
     "dishes": [
-        {"name": "grilled chicken", "grams": 150,
-         "items": [{"food": "grilled chicken breast", "grams": 150}]},
-        {"name": "white rice", "grams": 180,
-         "items": [{"food": "white rice, cooked", "grams": 180}]},
-        {"name": "mixed vegetables", "grams": 120,
-         "items": [{"food": "mixed vegetables, cooked", "grams": 120}]},
+        {
+            "name": "grilled chicken",
+            "grams": 150,
+            "items": [{"food": "grilled chicken breast", "grams": 150}],
+        },
+        {
+            "name": "white rice",
+            "grams": 180,
+            "items": [{"food": "white rice, cooked", "grams": 180}],
+        },
+        {
+            "name": "mixed vegetables",
+            "grams": 120,
+            "items": [{"food": "mixed vegetables, cooked", "grams": 120}],
+        },
     ],
 }
 
@@ -103,8 +119,13 @@ sambar -> {"n":"sambar","g":150,"i":[{"f":"toor dal","g":30},{"f":"mixed vegetab
 def _is_quota_error(err: str) -> bool:
     """Daily-quota exhaustion — not worth retrying (won't recover within the call)."""
     err = err.lower()
-    return ("quota" in err or "daily" in err or "resource_exhausted" in err
-            or "per_day" in err or "requests_per_day" in err)
+    return (
+        "quota" in err
+        or "daily" in err
+        or "resource_exhausted" in err
+        or "per_day" in err
+        or "requests_per_day" in err
+    )
 
 
 def _is_number(v) -> bool:
@@ -145,12 +166,26 @@ def _parse_dishes(arr) -> list[dict]:
         if not name:
             continue
         grams = entry.get("g")
-        out.append({
-            "name": name,
-            "grams": grams if _is_number(grams) else 0,
-            "items": _parse_items(entry.get("i")),
-        })
+        out.append(
+            {
+                "name": name,
+                "grams": grams if _is_number(grams) else 0,
+                "items": _parse_items(entry.get("i")),
+            }
+        )
     return out
+
+
+# The model is free text, so coerce its meal_type/confidence to the known vocabularies
+# (matching schemas.MealType / schemas.Confidence) here, before they reach the strict
+# AnalyzeResponse — an off-list value can never then fail response validation.
+_MEAL_TYPES = {"breakfast", "lunch", "dinner", "snack"}
+_CONFIDENCE_LEVELS = {"low", "medium", "high"}
+
+
+def _norm(value, allowed: set, default: str) -> str:
+    v = (value or "").strip().lower()
+    return v if v in allowed else default
 
 
 def _parse_compact(text: str) -> dict:
@@ -163,8 +198,8 @@ def _parse_compact(text: str) -> dict:
     data = json.loads(text)
     return {
         "meal_name": data.get("n") or "Unknown meal",
-        "meal_type": data.get("t") or "snack",
-        "confidence": data.get("c") or "medium",
+        "meal_type": _norm(data.get("t"), _MEAL_TYPES, "snack"),
+        "confidence": _norm(data.get("c"), _CONFIDENCE_LEVELS, "medium"),
         "dishes": _parse_dishes(data.get("d")),
     }
 
@@ -193,13 +228,15 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, st
     b64 = base64.b64encode(image_bytes).decode()
     response = client.chat.completions.create(
         model=model,
-        messages=[{
-            "role": "user",
-            "content": [
-                {"type": "text", "text": prompt},
-                {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
-            ],
-        }],
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": prompt},
+                    {"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{b64}"}},
+                ],
+            }
+        ],
         temperature=0,
         max_tokens=512,
         response_format={"type": "json_object"},
@@ -238,7 +275,10 @@ def analyze_meal_image(
 
     logger.info(
         "request -> provider=%s model=%s | image=%dB | note=%r",
-        provider, model, len(image_bytes), (user_note or "")[:120],
+        provider,
+        model,
+        len(image_bytes),
+        (user_note or "")[:120],
     )
 
     last_err = None
@@ -249,7 +289,10 @@ def analyze_meal_image(
             elapsed = time.monotonic() - start
             logger.info(
                 "response <- provider=%s model=%s | %.2fs | raw=%s",
-                provider, model, elapsed, (raw or "").strip(),
+                provider,
+                model,
+                elapsed,
+                (raw or "").strip(),
             )
             return result
         except Exception as e:
@@ -259,19 +302,33 @@ def analyze_meal_image(
             if _is_quota_error(str(e)):
                 logger.error(
                     "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
-                    provider, model, elapsed, type(e).__name__, e,
+                    provider,
+                    model,
+                    elapsed,
+                    type(e).__name__,
+                    e,
                 )
                 raise
             # Timeout / per-minute rate / transient — retry once with a short backoff.
             if attempt < MAX_RETRIES:
                 logger.warning(
                     "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
-                    attempt + 1, MAX_RETRIES, provider, model, elapsed, type(e).__name__, e,
+                    attempt + 1,
+                    MAX_RETRIES,
+                    provider,
+                    model,
+                    elapsed,
+                    type(e).__name__,
+                    e,
                 )
                 time.sleep(1.5)
                 continue
             logger.error(
                 "error <- provider=%s model=%s | %.2fs | %s: %s",
-                provider, model, elapsed, type(e).__name__, e,
+                provider,
+                model,
+                elapsed,
+                type(e).__name__,
+                e,
             )
-            raise last_err
+            raise last_err from None

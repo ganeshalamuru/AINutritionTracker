@@ -1,14 +1,49 @@
 from datetime import datetime
-from typing import Annotated, List, Literal, Optional, Union
+from enum import StrEnum
+from typing import Annotated, Literal
+
 from pydantic import BaseModel, Field
+
+# --- Enums (constrain the small fixed vocabularies) ---
+
+
+class MealType(StrEnum):
+    breakfast = "breakfast"
+    lunch = "lunch"
+    dinner = "dinner"
+    snack = "snack"
+
+
+class Confidence(StrEnum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class IngredientStatus(StrEnum):
+    matched = "matched"
+    unmatched = "unmatched"
+    skipped = "skipped"
+    not_looked_up = "not_looked_up"
+
+
+class VisionProvider(StrEnum):
+    groq = "groq"
+    gemini = "gemini"
+    ollama = "ollama"
+
+
+# Reusable PIN field: exactly 4 digits.
+PinField = Field(pattern=r"^\d{4}$", description="4-digit PIN")
 
 
 # --- Profiles ---
 
+
 class ProfileCreate(BaseModel):
-    name: str
-    pin: str
-    avatar_color: Optional[str] = "#22c55e"
+    name: str = Field(min_length=1, max_length=60)
+    pin: str = PinField
+    avatar_color: str | None = "#22c55e"
 
 
 class ProfileOut(BaseModel):
@@ -21,92 +56,97 @@ class ProfileOut(BaseModel):
 
 class PinVerify(BaseModel):
     profile_id: int
-    pin: str
+    pin: str = PinField
 
 
 # --- Macros ---
 
+
 class MacrosData(BaseModel):
-    calories: float = 0
-    protein_g: float = 0
-    carbs_g: float = 0
-    fat_g: float = 0
-    fiber_g: float = 0
-    sugar_g: float = 0
-    sodium_mg: float = 0
+    calories: float = Field(default=0, ge=0)
+    protein_g: float = Field(default=0, ge=0)
+    carbs_g: float = Field(default=0, ge=0)
+    fat_g: float = Field(default=0, ge=0)
+    fiber_g: float = Field(default=0, ge=0)
+    sugar_g: float = Field(default=0, ge=0)
+    sodium_mg: float = Field(default=0, ge=0)
 
 
 # --- Micros ---
 
+
 class MicrosData(BaseModel):
-    vitamin_a_mcg: float = 0
-    vitamin_d_mcg: float = 0
-    vitamin_e_mg: float = 0
-    vitamin_k_mcg: float = 0
-    vitamin_c_mg: float = 0
-    vitamin_b1_mg: float = 0
-    vitamin_b2_mg: float = 0
-    vitamin_b3_mg: float = 0
-    vitamin_b6_mg: float = 0
-    vitamin_b12_mcg: float = 0
-    folate_mcg: float = 0
-    calcium_mg: float = 0
-    iron_mg: float = 0
-    magnesium_mg: float = 0
-    potassium_mg: float = 0
-    zinc_mg: float = 0
-    phosphorus_mg: float = 0
+    vitamin_a_mcg: float = Field(default=0, ge=0)
+    vitamin_d_mcg: float = Field(default=0, ge=0)
+    vitamin_e_mg: float = Field(default=0, ge=0)
+    vitamin_k_mcg: float = Field(default=0, ge=0)
+    vitamin_c_mg: float = Field(default=0, ge=0)
+    vitamin_b1_mg: float = Field(default=0, ge=0)
+    vitamin_b2_mg: float = Field(default=0, ge=0)
+    vitamin_b3_mg: float = Field(default=0, ge=0)
+    vitamin_b6_mg: float = Field(default=0, ge=0)
+    vitamin_b12_mcg: float = Field(default=0, ge=0)
+    folate_mcg: float = Field(default=0, ge=0)
+    calcium_mg: float = Field(default=0, ge=0)
+    iron_mg: float = Field(default=0, ge=0)
+    magnesium_mg: float = Field(default=0, ge=0)
+    potassium_mg: float = Field(default=0, ge=0)
+    zinc_mg: float = Field(default=0, ge=0)
+    phosphorus_mg: float = Field(default=0, ge=0)
 
 
 # --- Meals ---
 
+
 class IngredientBreakdown(BaseModel):
     food: str
-    grams: float = 0
+    grams: float = Field(default=0, ge=0)
     # USDA outcome: matched | unmatched | skipped (over the lookup cap) |
     # not_looked_up (its dish matched whole, so the ingredient wasn't searched)
-    status: str = "matched"
+    status: IngredientStatus = IngredientStatus.matched
 
 
 class DishBreakdown(BaseModel):
     name: str
-    grams: float = 0
+    grams: float = Field(default=0, ge=0)
     matched: bool = False  # the whole dish matched in USDA (ingredients not looked up)
     # This dish's own nutrient subtotal; summed across dishes it equals the meal totals.
     # Lets the client rescale a dish by its edited portion without re-querying USDA.
     macros: MacrosData = Field(default_factory=MacrosData)
     micros: MicrosData = Field(default_factory=MicrosData)
-    ingredients: List[IngredientBreakdown] = Field(default_factory=list)
+    ingredients: list[IngredientBreakdown] = Field(default_factory=list)
 
 
 class AnalyzeResponse(BaseModel):
+    # meal_type/confidence are normalized to these enums in vision_service._parse_compact
+    # before reaching here, so a surprise model output can never fail response validation.
     meal_name: str
-    meal_type: str
-    confidence: str
-    estimated_serving: Optional[str] = None
+    meal_type: MealType
+    confidence: Confidence
+    estimated_serving: str | None = None
     macros: MacrosData
     micros: MicrosData
-    dishes: List[DishBreakdown] = Field(default_factory=list)
-    unmatched: List[str] = Field(default_factory=list)
-    skipped: List[str] = Field(default_factory=list)
-    temp_image_token: Optional[str] = None
-    notes: Optional[str] = None
+    dishes: list[DishBreakdown] = Field(default_factory=list)
+    unmatched: list[str] = Field(default_factory=list)
+    skipped: list[str] = Field(default_factory=list)
+    temp_image_token: str | None = None
+    notes: str | None = None
 
 
 class MealLogRequest(BaseModel):
     profile_id: int
-    meal_name: str
-    meal_type: str = "snack"
-    notes: Optional[str] = None
+    meal_name: str = Field(min_length=1)
+    meal_type: MealType = MealType.snack
+    notes: str | None = None
     keep_image: bool = False
-    temp_image_token: Optional[str] = None
+    temp_image_token: str | None = None
     macros: MacrosData
     micros: MicrosData
 
 
 class LogGroupRequest(BaseModel):
     group_id: str
-    meals: List[MealLogRequest]
+    meals: list[MealLogRequest]
 
 
 class MealLogResponse(BaseModel):
@@ -114,10 +154,15 @@ class MealLogResponse(BaseModel):
     logged_at: datetime
 
 
+class LogGroupResponse(BaseModel):
+    group_id: str
+    meal_ids: list[int]
+
+
 class MealPatch(BaseModel):
-    meal_name: Optional[str] = None
-    meal_type: Optional[str] = None
-    notes: Optional[str] = None
+    meal_name: str | None = Field(default=None, min_length=1)
+    meal_type: MealType | None = None
+    notes: str | None = None
 
 
 class MealSummary(BaseModel):
@@ -134,7 +179,7 @@ class MealSummary(BaseModel):
     sugar_g: float = 0
     sodium_mg: float = 0
     has_image: bool
-    group_id: Optional[str] = None
+    group_id: str | None = None
 
     model_config = {"from_attributes": True}
 
@@ -151,15 +196,12 @@ class MealGroupSummary(BaseModel):
     item_type: Literal["group"] = "group"
     group_id: str
     logged_at: datetime
-    sub_meals: List[MealSubSummary]
+    sub_meals: list[MealSubSummary]
     total_macros: MacrosData
     total_micros: MicrosData = Field(default_factory=MicrosData)
 
 
-TimelineItem = Annotated[
-    Union[MealGroupSummary, MealSummary],
-    Field(discriminator="item_type")
-]
+TimelineItem = Annotated[MealGroupSummary | MealSummary, Field(discriminator="item_type")]
 
 
 class MealDetail(BaseModel):
@@ -167,7 +209,7 @@ class MealDetail(BaseModel):
     meal_name: str
     meal_type: str
     logged_at: datetime
-    notes: Optional[str]
+    notes: str | None
     has_image: bool
     macros: MacrosData
     micros: MicrosData
@@ -176,7 +218,7 @@ class MealDetail(BaseModel):
 
 
 class TimelineResponse(BaseModel):
-    items: List[TimelineItem]
+    items: list[TimelineItem]
     total: int
     page: int
     limit: int
@@ -184,11 +226,12 @@ class TimelineResponse(BaseModel):
 
 # --- Nutrition Summaries ---
 
+
 class DailySummary(BaseModel):
     date: str
     meal_count: int
     totals: dict
-    meals: List[MealSummary]
+    meals: list[MealSummary]
 
 
 class DailyBreakdown(BaseModel):
@@ -202,7 +245,7 @@ class DailyBreakdown(BaseModel):
 class MonthlySummary(BaseModel):
     year: int
     month: int
-    daily_breakdown: List[DailyBreakdown]
+    daily_breakdown: list[DailyBreakdown]
     monthly_averages: dict
     monthly_totals: dict
     days_logged: int
@@ -210,9 +253,25 @@ class MonthlySummary(BaseModel):
 
 # --- Config ---
 
+
 class ConfigUpdate(BaseModel):
-    gemini_api_key: Optional[str] = None
-    groq_api_key: Optional[str] = None
-    usda_api_key: Optional[str] = None
-    vision_provider: Optional[str] = None
-    vision_model: Optional[str] = None
+    gemini_api_key: str | None = None
+    groq_api_key: str | None = None
+    usda_api_key: str | None = None
+    vision_provider: VisionProvider | None = None
+    vision_model: str | None = None
+
+
+class ConfigStatus(BaseModel):
+    gemini_api_key_set: bool
+    groq_api_key_set: bool
+    usda_api_key_set: bool
+    vision_provider: str
+    vision_model: str
+
+
+# --- Generic ---
+
+
+class OkResponse(BaseModel):
+    ok: bool = True

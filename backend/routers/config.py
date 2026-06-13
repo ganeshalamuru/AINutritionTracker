@@ -1,18 +1,19 @@
 """App config routes (API keys + vision provider/model), moved out of main.py.
 Only exposes whether each key is set — never the key values themselves."""
+
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from core import config
-from core.config import DEFAULT_PROVIDER, DEFAULT_MODEL
+from core.config import DEFAULT_MODEL, DEFAULT_PROVIDER
 from core.database import get_db
-from schemas import ConfigUpdate
+from schemas import ConfigStatus, ConfigUpdate, OkResponse
 from services.vision_service import reload_clients
 
 router = APIRouter(prefix="/config", tags=["config"])
 
 
-@router.get("")
+@router.get("", response_model=ConfigStatus, summary="Config status (no secret values)")
 def get_config(db: Session = Depends(get_db)):
     return {
         "gemini_api_key_set": bool(config.get_value(db, "gemini_api_key")),
@@ -23,9 +24,15 @@ def get_config(db: Session = Depends(get_db)):
     }
 
 
-@router.put("")
+@router.put("", response_model=OkResponse, summary="Update API keys / vision provider")
 def update_config(data: ConfigUpdate, db: Session = Depends(get_db)):
-    for key in ("gemini_api_key", "groq_api_key", "usda_api_key", "vision_provider", "vision_model"):
+    for key in (
+        "gemini_api_key",
+        "groq_api_key",
+        "usda_api_key",
+        "vision_provider",
+        "vision_model",
+    ):
         value = getattr(data, key)
         if value is not None:
             config.set_value(db, key, value)

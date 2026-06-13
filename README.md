@@ -245,6 +245,8 @@ first launch by `core.config.seed_defaults`. `GET /api/config` reports only whet
 set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
 (comma-separated) only if a separate origin must reach the API. `GET /api/health` returns
 `{"status":"ok"}`; a global exception handler logs unhandled errors and returns a clean 500.
+Interactive docs (`/docs`, `/redoc`, `/openapi.json`) are on by default; set `APP_ENV=production`
+to disable them for a shared deployment.
 
 ---
 
@@ -300,6 +302,10 @@ python -m unittest discover -s tests
 `test_vision_service.py` covers Stage-1 dish parsing and `reload_clients`; `test_usda_service.py`
 covers aliasing, matching, the cache (incl. negative caching), the lookup cap, the curated
 dish-lookup gate, transient-timeout retries, and rate-limit propagation.
+
+**Linting:** Ruff is configured in `backend/pyproject.toml` (runtime deps stay in
+`requirements.txt`). Install with `python -m pip install ruff`, then from `backend/`:
+`ruff check` and `ruff format`.
 
 ---
 
