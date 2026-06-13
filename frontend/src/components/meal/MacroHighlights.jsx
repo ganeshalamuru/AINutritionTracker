@@ -4,11 +4,11 @@
 // (amber "High in"). Display-only — goals live here like MicroGrid's DV table.
 const GOOD = [
   { key: "protein_g", label: "Protein", goal: 150 },
-  { key: "carbs_g", label: "Carbs", goal: 250 },
-  { key: "fat_g", label: "Fat", goal: 65 },
   { key: "fiber_g", label: "Fiber", goal: 28 },
 ];
 const CAUTION = [
+  { key: "carbs_g", label: "Carbs", goal: 250 },
+  { key: "fat_g", label: "Fat", goal: 65 },
   { key: "sugar_g", label: "Sugar", goal: 50 },
   { key: "sodium_mg", label: "Sodium", goal: 2300 },
 ];
