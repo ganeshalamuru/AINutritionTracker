@@ -98,7 +98,7 @@ backend/
 ├── core/                    # infrastructure & cross-cutting concerns (no business logic)
 │   ├── database.py          #   SQLAlchemy engine (pool_pre_ping + SQLite WAL/busy_timeout pragmas), SessionLocal, Base, get_db
 │   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named formatter for app + uvicorn
-│   ├── config.py            #   app_config table access + vision defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR)
+│   ├── config.py            #   app_config table access + vision defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/17-micro schema + to_*_data / sum_* helpers
 │   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision clients
 │
@@ -117,7 +117,7 @@ backend/
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
-        ├── config.py        #     USDA endpoint + tuning (timeouts/retries) + DISH_DATA_TYPES + USDA_MAX_LOOKUPS + CACHE_VERSION
+        ├── config.py        #     USDA endpoint + tuning (timeouts/retries) + DISH_DATA_TYPES + USDA_MAX_LOOKUPS
         ├── aliases.py       #     FOOD_ALIASES + DISH_ALIASES + word-set vocabularies for name normalization
         ├── nutrient_map.py  #     USDA nutrientId -> our schema key
         └── mock.py          #     canned totals for MOCK_GEMINI mode
@@ -202,8 +202,8 @@ Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API key
   `core.nutrients.MACRO_KEYS` / `MICRO_KEYS` exactly.
 - `app_config` is a key/value table; all access goes through `core.config`.
 - `food_cache` holds per-100g profiles **and** miss sentinels (negative caching); the lifespan
-  purges it when `CACHE_VERSION` (in `services/nutrition_data/config.py`) changes, so improved
-  matching/aliases aren't masked by stale rows.
+  purges it when `CACHE_VERSION` (in `core/config.py`) changes, so improved matching/aliases
+  aren't masked by stale rows.
 
 **Timezone handling:** the backend stores naive UTC strings. The frontend appends `"Z"` before
 `new Date(...)` so local time renders correctly; `Home.jsx` sends local-midnight `date_from`/
@@ -216,7 +216,15 @@ midnight land on the right day regardless of timezone.
 
 - **Single sources of truth.** Nutrient field lists → `core.nutrients`. Config access & defaults →
   `core.config`. Don't re-declare these elsewhere.
-- **Keep routers thin.** New endpoint logic goes in a service; the router just wires it.
+- **Keep routers thin.** New endpoint logic goes in a service; the router just wires it. Routes set
+  `response_model` / `status_code` / `summary` explicitly.
+- **Validate at the edge with Pydantic.** Request schemas use `StrEnum`s (`MealType`, `Confidence`,
+  `VisionProvider`, `IngredientStatus`) and `Field` constraints (PIN `^\d{4}$`, `ge=0` on
+  nutrients/grams). LLM-derived `meal_type`/`confidence` are normalized in
+  `vision_service._parse_compact` **before** the strict `AnalyzeResponse`, so a surprise model
+  output can't 500.
+- **DB identifiers use a naming convention.** `Base.metadata` (`core.database`) sets a
+  `naming_convention` so indexes/FKs/PKs get deterministic names.
 - **Dish aliases are curated empirically.** Add to `DISH_ALIASES` only after confirming an FNDDS
   match via `python check_aliases.py <key>`. An unverified dish is harmless — it just falls back to
   decomposition.
