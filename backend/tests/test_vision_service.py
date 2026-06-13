@@ -7,6 +7,7 @@ malformed output. No network.
 Run from the backend/ directory:
     python -m unittest tests.test_vision_service
 """
+
 import unittest
 from unittest.mock import patch
 
@@ -15,41 +16,61 @@ import services.vision_service as gs
 
 class ParseCompactTest(unittest.TestCase):
     def test_parses_dish_list(self):
-        raw = ('{"n":"South Indian Breakfast","t":"breakfast","c":"high","d":['
-               '{"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]},'
-               '{"n":"sambar","g":150,"i":[{"f":"toor dal","g":30}]}]}')
+        raw = (
+            '{"n":"South Indian Breakfast","t":"breakfast","c":"high","d":['
+            '{"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]},'
+            '{"n":"sambar","g":150,"i":[{"f":"toor dal","g":30}]}]}'
+        )
         out = gs._parse_compact(raw)
         self.assertEqual(out["meal_name"], "South Indian Breakfast")
         self.assertEqual(out["meal_type"], "breakfast")
         self.assertEqual(out["confidence"], "high")
-        self.assertEqual(out["dishes"], [
-            {"name": "idli", "grams": 160,
-             "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}]},
-            {"name": "sambar", "grams": 150,
-             "items": [{"food": "toor dal", "grams": 30}]},
-        ])
+        self.assertEqual(
+            out["dishes"],
+            [
+                {
+                    "name": "idli",
+                    "grams": 160,
+                    "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}],
+                },
+                {"name": "sambar", "grams": 150, "items": [{"food": "toor dal", "grams": 30}]},
+            ],
+        )
 
     def test_strips_markdown_fences(self):
-        raw = ('```json\n{"n":"Toast","t":"breakfast","c":"low","d":['
-               '{"n":"toast","g":40,"i":[{"f":"bread","g":40}]}]}\n```')
+        raw = (
+            '```json\n{"n":"Toast","t":"breakfast","c":"low","d":['
+            '{"n":"toast","g":40,"i":[{"f":"bread","g":40}]}]}\n```'
+        )
         out = gs._parse_compact(raw)
         self.assertEqual(out["meal_name"], "Toast")
-        self.assertEqual(out["dishes"], [
-            {"name": "toast", "grams": 40, "items": [{"food": "bread", "grams": 40}]},
-        ])
+        self.assertEqual(
+            out["dishes"],
+            [
+                {"name": "toast", "grams": 40, "items": [{"food": "bread", "grams": 40}]},
+            ],
+        )
 
     def test_drops_junk_dishes_and_items(self):
-        raw = ('{"n":"x","t":"snack","c":"medium","d":['
-               '{"n":"rice bowl","g":100,"i":[{"f":"rice","g":100},{"junk":1},{"f":"","g":5},"nope",{"f":"oil"}]},'
-               '{"g":50},"bad",{"n":"  "}]}')  # nameless/blank dishes dropped; oil missing grams -> 0
+        raw = (
+            '{"n":"x","t":"snack","c":"medium","d":['
+            '{"n":"rice bowl","g":100,"i":[{"f":"rice","g":100},{"junk":1},{"f":"","g":5},"nope",{"f":"oil"}]},'
+            '{"g":50},"bad",{"n":"  "}]}'
+        )  # nameless/blank dishes dropped; oil missing grams -> 0
         out = gs._parse_compact(raw)
-        self.assertEqual(out["dishes"], [
-            {"name": "rice bowl", "grams": 100,
-             "items": [{"food": "rice", "grams": 100}, {"food": "oil", "grams": 0}]},
-        ])
+        self.assertEqual(
+            out["dishes"],
+            [
+                {
+                    "name": "rice bowl",
+                    "grams": 100,
+                    "items": [{"food": "rice", "grams": 100}, {"food": "oil", "grams": 0}],
+                },
+            ],
+        )
 
     def test_defaults_when_fields_missing(self):
-        out = gs._parse_compact('{}')
+        out = gs._parse_compact("{}")
         self.assertEqual(out["meal_name"], "Unknown meal")
         self.assertEqual(out["meal_type"], "snack")
         self.assertEqual(out["confidence"], "medium")
@@ -70,8 +91,14 @@ class ReloadClientsTest(unittest.TestCase):
 
     def _reload(self, groq_key, gemini_key=""):
         values = {"groq_api_key": groq_key, "gemini_api_key": gemini_key}
-        with patch.object(gs.config, "get_vision_config", return_value=("groq", "some-model")), \
-             patch.object(gs.config, "get_value", side_effect=lambda db, key, default="": values.get(key, default)):
+        with (
+            patch.object(gs.config, "get_vision_config", return_value=("groq", "some-model")),
+            patch.object(
+                gs.config,
+                "get_value",
+                side_effect=lambda db, key, default="": values.get(key, default),
+            ),
+        ):
             gs.reload_clients(db=None)
 
     def tearDown(self):

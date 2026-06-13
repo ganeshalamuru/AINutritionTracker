@@ -7,14 +7,28 @@ conversion and summation helpers those modules all need.
 
 Depends only on `schemas` (a leaf module), so importing this never creates a cycle.
 """
+
 from schemas import MacrosData, MicrosData
 
 MACRO_KEYS = ["calories", "protein_g", "carbs_g", "fat_g", "fiber_g", "sugar_g", "sodium_mg"]
 MICRO_KEYS = [
-    "vitamin_a_mcg", "vitamin_d_mcg", "vitamin_e_mg", "vitamin_k_mcg", "vitamin_c_mg",
-    "vitamin_b1_mg", "vitamin_b2_mg", "vitamin_b3_mg", "vitamin_b6_mg", "vitamin_b12_mcg",
-    "folate_mcg", "calcium_mg", "iron_mg", "magnesium_mg", "potassium_mg",
-    "zinc_mg", "phosphorus_mg",
+    "vitamin_a_mcg",
+    "vitamin_d_mcg",
+    "vitamin_e_mg",
+    "vitamin_k_mcg",
+    "vitamin_c_mg",
+    "vitamin_b1_mg",
+    "vitamin_b2_mg",
+    "vitamin_b3_mg",
+    "vitamin_b6_mg",
+    "vitamin_b12_mcg",
+    "folate_mcg",
+    "calcium_mg",
+    "iron_mg",
+    "magnesium_mg",
+    "potassium_mg",
+    "zinc_mg",
+    "phosphorus_mg",
 ]
 
 

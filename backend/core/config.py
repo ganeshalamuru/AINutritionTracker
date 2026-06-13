@@ -5,6 +5,7 @@ meals.py, and the vision defaults were defined in the vision service. Centralizi
 them here means routers and services share one implementation and the startup
 seeder, the /api/config endpoints, and the vision dispatch all agree on defaults.
 """
+
 import os
 
 from fastapi import HTTPException

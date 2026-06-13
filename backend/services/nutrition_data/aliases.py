@@ -6,8 +6,17 @@ no logic themselves.
 
 # Stripped (after the comma) when retrying a miss with a simpler query.
 COOKING_ADJECTIVES = {
-    "cooked", "raw", "fried", "boiled", "roasted", "grilled", "steamed",
-    "fresh", "baked", "sauteed", "sautéed",
+    "cooked",
+    "raw",
+    "fried",
+    "boiled",
+    "roasted",
+    "grilled",
+    "steamed",
+    "fresh",
+    "baked",
+    "sauteed",
+    "sautéed",
 }
 
 # Words _simplify() strips on the loose retry. Adds non-cooking descriptors
@@ -15,15 +24,42 @@ COOKING_ADJECTIVES = {
 # "cumin powder" retries loosely as "cumin" (USDA's entry is "Spices, cumin seed",
 # which strict requireAllWords=True can't match). Only fires after a strict miss.
 SIMPLIFY_STRIP_WORDS = COOKING_ADJECTIVES | {
-    "powder", "stick", "ground", "seed", "whole", "sliced", "chopped", "dried",
+    "powder",
+    "stick",
+    "ground",
+    "seed",
+    "whole",
+    "sliced",
+    "chopped",
+    "dried",
 }
 
 # Non-distinctive words: ignored when deriving the "food noun" a match must contain,
 # so 'mint leaves' keys on 'mint' (not 'leaves') and 'rice white cooked' keys on 'rice'.
 GENERIC_WORDS = {
-    "leaves", "leaf", "powder", "ground", "dried", "fresh", "raw", "cooked",
-    "fried", "boiled", "roasted", "grilled", "steamed", "baked", "whole",
-    "plain", "sliced", "chopped", "oil", "nfs", "white", "red", "green",
+    "leaves",
+    "leaf",
+    "powder",
+    "ground",
+    "dried",
+    "fresh",
+    "raw",
+    "cooked",
+    "fried",
+    "boiled",
+    "roasted",
+    "grilled",
+    "steamed",
+    "baked",
+    "whole",
+    "plain",
+    "sliced",
+    "chopped",
+    "oil",
+    "nfs",
+    "white",
+    "red",
+    "green",
 }
 
 # Common (esp. Indian) ingredient names the model emits -> a concise, USDA-friendly

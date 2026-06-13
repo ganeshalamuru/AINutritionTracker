@@ -14,6 +14,7 @@ Usage (from the backend/ directory):
     python check_aliases.py <USDA_API_KEY>
     python check_aliases.py                  # uses USDA_API_KEY env or backend/.env
 """
+
 import logging
 import os
 import sys
@@ -25,8 +26,16 @@ logging.getLogger("nutriai.nutrition_db").setLevel(logging.WARNING)
 
 # A few common foods NOT in the alias map, to exercise the plain (non-alias) path.
 EXTRA_FOODS = [
-    "spinach", "cucumber", "apple", "banana", "wheat flour",
-    "idli", "vada", "poha", "upma", "curd rice",
+    "spinach",
+    "cucumber",
+    "apple",
+    "banana",
+    "wheat flour",
+    "idli",
+    "vada",
+    "poha",
+    "upma",
+    "curd rice",
 ]
 
 
@@ -90,8 +99,10 @@ def _audit(names, key, alias_of, diagnose_fn) -> list:
 
         if chosen is not None:
             per = nd._extract_per_100g(chosen)
-            print(f"OK   {name:22}{via}  -> {chosen.get('description')} "
-                  f"[{chosen.get('dataType')}] (~{per['calories']:.0f} cal/100g)")
+            print(
+                f"OK   {name:22}{via}  -> {chosen.get('description')} "
+                f"[{chosen.get('dataType')}] (~{per['calories']:.0f} cal/100g)"
+            )
         else:
             unmatched.append(name)
             print(f"MISS {name:22}{via}  -> UNMATCHED")
@@ -114,7 +125,8 @@ def main():
         print(f"\n=== DISHES: auditing {len(dish_names)} dishes (dish path, FNDDS) ===")
         print("(a MISS here is fine — that dish just falls back to ingredient decomposition)\n")
         dish_unmatched = _audit(
-            dish_names, key,
+            dish_names,
+            key,
             lambda n: nd.DISH_ALIASES.get(nd._normalize(n), nd._normalize(n)),
             diagnose_dish,
         )
@@ -123,12 +135,16 @@ def main():
         print("Wait an hour (or use a signed key with 1,000/hr) and re-run.")
         return
 
-    print(f"\nIngredients: {len(food_names) - len(food_unmatched)} matched, "
-          f"{len(food_unmatched)} unmatched.")
+    print(
+        f"\nIngredients: {len(food_names) - len(food_unmatched)} matched, "
+        f"{len(food_unmatched)} unmatched."
+    )
     if food_unmatched:
         print("  Unmatched: " + ", ".join(food_unmatched))
-    print(f"Dishes: {len(dish_names) - len(dish_unmatched)} matched, "
-          f"{len(dish_unmatched)} unmatched (these decompose to ingredients).")
+    print(
+        f"Dishes: {len(dish_names) - len(dish_unmatched)} matched, "
+        f"{len(dish_unmatched)} unmatched (these decompose to ingredients)."
+    )
     if dish_unmatched:
         print("  Unmatched: " + ", ".join(dish_unmatched))
 

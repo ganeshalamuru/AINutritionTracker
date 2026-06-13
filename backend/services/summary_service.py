@@ -1,15 +1,15 @@
 """Aggregation logic for the nutrition summaries (daily totals + monthly breakdown).
 Routers call these and return the result directly.
 """
-from datetime import datetime, timezone
-from typing import Optional
+
+from datetime import UTC, datetime
 
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
 from core.nutrients import MACRO_KEYS, MICRO_KEYS, to_macros_data
 from models import Meal
-from schemas import DailySummary, MonthlySummary, DailyBreakdown, MealSummary
+from schemas import DailyBreakdown, DailySummary, MealSummary, MonthlySummary
 
 _ALL_FIELDS = MACRO_KEYS + MICRO_KEYS
 
@@ -43,10 +43,11 @@ def _accumulate(target: dict, m: Meal):
             target[f] += getattr(m.micros, f) or 0
 
 
-def daily_summary(db: Session, profile_id: int,
-                  date_from: Optional[str], date_to: Optional[str]) -> DailySummary:
+def daily_summary(
+    db: Session, profile_id: int, date_from: str | None, date_to: str | None
+) -> DailySummary:
     if not date_from:
-        today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+        today = datetime.now(UTC).strftime("%Y-%m-%d")
         date_from = today + "T00:00:00"
         date_to = today + "T23:59:59.999999"
 
@@ -110,8 +111,7 @@ def monthly_summary(db: Session, profile_id: int, year: int, month: int) -> Mont
             monthly_totals[f] += v[f]
 
     monthly_averages = {
-        f: round(monthly_totals[f] / days_logged, 1) if days_logged else 0
-        for f in _ALL_FIELDS
+        f: round(monthly_totals[f] / days_logged, 1) if days_logged else 0 for f in _ALL_FIELDS
     }
 
     return MonthlySummary(

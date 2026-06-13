@@ -1,6 +1,8 @@
-from datetime import datetime, timezone
-from sqlalchemy import Column, Integer, String, Float, DateTime, ForeignKey, Text, Boolean
+from datetime import UTC, datetime
+
+from sqlalchemy import Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import relationship
+
 from core.database import Base
 
 
@@ -11,7 +13,7 @@ class Profile(Base):
     name = Column(String, nullable=False)
     pin = Column(String(4), nullable=False)
     avatar_color = Column(String, default="#22c55e")
-    created_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     is_active = Column(Boolean, default=True)
 
     meals = relationship("Meal", back_populates="profile", cascade="all, delete-orphan")
@@ -26,12 +28,16 @@ class Meal(Base):
     meal_type = Column(String, default="snack")
     image_path = Column(String, nullable=True)
     group_id = Column(String, nullable=True, index=True)
-    logged_at = Column(DateTime, default=lambda: datetime.now(timezone.utc))
+    logged_at = Column(DateTime, default=lambda: datetime.now(UTC))
     notes = Column(Text, nullable=True)
 
     profile = relationship("Profile", back_populates="meals")
-    macros = relationship("Macros", back_populates="meal", uselist=False, cascade="all, delete-orphan")
-    micros = relationship("Micros", back_populates="meal", uselist=False, cascade="all, delete-orphan")
+    macros = relationship(
+        "Macros", back_populates="meal", uselist=False, cascade="all, delete-orphan"
+    )
+    micros = relationship(
+        "Micros", back_populates="meal", uselist=False, cascade="all, delete-orphan"
+    )
 
 
 class Macros(Base):

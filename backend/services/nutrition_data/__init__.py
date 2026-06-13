@@ -12,34 +12,35 @@ edited independently. Grouped by concern:
 `usda_service` re-imports every name below into its own namespace, so the public
 surface (e.g. `FOOD_ALIASES`, `CACHE_VERSION`) is unchanged.
 """
-from services.nutrition_data.config import (
-    USDA_SEARCH_URL,
-    USDA_DATA_TYPES,
-    DATA_TYPE_RANK,
-    DISH_DATA_TYPES,
-    USDA_PAGE_SIZE,
-    USDA_TIMEOUT,
-    USDA_CONNECT_TIMEOUT,
-    USDA_RETRIES,
-    USDA_RETRY_BACKOFF,
-    USDA_MAX_WORKERS,
-    USDA_MAX_LOOKUPS,
-    CACHE_VERSION,
-)
+
 from services.nutrition_data.aliases import (
     COOKING_ADJECTIVES,
-    SIMPLIFY_STRIP_WORDS,
-    GENERIC_WORDS,
-    FOOD_ALIASES,
     DISH_ALIASES,
+    FOOD_ALIASES,
+    GENERIC_WORDS,
+    SIMPLIFY_STRIP_WORDS,
 )
-from services.nutrition_data.nutrient_map import (
-    FDC_NUTRIENT_MAP,
-    ENERGY_FALLBACK_IDS,
+from services.nutrition_data.config import (
+    CACHE_VERSION,
+    DATA_TYPE_RANK,
+    DISH_DATA_TYPES,
+    USDA_CONNECT_TIMEOUT,
+    USDA_DATA_TYPES,
+    USDA_MAX_LOOKUPS,
+    USDA_MAX_WORKERS,
+    USDA_PAGE_SIZE,
+    USDA_RETRIES,
+    USDA_RETRY_BACKOFF,
+    USDA_SEARCH_URL,
+    USDA_TIMEOUT,
 )
 from services.nutrition_data.mock import (
     MOCK_MACROS,
     MOCK_MICROS,
+)
+from services.nutrition_data.nutrient_map import (
+    ENERGY_FALLBACK_IDS,
+    FDC_NUTRIENT_MAP,
 )
 
 __all__ = [
