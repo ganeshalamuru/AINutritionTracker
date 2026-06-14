@@ -68,35 +68,40 @@ def _load_foods(dataset_dir: str) -> dict[int, tuple[str, str]]:
 
 
 def _nutrient_translation(dataset_dir: str) -> dict[int, int]:
-    """Map a dataset's `food_nutrient.nutrient_id` values to canonical FDC nutrient ids.
+    """Map a dataset's `food_nutrient.nutrient_id` values to canonical FDC nutrient ids,
+    for the nutrients we keep only.
 
     Foundation/SR Legacy reference nutrients by FDC `id` (e.g. 1008), but the FNDDS/Survey
     export references them by the legacy `nutrient_nbr` (e.g. 208) instead. Each dataset's
-    own nutrient.csv carries both columns, so we accept either: identity for the FDC ids,
+    own nutrient.csv carries both columns, so we accept either: identity for the FDC id,
     plus nutrient_nbr -> id.
 
-    `nutrient_nbr` is NOT unique (e.g. 205 is shared by Carbohydrate-by-difference id 1005 and
-    a summation variant id 1050), so on a collision we prefer the id we actually track — losing
-    that preference is what silently zeroed FNDDS carbs. FDC `id`s win over nutrient_nbr in the
-    final merge (Foundation/SR reference by id; their ids are >=1000, our needed nbrs are <1000,
-    so they never collide)."""
-    ids: dict[int, int] = {}
-    nbrs: dict[int, int] = {}
+    `nutrient_nbr` is NOT unique across all nutrients (e.g. 205 is shared by
+    Carbohydrate-by-difference id 1005 and the summation variant id 1050), and losing track
+    of that once silently zeroed FNDDS carbs. But restricting the map to KEEP_NUTRIENT_IDS
+    drops the untracked sibling (1050) before it can collide, so within the kept subset the
+    nbr is unique and no preference logic is needed. The assert guards that invariant in case
+    USDA ever adds a tracked nutrient that breaks it. (Kept nbrs are <1000 and kept ids are
+    >=1000, so id-space and nbr-space never overlap either.)"""
+    out: dict[int, int] = {}
     with open(os.path.join(dataset_dir, "nutrient.csv"), newline="", encoding="utf-8") as f:
         for row in csv.DictReader(f):
             try:
                 nid = int(row["id"])
             except (ValueError, KeyError):
                 continue
-            ids[nid] = nid
+            if nid not in KEEP_NUTRIENT_IDS:
+                continue
+            out[nid] = nid  # Foundation/SR Legacy reference by FDC id
             try:
                 nbr = int(float(row["nutrient_nbr"]))
             except (ValueError, KeyError, TypeError):
                 continue
-            # Prefer a tracked id when several nutrients share this nutrient_nbr.
-            if nbr not in nbrs or (nid in KEEP_NUTRIENT_IDS and nbrs[nbr] not in KEEP_NUTRIENT_IDS):
-                nbrs[nbr] = nid
-    return {**nbrs, **ids}
+            assert nbr not in out or out[nbr] == nid, (
+                f"nutrient_nbr {nbr} collides among tracked ids in {dataset_dir}"
+            )
+            out[nbr] = nid  # Survey/FNDDS reference by nutrient_nbr
+    return out
 
 
 def _load_nutrients(dataset_dir: str, keep_ids: set[int]):
@@ -113,8 +118,8 @@ def _load_nutrients(dataset_dir: str, keep_ids: set[int]):
                 continue
             if fdc_id not in keep_ids:
                 continue
-            nutrient_id = translate.get(raw_nid)
-            if nutrient_id not in KEEP_NUTRIENT_IDS:
+            nutrient_id = translate.get(raw_nid)  # None for nutrients we don't keep
+            if nutrient_id is None:
                 continue
             amount = row.get("amount")
             if amount in (None, ""):
