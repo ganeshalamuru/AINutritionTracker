@@ -367,6 +367,7 @@ to disable them for a shared deployment.
 GET    /api/profiles              List all profiles
 POST   /api/profiles              Create profile {name, pin, avatar_color}
 POST   /api/profiles/verify       Verify {profile_id, pin} → profile or 401 (scoped to profile_id)
+PATCH  /api/profiles/{id}         Update goals {calorie_goal} (500–10000)
 DELETE /api/profiles/{id}         Soft-delete profile
 
 GET    /api/health                {status:"ok"} — liveness check
@@ -407,9 +408,16 @@ to avoid FastAPI routing conflicts.
 
 ### Daily reference targets (UI progress bars)
 
-| Calories | Protein | Carbs | Fat |
-|---|---|---|---|
-| 2000 kcal | 150 g | 250 g | 65 g |
+The **calorie goal is per-profile and editable** (Settings → *Daily Calorie Goal*, stored on
+`profiles.calorie_goal`, default 2000). The baseline below is a coherent 20% protein / 50% carbs /
+30% fat split (sums to exactly 2000 kcal). Energy-linked goals **scale with the calorie goal**
+(factor `calorie_goal / 2000`); the sodium limit and the `MicroGrid` vitamin/mineral DVs are
+**fixed** (set by body needs, not energy). The single source of truth is `frontend/src/utils/goals.js`.
+
+| Calories | Protein | Carbs | Fat | Fiber | Sugar | Sodium |
+|---|---|---|---|---|---|---|
+| 2000 kcal (editable) | 100 g | 250 g | 67 g | 28 g | 50 g | 2300 mg (fixed) |
+| — | scales | scales | scales | scales | scales | fixed |
 
 Micros are shown as raw values (no goal bars) in a collapsible `MicroGrid`.
 
@@ -452,7 +460,7 @@ dish-lookup gate, transient-timeout retries, and rate-limit propagation.
   the dominant error; this is deliberately out of scope for now).
 - Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design);
   Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
-- Custom per-profile calorie/macro goals; manual edit of logged nutrition values.
+- Manual edit of logged nutrition values.
 - Keep-image toggle in the LogMeal UI (backend already supports `keep_image: true` on `/meals/log`).
 - Data export (CSV / PDF); dark mode; direct camera-open on mobile.
 ```

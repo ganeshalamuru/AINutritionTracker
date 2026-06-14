@@ -11,6 +11,7 @@ import GroupedMealCard from "../components/meal/GroupedMealCard";
 import MealDetailModal from "../components/meal/MealDetailModal";
 import { useMealModal } from "../hooks/useMealModal";
 import { emptyMacros, addMacros } from "../utils/macros";
+import { computeGoals } from "../utils/goals";
 
 function buildDisplayItems(meals) {
   const items = [];
@@ -111,6 +112,7 @@ export default function Home() {
   if (loading) return <Spinner text="Loading today's summary..." />;
 
   const totals = summary?.totals || {};
+  const goals = computeGoals(profile.calorie_goal);
   const displayItems = buildDisplayItems(summary?.meals || []);
 
   return (
@@ -122,12 +124,12 @@ export default function Home() {
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4">
         <div className="flex items-center justify-center mb-4">
-          <MacroRing calories={totals.calories || 0} goal={2000} />
+          <MacroRing calories={totals.calories || 0} goal={goals.calories} />
         </div>
         <div className="space-y-3">
-          <MacroProgressBar label="Protein" value={totals.protein_g || 0} type="protein" />
-          <MacroProgressBar label="Carbs" value={totals.carbs_g || 0} type="carbs" />
-          <MacroProgressBar label="Fat" value={totals.fat_g || 0} type="fat" />
+          <MacroProgressBar label="Protein" value={totals.protein_g || 0} type="protein" goal={goals.protein_g} />
+          <MacroProgressBar label="Carbs" value={totals.carbs_g || 0} type="carbs" goal={goals.carbs_g} />
+          <MacroProgressBar label="Fat" value={totals.fat_g || 0} type="fat" goal={goals.fat_g} />
         </div>
         <div className="flex justify-around mt-4 pt-4 border-t border-gray-50 text-xs text-gray-500">
           <div className="text-center">

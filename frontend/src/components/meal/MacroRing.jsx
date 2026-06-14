@@ -1,4 +1,6 @@
-export default function MacroRing({ calories, goal = 2000 }) {
+import { DEFAULT_CALORIE_GOAL } from "../../utils/goals";
+
+export default function MacroRing({ calories, goal = DEFAULT_CALORIE_GOAL }) {
   const pct = Math.min((calories / goal) * 100, 100);
   const r = 54;
   const circ = 2 * Math.PI * r;

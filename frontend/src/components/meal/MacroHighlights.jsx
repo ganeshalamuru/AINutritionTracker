@@ -1,16 +1,20 @@
+import { useProfile } from "../../context/ProfileContext";
+import { computeGoals } from "../../utils/goals";
+
 // Macro headline: what a meal is a high source of, by % of daily goal/limit.
 // Mirrors MicroGrid's "Rich in" idea, but splits the framing: protein/carbs/fat/
 // fiber are good to hit (green "Rich in"), sugar/sodium are limits to watch
-// (amber "High in"). Display-only — goals live here like MicroGrid's DV table.
+// (amber "High in"). Display-only — goals come from the active profile's calorie
+// goal (energy-linked goals scale; the sodium limit is fixed). See utils/goals.js.
 const GOOD = [
-  { key: "protein_g", label: "Protein", goal: 150 },
-  { key: "fiber_g", label: "Fiber", goal: 28 },
+  { key: "protein_g", label: "Protein", goalKey: "protein_g" },
+  { key: "fiber_g", label: "Fiber", goalKey: "fiber_g" },
 ];
 const CAUTION = [
-  { key: "carbs_g", label: "Carbs", goal: 250 },
-  { key: "fat_g", label: "Fat", goal: 65 },
-  { key: "sugar_g", label: "Sugar", goal: 50 },
-  { key: "sodium_mg", label: "Sodium", goal: 2300 },
+  { key: "carbs_g", label: "Carbs", goalKey: "carbs_g" },
+  { key: "fat_g", label: "Fat", goalKey: "fat_g" },
+  { key: "sugar_g", label: "Sugar", goalKey: "sugar_g" },
+  { key: "sodium_mg", label: "Sodium", goalKey: "sodium_mg" },
 ];
 
 const RICH = 20; // % of daily goal -> green "Rich in"
@@ -19,9 +23,9 @@ const HIGH = 30; // % of daily limit -> amber "High in" (above 20% so a normal
 
 const pct = (value, goal) => (goal ? (Number(value) / goal) * 100 : 0);
 
-function qualifying(items, macros, threshold) {
+function qualifying(items, macros, goals, threshold) {
   return items
-    .map((m) => ({ ...m, pct: pct(macros[m.key], m.goal) }))
+    .map((m) => ({ ...m, pct: pct(macros[m.key], goals[m.goalKey]) }))
     .filter((m) => m.pct >= threshold)
     .sort((a, b) => b.pct - a.pct);
 }
@@ -41,9 +45,11 @@ function ChipRow({ icon, title, items, labelClass, chipClass }) {
 }
 
 export default function MacroHighlights({ macros }) {
+  const { profile } = useProfile();
   if (!macros) return null;
-  const rich = qualifying(GOOD, macros, RICH);
-  const high = qualifying(CAUTION, macros, HIGH);
+  const goals = computeGoals(profile?.calorie_goal);
+  const rich = qualifying(GOOD, macros, goals, RICH);
+  const high = qualifying(CAUTION, macros, goals, HIGH);
   if (!rich.length && !high.length) return null;
   return (
     <div className="space-y-1.5">

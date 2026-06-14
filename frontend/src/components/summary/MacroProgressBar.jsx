@@ -1,8 +1,7 @@
 const COLORS = { protein: "#3b82f6", carbs: "#f97316", fat: "#a855f7" };
-const GOALS = { protein: 150, carbs: 250, fat: 65 };
 
-export default function MacroProgressBar({ label, value, unit = "g", type }) {
-  const goal = GOALS[type] || 100;
+export default function MacroProgressBar({ label, value, unit = "g", type, goal: goalProp }) {
+  const goal = goalProp ?? 100;
   const pct = Math.min((value / goal) * 100, 100);
   const color = COLORS[type] || "#22c55e";
 

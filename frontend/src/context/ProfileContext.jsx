@@ -23,8 +23,18 @@ export function ProfileProvider({ children }) {
     localStorage.removeItem("activeProfile");
   };
 
+  // Merge a partial update into the active profile (e.g. calorie_goal) and persist
+  // it so it survives reloads without a re-login.
+  const updateProfile = (patch) => {
+    setProfile((p) => {
+      const next = { ...p, ...patch };
+      localStorage.setItem("activeProfile", JSON.stringify(next));
+      return next;
+    });
+  };
+
   return (
-    <ProfileContext.Provider value={{ profile, login, logout }}>
+    <ProfileContext.Provider value={{ profile, login, logout, updateProfile }}>
       {children}
     </ProfileContext.Provider>
   );

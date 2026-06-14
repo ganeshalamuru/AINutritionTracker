@@ -5,6 +5,7 @@ import client from "../api/client";
 import Toast from "../components/shared/Toast";
 import ConfirmModal from "../components/shared/ConfirmModal";
 import ApiKeyCard from "../components/settings/ApiKeyCard";
+import { computeGoals, DEFAULT_CALORIE_GOAL } from "../utils/goals";
 
 // Provider -> its selectable models. The provider dropdown picks the group; the
 // model dropdown lists that group's `models`.
@@ -24,8 +25,10 @@ const PROVIDERS = [
 const modelsFor = (p) => (PROVIDERS.find((x) => x.id === p)?.models ?? []);
 
 export default function Settings() {
-  const { profile, logout } = useProfile();
+  const { profile, logout, updateProfile } = useProfile();
   const navigate = useNavigate();
+  const [goalInput, setGoalInput] = useState(profile.calorie_goal ?? DEFAULT_CALORIE_GOAL);
+  const [savingGoal, setSavingGoal] = useState(false);
   const [keySet, setKeySet] = useState(false);
   const [groqSet, setGroqSet] = useState(false);
   const [usdaSet, setUsdaSet] = useState(false);
@@ -98,6 +101,30 @@ export default function Settings() {
     }
   };
 
+  // Persist the daily calorie goal on the active profile. Energy-linked macro goals
+  // scale from it (see utils/goals.js). The Guest profile (id 0) has no DB row, so we
+  // skip the API call and only update local state.
+  const saveGoal = async () => {
+    const kcal = Math.round(Number(goalInput));
+    if (!Number.isFinite(kcal) || kcal < 500 || kcal > 10000) {
+      setToast({ message: "Enter a goal between 500 and 10000 kcal", type: "error" });
+      return;
+    }
+    setSavingGoal(true);
+    try {
+      if (profile.id !== 0) {
+        await client.patch(`/profiles/${profile.id}`, { calorie_goal: kcal });
+      }
+      updateProfile({ calorie_goal: kcal });
+      setGoalInput(kcal);
+      setToast({ message: "Calorie goal updated!", type: "success" });
+    } catch {
+      setToast({ message: "Failed to update calorie goal", type: "error" });
+    } finally {
+      setSavingGoal(false);
+    }
+  };
+
   const deleteProfile = async (id) => {
     await client.delete(`/profiles/${id}`);
     setProfiles((p) => p.filter((x) => x.id !== id));
@@ -116,6 +143,45 @@ export default function Settings() {
       />
 
       <h2 className="text-xl font-bold text-gray-900">Settings</h2>
+
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <h3 className="font-semibold text-gray-800">Daily Calorie Goal</h3>
+        <p className="text-xs text-gray-500">
+          Your target daily energy intake. Protein, carbs, fat, fiber and sugar goals scale
+          with it; the sodium limit and vitamin/mineral targets stay fixed.
+        </p>
+        <div className="flex gap-2">
+          <div className="relative flex-1">
+            <input
+              type="number"
+              min={500}
+              max={10000}
+              step={50}
+              inputMode="numeric"
+              value={goalInput}
+              onChange={(e) => setGoalInput(e.target.value)}
+              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 pr-12 text-sm focus:outline-none focus:border-green-400"
+            />
+            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-gray-400">kcal</span>
+          </div>
+          <button
+            onClick={saveGoal}
+            disabled={savingGoal}
+            className="px-4 py-2.5 rounded-xl bg-green-500 text-white text-sm font-medium hover:bg-green-600 disabled:opacity-50"
+          >
+            {savingGoal ? "Saving..." : "Save"}
+          </button>
+        </div>
+        {(() => {
+          const g = computeGoals(goalInput);
+          return (
+            <p className="text-xs text-gray-400">
+              Targets: Protein {g.protein_g}g · Carbs {g.carbs_g}g · Fat {g.fat_g}g ·
+              Fiber {g.fiber_g}g · Sugar {g.sugar_g}g
+            </p>
+          );
+        })()}
+      </div>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
         <h3 className="font-semibold text-gray-800">AI Vision Model</h3>

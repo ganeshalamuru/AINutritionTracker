@@ -49,6 +49,13 @@ def _migrate_and_prepare_cache():
             conn.commit()
         except Exception:
             pass  # column already exists
+        try:
+            conn.execute(
+                text("ALTER TABLE profiles ADD COLUMN calorie_goal INTEGER DEFAULT 2000")
+            )
+            conn.commit()
+        except Exception:
+            pass  # column already exists
         # Cache of USDA food-name -> per-100g nutrient lookups (see usda_service.py).
         conn.execute(
             text(

@@ -50,8 +50,13 @@ class ProfileOut(BaseModel):
     id: int
     name: str
     avatar_color: str
+    calorie_goal: int = 2000
 
     model_config = {"from_attributes": True}
+
+
+class ProfileGoalUpdate(BaseModel):
+    calorie_goal: int = Field(ge=500, le=10000)
 
 
 class PinVerify(BaseModel):

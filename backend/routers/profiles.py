@@ -3,7 +3,7 @@ from sqlalchemy.orm import Session
 
 from core.database import get_db
 from models import Profile
-from schemas import OkResponse, PinVerify, ProfileCreate, ProfileOut
+from schemas import OkResponse, PinVerify, ProfileCreate, ProfileGoalUpdate, ProfileOut
 
 router = APIRouter(prefix="/profiles", tags=["profiles"])
 
@@ -37,6 +37,19 @@ def verify_pin(data: PinVerify, db: Session = Depends(get_db)):
     )
     if not profile or profile.pin != data.pin:
         raise HTTPException(status_code=401, detail="Invalid PIN")
+    return profile
+
+
+@router.patch("/{profile_id}", response_model=ProfileOut, summary="Update profile goals")
+def update_profile(profile_id: int, data: ProfileGoalUpdate, db: Session = Depends(get_db)):
+    profile = (
+        db.query(Profile).filter(Profile.id == profile_id, Profile.is_active.is_(True)).first()
+    )
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    profile.calorie_goal = data.calorie_goal
+    db.commit()
+    db.refresh(profile)
     return profile
 
 

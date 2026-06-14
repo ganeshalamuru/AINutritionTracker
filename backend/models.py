@@ -13,6 +13,7 @@ class Profile(Base):
     name = Column(String, nullable=False)
     pin = Column(String(4), nullable=False)
     avatar_color = Column(String, default="#22c55e")
+    calorie_goal = Column(Integer, default=2000, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     is_active = Column(Boolean, default=True)
 
