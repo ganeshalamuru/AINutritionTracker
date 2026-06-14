@@ -11,6 +11,7 @@ export default function ApiKeyCard({
   unsetLabel = "Not set",
   placeholder,
   onSave,
+  bare = false,
   children,
 }) {
   const [value, setValue] = useState("");
@@ -28,8 +29,8 @@ export default function ApiKeyCard({
     }
   };
 
-  return (
-    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+  const inner = (
+    <>
       <h3 className="font-semibold text-gray-800">
         {title} {active && <span className="text-xs text-green-500">(active)</span>}
       </h3>
@@ -53,6 +54,14 @@ export default function ApiKeyCard({
       >
         {saving ? "Saving..." : isSet ? "Update Key" : "Save Key"}
       </button>
-    </div>
+    </>
+  );
+
+  // `bare` drops the card chrome so the key can nest inside a SettingsSection (itself
+  // a card) without double-carding.
+  return bare ? (
+    <div className="space-y-3">{inner}</div>
+  ) : (
+    <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">{inner}</div>
   );
 }

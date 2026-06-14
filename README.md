@@ -218,7 +218,7 @@ pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
 components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
             meal/     (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MacroHighlights, MicroGrid)
             summary/  (MacroProgressBar)   profile/(PinPad)
-            settings/ (ApiKeyCard)         shared/ (Spinner, Toast, EmptyState, ConfirmModal)
+            settings/ (ApiKeyCard, SettingsSection)   shared/ (Spinner, Toast, EmptyState, ConfirmModal)
 hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & Timeline)
 utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros) · uid
 ```
