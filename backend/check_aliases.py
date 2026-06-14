@@ -55,33 +55,33 @@ def _load_key() -> str:
     sys.exit(1)
 
 
-def diagnose(name: str, key: str):
+def diagnose(name: str):
     """Return (alias_query, chosen_food | None, candidate_foods) for one ingredient."""
     q = nd._aliased(name)
-    foods = nd._search_usda(q, key, require_all=True)
+    foods = nd._search_usda(q, require_all=True)
     if not foods:
         simpler = nd._simplify(q)
         if simpler:
-            loose = nd._search_usda(simpler, key, require_all=False)
+            loose = nd._search_usda(simpler, require_all=False)
             if loose:
                 foods = loose
     return q, nd._pick_best(foods, q), foods
 
 
-def diagnose_dish(name: str, key: str):
+def diagnose_dish(name: str):
     """Like diagnose() but via the dish path: DISH_ALIASES + the dish data types."""
     q = nd.DISH_ALIASES.get(nd._normalize(name), nd._normalize(name))
-    foods = nd._search_usda(q, key, require_all=True, data_types=nd.DISH_DATA_TYPES)
+    foods = nd._search_usda(q, require_all=True, data_types=nd.DISH_DATA_TYPES)
     if not foods:
         simpler = nd._simplify(q)
         if simpler:
-            loose = nd._search_usda(simpler, key, require_all=False, data_types=nd.DISH_DATA_TYPES)
+            loose = nd._search_usda(simpler, require_all=False, data_types=nd.DISH_DATA_TYPES)
             if loose:
                 foods = loose
     return q, nd._pick_best(foods, q), foods
 
 
-def _audit(names, key, alias_of, diagnose_fn) -> list:
+def _audit(names, alias_of, diagnose_fn) -> list:
     """Run one audit pass; print each result and return the unmatched names.
     Raises UsdaRateLimitError so the caller can stop the whole run."""
     unmatched = []
@@ -89,7 +89,7 @@ def _audit(names, key, alias_of, diagnose_fn) -> list:
         alias = alias_of(name)
         via = "" if alias == name else f"  (via '{alias}')"
         try:
-            q, chosen, candidates = diagnose_fn(name, key)
+            q, chosen, candidates = diagnose_fn(name)
         except nd.UsdaRateLimitError:
             raise
         except Exception as e:
@@ -115,18 +115,18 @@ def _audit(names, key, alias_of, diagnose_fn) -> list:
 
 def main():
     key = _load_key()
+    nd.configure(key)  # bake the CLI/env key into the shared client (X-Api-Key header)
     food_names = sorted(set(nd.FOOD_ALIASES) | set(EXTRA_FOODS))
     dish_names = sorted(set(nd.DISH_ALIASES))
 
     try:
         print(f"=== INGREDIENTS: auditing {len(food_names)} foods (ingredient path) ===\n")
-        food_unmatched = _audit(food_names, key, nd._aliased, diagnose)
+        food_unmatched = _audit(food_names, nd._aliased, diagnose)
 
         print(f"\n=== DISHES: auditing {len(dish_names)} dishes (dish path, FNDDS) ===")
         print("(a MISS here is fine — that dish just falls back to ingredient decomposition)\n")
         dish_unmatched = _audit(
             dish_names,
-            key,
             lambda n: nd.DISH_ALIASES.get(nd._normalize(n), nd._normalize(n)),
             diagnose_dish,
         )

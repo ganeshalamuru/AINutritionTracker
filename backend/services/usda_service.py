@@ -55,26 +55,62 @@ from services.nutrition_data import (
 configure_logging()
 logger = logging.getLogger("nutriai.nutrition_db")
 
-# One reusable pool for parallel per-meal ingredient lookups, created once at import
-# instead of per /analyze call. The thread_name_prefix keeps each worker's log lines
-# distinguishable (the formatter prints %(threadName)s).
-_LOOKUP_POOL = ThreadPoolExecutor(max_workers=USDA_MAX_WORKERS, thread_name_prefix="usda-lookup")
+# --- shared USDA client (a pooled Session + a worker pool, with the key on a header) ---
 
-# A meal fires up to ~8 ingredient + dish lookups, each a POST to api.nal.usda.gov.
-# A shared Session keeps the HTTPS connection alive across the parallel workers and
-# across meals (no fresh TCP/TLS handshake per call); the adapter pool is sized to the
-# worker count. We do NOT use urllib3's Retry here: its default allowed_methods excludes
-# POST, so it would silently never retry the search. Transient errors are retried
-# explicitly in _search_usda instead (see USDA_RETRIES), which also keeps the retry in
-# the logs.
-_SESSION = requests.Session()
-_adapter = HTTPAdapter(
-    pool_connections=USDA_MAX_WORKERS,
-    pool_maxsize=USDA_MAX_WORKERS,
-    max_retries=0,
-)
-_SESSION.mount("https://", _adapter)
-_SESSION.mount("http://", _adapter)
+
+class UsdaClient:
+    """Shared USDA HTTP client: a pooled requests.Session (key on the X-Api-Key header) plus a
+    ThreadPoolExecutor for parallel per-meal lookups. Built ONCE and reused across every
+    /analyze — never per request. Both pools are key-independent, so a key change only updates
+    the header (set_api_key); nothing is rebuilt.
+
+    A meal fires up to ~8 ingredient + dish lookups, each a POST to api.nal.usda.gov. The shared
+    Session keeps the HTTPS connection alive across the parallel workers and across meals (no
+    fresh TCP/TLS handshake per call); the adapter pool is sized to the worker count. We do NOT
+    use urllib3's Retry (its default allowed_methods excludes POST, so it would silently never
+    retry the search) — transient errors are retried explicitly in _search_usda (see
+    USDA_RETRIES), which also keeps the retry in the logs."""
+
+    def __init__(self, api_key: str = ""):
+        self.session = requests.Session()
+        adapter = HTTPAdapter(
+            pool_connections=USDA_MAX_WORKERS, pool_maxsize=USDA_MAX_WORKERS, max_retries=0
+        )
+        self.session.mount("https://", adapter)
+        self.session.mount("http://", adapter)
+        # Key on X-Api-Key (api.data.gov supports it and prefers it over ?api_key= — keeps the
+        # key out of request URLs/logs); a descriptive User-Agent replaces python-requests'.
+        self.session.headers.update(
+            {"X-Api-Key": api_key or "DEMO_KEY", "User-Agent": "NutriAI/1.0"}
+        )
+        # thread_name_prefix keeps each worker's log lines distinguishable (%(threadName)s).
+        self.pool = ThreadPoolExecutor(
+            max_workers=USDA_MAX_WORKERS, thread_name_prefix="usda-lookup"
+        )
+
+    def set_api_key(self, api_key: str):
+        """Point the client at a new USDA key — atomic header update, no session/pool rebuild."""
+        self.session.headers["X-Api-Key"] = api_key or "DEMO_KEY"
+
+
+# Built once at import (self-sufficient for tests/scripts); reload_client sets the real key at
+# startup and on config change. The connection/worker pools live for the process lifetime.
+_client = UsdaClient()
+
+
+def configure(api_key: str):
+    """Set the shared client's USDA key. Used by reload_client (the app path) and by standalone
+    scripts. Just updates the X-Api-Key header — the connection and worker pools are reused."""
+    _client.set_api_key(api_key)
+    logger.info("usda client configured (key set=%s)", bool(api_key))
+
+
+def reload_client(db):
+    """Point the shared USDA client at the currently configured key. Called once at startup
+    (core.lifespan) and after every PUT /api/config, mirroring vision_service.reload_clients."""
+    from core import config  # local import keeps core out of this module's top-level graph
+
+    configure(config.get_usda_key(db))
 
 
 class UsdaRateLimitError(Exception):
@@ -246,11 +282,10 @@ def _pick_best(foods: list, query: str) -> dict | None:
     return min(survivors, key=rank)
 
 
-def _search_usda(
-    query: str, api_key: str, require_all: bool, data_types: list | None = None
-) -> list:
+def _search_usda(query: str, require_all: bool, data_types: list | None = None) -> list:
     """One external call to USDA /foods/search. Logs the request and response, and
-    raises UsdaRateLimitError on a throttle. Returns the candidate food list.
+    raises UsdaRateLimitError on a throttle. Returns the candidate food list. The API key
+    rides on the shared Session's X-Api-Key header (set at client-build time, see configure).
     `data_types` defaults to the ingredient set; the dish lookup passes DISH_DATA_TYPES."""
     payload = {
         "query": query,
@@ -266,9 +301,8 @@ def _search_usda(
     # persistent bad status come back as a real response and are handled below (not retried).
     for attempt in range(USDA_RETRIES + 1):
         try:
-            resp = _SESSION.post(
+            resp = _client.session.post(
                 USDA_SEARCH_URL,
-                params={"api_key": api_key or "DEMO_KEY"},
                 json=payload,
                 timeout=(USDA_CONNECT_TIMEOUT, USDA_TIMEOUT),
             )
@@ -326,10 +360,11 @@ def _search_usda(
     return foods
 
 
-def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
+def lookup_nutrients(item_name: str) -> dict | None:
     """Per-100g nutrient profile for a food name, or None if USDA has no real match.
-    Hits the SQLite cache first; only misses reach the USDA API. Raises
-    UsdaRateLimitError if the API key is throttled (caller decides how to surface it)."""
+    Hits the SQLite cache first; only misses reach the USDA API (the key is baked into the
+    shared client). Raises UsdaRateLimitError if the key is throttled (caller decides how to
+    surface it)."""
     query = _normalize(item_name)
     if not query:
         return None
@@ -348,12 +383,12 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
     try:
         # Strict first (all words must be present) to avoid loosely-related dishes;
         # if that finds nothing, retry the simplified form leniently and let the gate filter.
-        foods = _search_usda(search_q, api_key, require_all=True)
+        foods = _search_usda(search_q, require_all=True)
         if not foods:
             simpler = _simplify(search_q)
             if simpler:
                 logger.info("retry %r (loose)", simpler)
-                foods = _search_usda(simpler, api_key, require_all=False)
+                foods = _search_usda(simpler, require_all=False)
     except UsdaRateLimitError:
         raise
     except Exception as e:
@@ -374,7 +409,7 @@ def lookup_nutrients(item_name: str, api_key: str) -> dict | None:
     return per_100g
 
 
-def lookup_dish(dish_name: str, api_key: str) -> dict | None:
+def lookup_dish(dish_name: str) -> dict | None:
     """Per-100g nutrient profile for a whole DISH, or None if USDA's FNDDS has no real
     match (caller then decomposes the dish into ingredients). Mirrors lookup_nutrients
     but rewrites via DISH_ALIASES and searches the dish data types. Cached separately
@@ -397,14 +432,12 @@ def lookup_dish(dish_name: str, api_key: str) -> dict | None:
     via = f" (via {search_q!r})" if search_q != name else ""
 
     try:
-        foods = _search_usda(search_q, api_key, require_all=True, data_types=DISH_DATA_TYPES)
+        foods = _search_usda(search_q, require_all=True, data_types=DISH_DATA_TYPES)
         if not foods:
             simpler = _simplify(search_q)
             if simpler:
                 logger.info("retry %r (dish, loose)", simpler)
-                foods = _search_usda(
-                    simpler, api_key, require_all=False, data_types=DISH_DATA_TYPES
-                )
+                foods = _search_usda(simpler, require_all=False, data_types=DISH_DATA_TYPES)
     except UsdaRateLimitError:
         raise
     except Exception as e:
@@ -440,7 +473,7 @@ def clear_cache():
         logger.warning("could not clear food_cache: %s", e)
 
 
-def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict, list, list, list]:
+def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, list]:
     """Decomposition path: look each base ingredient up in USDA, scale by grams, sum.
 
     Cached lookups are free; only `budget` distinct *uncached* ingredients are looked up
@@ -480,9 +513,7 @@ def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
-    results = list(
-        _LOOKUP_POOL.map(lambda name: (name, lookup_nutrients(name, api_key)), to_lookup)
-    )
+    results = list(_client.pool.map(lambda name: (name, lookup_nutrients(name)), to_lookup))
     profiles = dict(results)  # name -> per_100g | None
 
     skipped_set = set(skipped)
@@ -503,7 +534,7 @@ def _sum_ingredients(items: list[dict], api_key: str, budget: int) -> tuple[dict
     return totals, unmatched, skipped, lines
 
 
-def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, list, list, list]:
+def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list]:
     """Sum nutrients across a meal's dishes, dish-first.
 
     For each dish we try a whole-dish USDA lookup (lookup_dish); a dish that matches
@@ -587,7 +618,7 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
     dish_pairs = list(
         zip(
             dish_lookup,
-            _LOOKUP_POOL.map(lambda d: lookup_dish(d["name"], api_key), dish_lookup),
+            _client.pool.map(lambda d: lookup_dish(d["name"]), dish_lookup),
             strict=True,
         )
     )
@@ -610,7 +641,7 @@ def nutrients_for_meal(dishes: list[dict], api_key: str) -> tuple[dict, dict, li
         if id(d) not in matched_ids:
             fallback_items.extend(d.get("items") or [])
 
-    ing_totals, unmatched, skipped, _ = _sum_ingredients(fallback_items, api_key, budget)
+    ing_totals, unmatched, skipped, _ = _sum_ingredients(fallback_items, budget)
     for key in totals:
         totals[key] += ing_totals[key]
 

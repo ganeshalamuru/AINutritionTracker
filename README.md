@@ -149,7 +149,7 @@ backend/
 │   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named formatter for app + uvicorn
 │   ├── config.py            #   app_config table access + vision defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/17-micro schema + to_*_data / sum_* helpers
-│   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision clients
+│   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision + USDA clients
 │
 ├── models.py                # SQLAlchemy ORM: Profile, Meal (with group_id), Macros, Micros, AppConfig
 ├── schemas.py               # Pydantic request/response models (leaf): AnalyzeResponse, DishBreakdown, IngredientBreakdown, ...
@@ -162,7 +162,7 @@ backend/
 │
 └── services/                # business logic — where the work actually happens
     ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients); shared clients
-    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache (+ negative caching), shared pool + Session
+    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache (+ negative caching); lifespan-built client (Session+pool+key) via reload_client
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
@@ -287,7 +287,11 @@ midnight land on the right day regardless of timezone.
   is a deliberate exception via a local import.)
 - **Expensive clients are built once and reused, never per request.** Vision provider clients are
   built in the lifespan and rebuilt only on a key/model change (`PUT /api/config` →
-  `reload_clients`); USDA shares a `requests.Session` and a thread pool; the DB engine is pooled.
+  `reload_clients`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` + a
+  `ThreadPoolExecutor`) is built **once** and reused for the process lifetime; both pools are
+  key-independent, so a key change (`reload_client` / `configure`) only updates the Session's
+  `X-Api-Key` header — nothing is rebuilt. The key lives only on that header (lookups take no
+  `api_key` argument and it never appears in request URLs/logs). The DB engine is pooled.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded** (vision:
   Groq/Gemini 15s, local Ollama 120s — each + one retry; USDA: `(3.05s connect, 10s read)` +
   one retry on a transient `Timeout`/`ConnectionError` **or** a transient HTTP status
@@ -304,9 +308,9 @@ midnight land on the right day regardless of timezone.
 
 API keys (`groq_api_key`, `gemini_api_key`, `usda_api_key`) and the vision provider/model live in
 the `app_config` table, editable via Settings (`PUT /api/config`, which also calls
-`vision_service.reload_clients` so the change takes effect immediately) or seeded from env vars on
-first launch by `core.config.seed_defaults`. `GET /api/config` reports only whether each key is
-set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
+`vision_service.reload_clients` and `usda_service.reload_client` so a key change takes effect
+immediately) or seeded from env vars on first launch by `core.config.seed_defaults`.
+`GET /api/config` reports only whether each key is set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
 (comma-separated) only if a separate origin must reach the API. `GET /api/health` returns
 `{"status":"ok"}`; a global exception handler logs unhandled errors and returns a clean 500.
 Interactive docs (`/docs`, `/redoc`, `/openapi.json`) are on by default; set `APP_ENV=production`
@@ -355,7 +359,7 @@ Micros are shown as raw values (no goal bars) in a collapsible `MicroGrid`.
 
 ## Tests
 
-`backend/tests/` — stdlib `unittest`, **no network** (USDA calls via `usda_service._SESSION.post`
+`backend/tests/` — stdlib `unittest`, **no network** (USDA calls via `usda_service._client.session.post`
 are stubbed; the cache points at a temp DB so the real `nutrition.db` is untouched). Run from
 `backend/`:
 

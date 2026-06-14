@@ -82,10 +82,9 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
     # Stage 2: turn the dish list into real nutrient numbers via the USDA food database
     # (dish-first, decomposing into base ingredients only when a dish has no match).
     dishes = result.get("dishes", [])
-    usda_key = config.get_usda_key(db)
     try:
         macros_d, micros_d, unmatched, skipped, breakdown = await asyncio.to_thread(
-            nutrients_for_meal, dishes, usda_key
+            nutrients_for_meal, dishes
         )
     except UsdaRateLimitError as e:
         raise HTTPException(
