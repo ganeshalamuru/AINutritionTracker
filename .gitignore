@@ -20,6 +20,7 @@ backend/.env
 backend/nutrition.db
 backend/nutrition.db-wal
 backend/nutrition.db-shm
+usda/
 
 # Uploaded images (temp staging)
 backend/uploads/
