@@ -272,6 +272,73 @@ class ConfigStatus(BaseModel):
     vision_model: str
 
 
+# --- Foods / Admin query APIs ---
+
+
+class FoodSummary(BaseModel):
+    """A ranked hit from the offline USDA search index (usda_local.db)."""
+
+    fdc_id: int
+    description: str
+    data_type: str
+    score: float = 0
+
+
+class FoodDetail(BaseModel):
+    """A single USDA food with its per-100g macro/micro profile."""
+
+    fdc_id: int
+    description: str
+    data_type: str
+    macros: MacrosData
+    micros: MicrosData
+
+
+class FoodCacheEntry(BaseModel):
+    """One row of the food_cache table (a remembered USDA lookup)."""
+
+    query: str
+    fdc_id: int | None = None
+    nutrients: dict
+    fetched_at: float | None = None
+
+
+class AdminMeal(BaseModel):
+    """Flat admin view of a logged meal with its nutrient subtotals (no profile PIN)."""
+
+    id: int
+    profile_id: int
+    meal_name: str
+    meal_type: str
+    logged_at: datetime
+    macros: MacrosData
+    micros: MicrosData
+
+
+class AdminConfigEntry(BaseModel):
+    """An app_config row; secret (`*_api_key`) values are redacted in `value`."""
+
+    key: str
+    value: str
+    is_secret: bool = False
+
+
+class TableInfo(BaseModel):
+    name: str
+    rows: int
+
+
+class SqlQueryRequest(BaseModel):
+    sql: str = Field(min_length=1, description="A single read-only SELECT/WITH statement")
+
+
+class SqlQueryResult(BaseModel):
+    columns: list[str]
+    rows: list[list]
+    row_count: int
+    truncated: bool = False
+
+
 # --- Generic ---
 
 

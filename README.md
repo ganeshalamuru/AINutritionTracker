@@ -175,12 +175,15 @@ backend/
 │   ├── profiles.py          #   /api/profiles ...
 │   ├── meals.py             #   /api/meals ...   (analyze, log, timeline, group, detail)
 │   ├── nutrition.py         #   /api/nutrition/daily | /monthly
-│   └── config.py            #   /api/config (GET/PUT keys + vision provider/model; rebuilds vision clients on change)
+│   ├── config.py            #   /api/config (GET/PUT keys + vision provider/model + nutrition_source; rebuilds clients on change)
+│   ├── foods.py             #   /api/foods (search + get-by-id over usda_local.db; always on; public USDA data)
+│   └── admin.py             #   /api/admin (dev-only data inspection: tables, food-cache, meals, config, read-only SQL console)
 │
 └── services/                # business logic — where the work actually happens
     ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients); shared clients
     ├── usda_service.py      #   Stage 2: dish-first lookup, matching, SQLite cache (+ negative caching); routes _search_usda to online API or offline index via reload_client
-    ├── usda_local_search.py #   Stage 2 offline backend: FTS5 query over usda_local.db -> USDA-shaped candidates (drop-in for _search_usda)
+    ├── usda_local_search.py #   Stage 2 offline backend: FTS5 query over usda_local.db -> USDA-shaped candidates (drop-in for _search_usda); also get_food/table_counts for the foods/admin APIs
+    ├── admin_query.py        #   guarded read-only SQL for /api/admin/query (SELECT-only validation + mode=ro connection + secret/PIN redaction)
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
@@ -380,11 +383,26 @@ DELETE /api/meals/{id}            Delete a meal
 GET    /api/nutrition/daily       ?profile_id&date_from&date_to — day totals
 GET    /api/nutrition/monthly     ?profile_id&year&month — monthly breakdown + averages
 
-GET    /api/config                {gemini_api_key_set, groq_api_key_set, usda_api_key_set, vision_provider, vision_model}
-PUT    /api/config                Save any of {gemini_api_key, groq_api_key, usda_api_key, vision_provider, vision_model}
+GET    /api/config                {gemini_api_key_set, groq_api_key_set, usda_api_key_set, nutrition_source, vision_provider, vision_model}
+PUT    /api/config                Save any of {gemini_api_key, groq_api_key, usda_api_key, nutrition_source, vision_provider, vision_model}
+
+# Foods — public read-only over the offline USDA index (usda_local.db); 503 until build_usda_db.py is run
+GET    /api/foods/search          ?q&data_type&require_all&limit — BM25-ranked FoodSummary[]
+GET    /api/foods/{fdc_id}        FoodDetail — description + per-100g macros & micros
+
+# Admin — DEV-ONLY (mounted only when APP_ENV != production, same gate as /docs); secrets always redacted
+GET    /api/admin/tables          ?db=app|local — table + row counts
+GET    /api/admin/food-cache      ?query&limit&offset — browse the USDA lookup cache
+GET    /api/admin/meals           ?profile_id&limit&offset — flat logged-meal view (+ macros/micros)
+GET    /api/admin/config          app_config rows; *_api_key values redacted
+POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mode=ro; SELECT-only; app secrets/PINs redacted)
 ```
 
-Interactive docs: `http://localhost:8000/docs`. **Group routes are declared before `/{meal_id}`**
+**Interactive docs (Swagger UI): `http://localhost:8000/docs`** (ReDoc at `/redoc`, schema at
+`/openapi.json`). Set `APP_ENV=production` to disable all three **and** the `/api/admin/*` routes.
+The read-only SQL console (`POST /api/admin/query/{which}`) only accepts a single `SELECT`/`WITH`
+statement and runs it on a `mode=ro` connection, so writes are impossible; on the app DB, API-key
+values and profile PINs are redacted from results. **Group routes are declared before `/{meal_id}`**
 to avoid FastAPI routing conflicts.
 
 ### Daily reference targets (UI progress bars)

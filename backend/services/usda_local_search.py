@@ -127,3 +127,48 @@ def search(
         "local search %r (%s) | %d hits", query, "strict" if require_all else "loose", len(foods)
     )
     return foods
+
+
+def get_food(fdc_id: int) -> dict | None:
+    """One food by id as a USDA-shaped dict ({description, dataType, fdcId, foodNutrients}),
+    or None if the id isn't in the index / the DB is missing. Mirrors search()'s shape so the
+    foods API can reuse usda_service._extract_per_100g."""
+    if not is_available():
+        return None
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        row = conn.execute(
+            "SELECT fdc_id, description, data_type FROM foods WHERE fdc_id = ?", (fdc_id,)
+        ).fetchone()
+        if not row:
+            return None
+        return {
+            "fdcId": row[0],
+            "description": row[1],
+            "dataType": row[2],
+            "foodNutrients": _nutrients_for(conn, row[0]),
+        }
+    finally:
+        conn.close()
+
+
+def table_counts() -> dict[str, int]:
+    """Table name -> row count for the offline index (for the admin tables view). Empty if
+    the DB is missing. Skips internal FTS shadow tables."""
+    if not is_available():
+        return {}
+    conn = sqlite3.connect(f"file:{DB_PATH}?mode=ro", uri=True)
+    try:
+        names = [
+            r[0]
+            for r in conn.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'foods_fts_%' "
+                "ORDER BY name"
+            ).fetchall()
+        ]
+        counts = {}
+        for name in names:
+            counts[name] = conn.execute(f'SELECT COUNT(*) FROM "{name}"').fetchone()[0]
+        return counts
+    finally:
+        conn.close()
