@@ -50,7 +50,11 @@ def validate_select(sql: str) -> str:
 
 def run_query(db_path: str, sql: str, max_rows: int = MAX_ROWS):
     """Execute a validated SELECT on a read-only connection to `db_path`.
-    Returns (columns, rows, truncated). `rows` is a list of lists, capped at `max_rows`."""
+    Returns (columns, rows, truncated). `rows` is a list of lists, capped at `max_rows`.
+
+    The connection is opened per call, not pooled: a SQLite connect is ~microseconds (a file
+    open, no network handshake to amortize), and a fresh connection keeps each request's read
+    isolated and thread-safe under FastAPI's sync-endpoint threadpool."""
     conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True)
     try:
         try:

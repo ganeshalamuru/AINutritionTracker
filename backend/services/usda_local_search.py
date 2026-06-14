@@ -6,9 +6,14 @@ by build_usda_db.py) and return candidate food records in the **exact shape** US
 /foods/search returns — so every downstream consumer in usda_service (the alias/simplify
 rewriting, the _pick_best noun-gate + ranking, _extract_per_100g, the cache) is reused unchanged.
 
-The DB is opened read-only with a short-lived connection per call: a meal fires several lookups
-in parallel on usda_service's worker pool, and a fresh read-only connection per query is both
-trivially cheap (a ~10 MB file) and free of cross-thread cursor hazards.
+The DB is opened read-only with a short-lived connection per call — deliberately not pooled.
+Unlike a networked DB (where a pool amortizes a TCP/auth/TLS handshake), opening a SQLite
+connection is just a file open + header read (~microseconds), so there's nothing worth pooling.
+Per-call also keeps us correct: these functions run on usda_service's worker pool AND FastAPI's
+sync-endpoint threadpool (the foods/admin APIs), and a fresh connection per query avoids
+cross-thread cursor hazards a shared one would introduce — while always reflecting a freshly
+rebuilt index (build_usda_db.py rewrites the file in place). The idiomatic SQLite alternative
+would be a thread-local connection, not a shared pool; the negligible churn here isn't worth it.
 """
 
 import logging
