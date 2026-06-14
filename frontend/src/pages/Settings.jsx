@@ -29,6 +29,7 @@ export default function Settings() {
   const [keySet, setKeySet] = useState(false);
   const [groqSet, setGroqSet] = useState(false);
   const [usdaSet, setUsdaSet] = useState(false);
+  const [nutritionSource, setNutritionSource] = useState("offline");
   const [provider, setProvider] = useState("groq");
   const [model, setModel] = useState("");
   const [savingModel, setSavingModel] = useState(false);
@@ -41,6 +42,7 @@ export default function Settings() {
       setKeySet(r.data.gemini_api_key_set);
       setGroqSet(r.data.groq_api_key_set);
       setUsdaSet(r.data.usda_api_key_set);
+      setNutritionSource(r.data.nutrition_source || "offline");
       const p = r.data.vision_provider || "groq";
       setProvider(p);
       setModel(r.data.vision_model || modelsFor(p)[0]?.model || "");
@@ -66,6 +68,21 @@ export default function Settings() {
   // doesn't belong to the new provider).
   const onProviderChange = (p) => saveConfig(p, modelsFor(p)[0]?.model || "");
   const onModelChange = (m) => saveConfig(provider, m);
+
+  // Where Stage 2 gets nutrient numbers: "offline" (local USDA database, no network) or
+  // "online" (USDA FoodData Central API). Optimistic update, reverts on failure.
+  const saveNutritionSource = async (src) => {
+    if (src === nutritionSource) return;
+    const prev = nutritionSource;
+    setNutritionSource(src);
+    try {
+      await client.put("/config", { nutrition_source: src });
+      setToast({ message: src === "offline" ? "Using local database" : "Using USDA API", type: "success" });
+    } catch {
+      setNutritionSource(prev);
+      setToast({ message: "Failed to switch nutrition source", type: "error" });
+    }
+  };
 
   // Persist a single API key. ApiKeyCard owns the input + saving state and only renders
   // here; on success we flip the matching "is set" flag and toast. Throwing on failure lets
@@ -160,15 +177,51 @@ export default function Settings() {
         </a>
       </ApiKeyCard>
 
+      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
+        <h3 className="font-semibold text-gray-800">Nutrition Data Source</h3>
+        <p className="text-xs text-gray-500">
+          Where the real macro/micro numbers come from. The AI only identifies ingredients;
+          their nutrients are looked up in USDA FoodData Central — either from a local copy
+          (offline, no rate limits) or the live API.
+        </p>
+        <div className="grid grid-cols-2 gap-2">
+          {[
+            { id: "offline", label: "Local database", sub: "Offline · no limits" },
+            { id: "online", label: "USDA API", sub: "Live · needs key" },
+          ].map((opt) => (
+            <button
+              key={opt.id}
+              onClick={() => saveNutritionSource(opt.id)}
+              className={`rounded-xl border-2 px-3 py-2.5 text-left ${
+                nutritionSource === opt.id
+                  ? "border-green-400 bg-green-50"
+                  : "border-gray-200 hover:bg-gray-50"
+              }`}
+            >
+              <span className="block text-sm font-medium text-gray-800">{opt.label}</span>
+              <span className="block text-xs text-gray-500">{opt.sub}</span>
+            </button>
+          ))}
+        </div>
+        {nutritionSource === "offline" && (
+          <p className="text-xs text-gray-400">
+            Built once from the bundled USDA dataset via{" "}
+            <span className="font-mono text-gray-500">python build_usda_db.py</span>. The USDA API
+            key below is only used in online mode.
+          </p>
+        )}
+      </div>
+
       <ApiKeyCard
         title="USDA Food Database Key"
+        active={nutritionSource === "online"}
         isSet={usdaSet}
         unsetLabel="Using DEMO_KEY"
         placeholder="USDA API key"
         onSave={makeKeySaver("usda_api_key", setUsdaSet, "USDA key saved!")}
       >
-        Supplies the real macro/micro numbers. The AI only identifies ingredients;
-        their nutrients are looked up in USDA FoodData Central.{" "}
+        Used only when the nutrition source above is <strong>USDA API</strong>. Supplies the real
+        macro/micro numbers from USDA FoodData Central.{" "}
         <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
           Get a free key here
         </a>.{" "}

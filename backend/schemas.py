@@ -258,6 +258,7 @@ class ConfigUpdate(BaseModel):
     gemini_api_key: str | None = None
     groq_api_key: str | None = None
     usda_api_key: str | None = None
+    nutrition_source: Literal["online", "offline"] | None = None
     vision_provider: VisionProvider | None = None
     vision_model: str | None = None
 
@@ -266,6 +267,7 @@ class ConfigStatus(BaseModel):
     gemini_api_key_set: bool
     groq_api_key_set: bool
     usda_api_key_set: bool
+    nutrition_source: str
     vision_provider: str
     vision_model: str
 

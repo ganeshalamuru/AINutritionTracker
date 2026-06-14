@@ -21,6 +21,8 @@ backend/nutrition.db
 backend/nutrition.db-wal
 backend/nutrition.db-shm
 usda_data/
+# Prebuilt offline USDA search index (regenerate with `python build_usda_db.py`)
+backend/usda_local.db
 
 # Uploaded images (temp staging)
 backend/uploads/

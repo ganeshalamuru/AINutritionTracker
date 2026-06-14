@@ -25,6 +25,7 @@ from sqlalchemy import text
 from core.database import engine
 from core.logging_config import configure_logging
 from core.nutrients import MACRO_KEYS, MICRO_KEYS
+from services import usda_local_search
 
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
 # Re-imported here so the public surface (USDA_*, FOOD_ALIASES, ...) and consumers
@@ -97,6 +98,11 @@ class UsdaClient:
 # startup and on config change. The connection/worker pools live for the process lifetime.
 _client = UsdaClient()
 
+# Which Stage-2 backend resolves foods: False -> online USDA API (the default, and what the
+# tests exercise), True -> the offline SQLite FTS5 index (services/usda_local_search). Set from
+# the `nutrition_source` config row by reload_client at startup and on every PUT /api/config.
+_use_local = False
+
 
 def configure(api_key: str):
     """Set the shared client's USDA key. Used by reload_client (the app path) and by standalone
@@ -106,11 +112,23 @@ def configure(api_key: str):
 
 
 def reload_client(db):
-    """Point the shared USDA client at the currently configured key. Called once at startup
-    (core.lifespan) and after every PUT /api/config, mirroring vision_service.reload_clients."""
+    """Point the shared USDA client at the currently configured key AND select the active
+    Stage-2 backend (online API vs offline local index) from `nutrition_source`. Called once at
+    startup (core.lifespan) and after every PUT /api/config, like vision_service.reload_clients."""
     from core import config  # local import keeps core out of this module's top-level graph
 
     configure(config.get_usda_key(db))
+    global _use_local
+    _use_local = config.get_nutrition_source(db) == "offline"
+    logger.info(
+        "nutrition source: %s", "offline (local FTS5)" if _use_local else "online (USDA API)"
+    )
+    if _use_local and not usda_local_search.is_available():
+        logger.warning(
+            "offline nutrition source selected but %s is missing — run "
+            "`python build_usda_db.py` (lookups will report unmatched until it exists)",
+            usda_local_search.DB_PATH,
+        )
 
 
 class UsdaRateLimitError(Exception):
@@ -128,6 +146,14 @@ def _is_mock() -> bool:
 
 def _normalize(name: str) -> str:
     return " ".join((name or "").lower().split())
+
+
+def _ckey(query: str) -> str:
+    """Cache key namespaced by the active nutrition source. Online and offline can resolve the
+    same name to different nutrients, so prefix offline keys with 'local::' (composes with the
+    existing 'dish::' prefix) to keep the two backends' cached results from colliding in
+    food_cache. No purge needed when the user toggles the source in Settings."""
+    return ("local::" + query) if _use_local else query
 
 
 def _extract_per_100g(food: dict) -> dict:
@@ -286,7 +312,16 @@ def _search_usda(query: str, require_all: bool, data_types: list | None = None) 
     """One external call to USDA /foods/search. Logs the request and response, and
     raises UsdaRateLimitError on a throttle. Returns the candidate food list. The API key
     rides on the shared Session's X-Api-Key header (set at client-build time, see configure).
-    `data_types` defaults to the ingredient set; the dish lookup passes DISH_DATA_TYPES."""
+    `data_types` defaults to the ingredient set; the dish lookup passes DISH_DATA_TYPES.
+
+    When the offline backend is selected (nutrition_source = "offline"), this resolves against
+    the local SQLite FTS5 index instead, returning the identical candidate shape — so all the
+    matching/caching code below is unchanged."""
+    if _use_local:
+        return usda_local_search.search(
+            query, require_all=require_all, data_types=data_types or USDA_DATA_TYPES
+        )
+
     payload = {
         "query": query,
         "dataType": data_types or USDA_DATA_TYPES,
@@ -369,7 +404,7 @@ def lookup_nutrients(item_name: str) -> dict | None:
     if not query:
         return None
 
-    cached = _cache_get(query)
+    cached = _cache_get(_ckey(query))
     if cached is not None:
         if cached.get("__miss__"):
             logger.info("cache hit %r (known miss)", query)
@@ -398,14 +433,14 @@ def lookup_nutrients(item_name: str) -> dict | None:
     food = _pick_best(foods, search_q)
     if food is None:
         logger.info("no match %r%s", query, via)
-        _cache_put(query, None, _MISS)
+        _cache_put(_ckey(query), None, _MISS)
         return None
 
     per_100g = _extract_per_100g(food)
     logger.info(
         "matched %r%s -> %s [%s]", query, via, food.get("description"), food.get("dataType")
     )
-    _cache_put(query, food.get("fdcId"), per_100g)
+    _cache_put(_ckey(query), food.get("fdcId"), per_100g)
     return per_100g
 
 
@@ -419,7 +454,7 @@ def lookup_dish(dish_name: str) -> dict | None:
     if not name:
         return None
 
-    cache_key = "dish::" + name
+    cache_key = _ckey("dish::" + name)
     cached = _cache_get(cache_key)
     if cached is not None:
         if cached.get("__miss__"):
@@ -459,7 +494,7 @@ def lookup_dish(dish_name: str) -> dict | None:
 
 
 def _uncached_dish(name: str) -> bool:
-    return _cache_get("dish::" + _normalize(name)) is None
+    return _cache_get(_ckey("dish::" + _normalize(name))) is None
 
 
 def clear_cache():
@@ -499,7 +534,7 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
         name = it["food"].strip()
         grams_by_name[name] = grams_by_name.get(name, 0.0) + it["grams"]
 
-    cached = {n for n in grams_by_name if _cache_get(_normalize(n)) is not None}
+    cached = {n for n in grams_by_name if _cache_get(_ckey(_normalize(n))) is not None}
     uncached = sorted(
         (n for n in grams_by_name if n not in cached), key=lambda n: grams_by_name[n], reverse=True
     )
@@ -675,7 +710,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                 status = "unmatched"
             else:
                 status = "matched"
-                per_100g = _cache_get(_normalize(food))
+                per_100g = _cache_get(_ckey(_normalize(food)))
                 if per_100g and not per_100g.get("__miss__"):
                     factor = (it.get("grams") or 0) / 100.0
                     for key in dish_totals:

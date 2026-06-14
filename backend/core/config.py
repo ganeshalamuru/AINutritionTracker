@@ -28,10 +28,15 @@ DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
 
 DEFAULT_USDA_KEY = "DEMO_KEY"
 
+# Where Stage 2 gets its nutrient numbers: "offline" -> local SQLite FTS5 index
+# (backend/usda_local.db, built by build_usda_db.py), "online" -> the USDA FoodData Central
+# API. Defaults to offline (no network, no rate limits); switchable in Settings.
+DEFAULT_NUTRITION_SOURCE = "offline"
+
 # Version of the USDA food-cache contents. BUMP THIS whenever the matching/alias logic
 # (services/usda_service.py + services/nutrition_data/) changes, so stale cached lookups
 # are discarded. core/lifespan.py purges food_cache on startup when the stored version differs.
-CACHE_VERSION = "8"
+CACHE_VERSION = "9"
 
 
 def get_value(db: Session, key: str, default: str = "") -> str:
@@ -75,6 +80,12 @@ def get_usda_key(db: Session) -> str:
     return get_value(db, "usda_api_key", DEFAULT_USDA_KEY)
 
 
+def get_nutrition_source(db: Session) -> str:
+    """'offline' (local FTS5 index) or 'online' (USDA API). Read by usda_service.reload_client
+    to select the Stage-2 backend at startup and on every config change."""
+    return get_value(db, "nutrition_source", DEFAULT_NUTRITION_SOURCE)
+
+
 def seed_defaults(db: Session):
     """Insert config rows that don't exist yet (first launch). Keys are seeded from
     env vars where available so a fresh deployment can be configured without the UI."""
@@ -82,6 +93,7 @@ def seed_defaults(db: Session):
         "gemini_api_key": os.getenv("GEMINI_API_KEY", ""),
         "groq_api_key": os.getenv("GROQ_API_KEY", ""),
         "usda_api_key": os.getenv("USDA_API_KEY", DEFAULT_USDA_KEY),
+        "nutrition_source": os.getenv("NUTRITION_SOURCE", DEFAULT_NUTRITION_SOURCE),
         "vision_provider": DEFAULT_PROVIDER,
         "vision_model": DEFAULT_MODEL,
     }

@@ -17,7 +17,7 @@ request flows, and conventions. (Session-by-session history lives in `git log`.)
 | Backend | Python 3.14 + FastAPI + SQLAlchemy |
 | Database | SQLite (`backend/nutrition.db`, WAL) — persists across restarts |
 | AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct` / `qwen3-vl:8b-instruct`) selectable. Identifies dishes/ingredients only. |
-| Nutrient data | **USDA FoodData Central** API (`usda_api_key`, default `DEMO_KEY`) — real macros/micros, cached in SQLite `food_cache`. |
+| Nutrient data | **USDA FoodData Central**, two interchangeable backends (Settings → *Nutrition Data Source*, `nutrition_source`): **offline** (default) — local SQLite **FTS5** index `backend/usda_local.db` built by `build_usda_db.py`, no network/limits; **online** — the FDC API (`usda_api_key`, default `DEMO_KEY`). Both feed the same matching code; results cached in SQLite `food_cache`. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
 
@@ -53,10 +53,19 @@ bash start.sh --dev   |   bash start.sh   |   bash start.sh --skip-build
 > **Always run `.\start.ps1` (full rebuild) after any frontend change** — `-SkipBuild` serves
 > stale JS.
 
-**First-time AI setup:** get a free Groq key at <https://console.groq.com/keys> (no card) and a
-free USDA key at <https://fdc.nal.usda.gov/api-key-signup>, then paste them into **Settings**.
-Optionally seed via `GROQ_API_KEY` / `GEMINI_API_KEY` / `USDA_API_KEY` env vars before first launch.
-`DEMO_KEY` works out-of-box at a low limit (30/hr + 50/day — a couple of meals exhausts it).
+**First-time AI setup:** get a free Groq key at <https://console.groq.com/keys> (no card) and
+paste it into **Settings**. Optionally seed via `GROQ_API_KEY` / `GEMINI_API_KEY` env vars before
+first launch.
+
+**Nutrient data (offline by default):** build the local USDA search index once —
+```powershell
+cd backend; python build_usda_db.py    # usda_data/ CSVs -> backend/usda_local.db (~11 MB, gitignored)
+```
+This reads the FoodData Central CSV export under `usda_data/` and is the default Stage-2 backend
+(no key, no network). To use the live API instead, switch **Settings → Nutrition Data Source** to
+*USDA API* and add a free USDA key (<https://fdc.nal.usda.gov/api-key-signup>); `DEMO_KEY` works
+out-of-box at a low limit (30/hr + 50/day). Seed the choice via the `NUTRITION_SOURCE`
+(`offline`|`online`) / `USDA_API_KEY` env vars before first launch.
 
 **Local vision (no key, no quota):** install [Ollama](https://ollama.com/download), pull a
 Qwen3-VL model, then pick **Ollama** as the provider and the model in Settings (provider and
@@ -116,7 +125,7 @@ The core design splits **perception** (LLM) from **facts** (USDA):
 ```
  photo ─> [Stage 1: vision_service] ─dishes(+ingredient fallback)─> [Stage 2: usda_service] ─> macros+micros ─> DB
            (Groq / Gemini / Ollama)                                   dish-first, else decompose
-                                                                      (USDA FNDDS + SQLite cache)
+                                                          (USDA FNDDS via offline FTS5 or online API + cache)
 ```
 
 - **Stage 1 — perception** (`vision_service`): the vision model returns a compact list of
@@ -126,6 +135,12 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   idli/dosa/sambar) and only **decomposes into base ingredients when no dish-level match exists**.
   A whole "idli" entry scaled by portion weight is far more accurate than summing mis-stated
   "cooked rice + cooked lentils"; decomposition is the safety net for anything FNDDS lacks.
+- **Two search backends, one matching pipeline.** The single seam is `usda_service._search_usda`,
+  which returns USDA-shaped candidates either from the **offline** local FTS5 index
+  (`usda_local_search`, default) or the **online** FDC API. Everything downstream — alias/simplify
+  query rewriting, the `_pick_best` head-noun gate + ranking, `_extract_per_100g`, and the
+  `food_cache` (offline keys namespaced `local::` so the two backends never collide) — is shared
+  unchanged. Switch backends in Settings; no restart.
 
 Per-100g nutrients are scaled by `grams/100` and summed into a **7-macro + 17-micro** schema.
 Each dish also carries its own nutrient subtotal (Σ per-dish = meal totals), so the LogMeal review
@@ -144,10 +159,12 @@ FastAPI + SQLAlchemy + SQLite, in four layers. **Dependencies point one way:
 backend/
 ├── main.py                  # entrypoint: load env, configure logging, assemble routers, serve frontend
 │
+├── build_usda_db.py         # one-time ETL: usda_data/ CSVs -> backend/usda_local.db (offline FTS5 search index)
+│
 ├── core/                    # infrastructure & cross-cutting concerns (no business logic)
 │   ├── database.py          #   SQLAlchemy engine (pool_pre_ping + SQLite WAL/busy_timeout pragmas), SessionLocal, Base, get_db
 │   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named formatter for app + uvicorn
-│   ├── config.py            #   app_config table access + vision defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
+│   ├── config.py            #   app_config table access + vision/nutrition_source defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/17-micro schema + to_*_data / sum_* helpers
 │   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision + USDA clients
 │
@@ -162,7 +179,8 @@ backend/
 │
 └── services/                # business logic — where the work actually happens
     ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients); shared clients
-    ├── usda_service.py      #   Stage 2: dish-first USDA lookup, matching, SQLite cache (+ negative caching); lifespan-built client (Session+pool+key) via reload_client
+    ├── usda_service.py      #   Stage 2: dish-first lookup, matching, SQLite cache (+ negative caching); routes _search_usda to online API or offline index via reload_client
+    ├── usda_local_search.py #   Stage 2 offline backend: FTS5 query over usda_local.db -> USDA-shaped candidates (drop-in for _search_usda)
     ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
