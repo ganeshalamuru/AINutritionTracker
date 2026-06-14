@@ -6,11 +6,14 @@ import GroupedMealCard from "../components/meal/GroupedMealCard";
 import MealDetailModal from "../components/meal/MealDetailModal";
 import Spinner from "../components/shared/Spinner";
 import EmptyState from "../components/shared/EmptyState";
+import { useMealModal } from "../hooks/useMealModal";
+import { emptyMacros, addMacros } from "../utils/macros";
+import { formatDateHeading } from "../utils/format";
 
 function groupByDate(items) {
   const groups = {};
   for (const item of items) {
-    const d = new Date(item.logged_at + "Z").toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+    const d = formatDateHeading(item.logged_at);
     if (!groups[d]) groups[d] = [];
     groups[d].push(item);
   }
@@ -24,8 +27,7 @@ export default function Timeline() {
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [loadingMore, setLoadingMore] = useState(false);
-  const [mealDetails, setMealDetails] = useState({});
-  const [modalData, setModalData] = useState(null);
+  const { modalData, setModalData, openMeal, closeModal } = useMealModal();
 
   const LIMIT = 20;
 
@@ -44,19 +46,6 @@ export default function Timeline() {
 
   useEffect(() => { load(1); }, [load]);
 
-  const openMealModal = async (mealId) => {
-    const cached = mealDetails[mealId];
-    if (cached) {
-      setModalData({ type: "meal", meal: cached });
-      return;
-    }
-    try {
-      const { data } = await client.get(`/meals/${mealId}`);
-      setMealDetails((prev) => ({ ...prev, [mealId]: data }));
-      setModalData({ type: "meal", meal: data });
-    } catch {}
-  };
-
   const openGroupModal = (group) => {
     setModalData({ type: "group", group });
   };
@@ -74,18 +63,7 @@ export default function Timeline() {
           if (item.item_type !== "group" || item.group_id !== groupId) return item;
           const newSubs = item.sub_meals.filter((s) => s.id !== mealId);
           if (!newSubs.length) return null;
-          const total = newSubs.reduce(
-            (acc, s) => ({
-              calories: acc.calories + s.macros.calories,
-              protein_g: acc.protein_g + s.macros.protein_g,
-              carbs_g: acc.carbs_g + s.macros.carbs_g,
-              fat_g: acc.fat_g + s.macros.fat_g,
-              fiber_g: acc.fiber_g + s.macros.fiber_g,
-              sugar_g: acc.sugar_g + s.macros.sugar_g,
-              sodium_mg: acc.sodium_mg + s.macros.sodium_mg,
-            }),
-            { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sodium_mg: 0 }
-          );
+          const total = newSubs.reduce((acc, s) => addMacros(acc, s.macros), emptyMacros());
           return { ...item, sub_meals: newSubs, total_macros: total };
         })
         .filter(Boolean);
@@ -125,7 +103,7 @@ export default function Timeline() {
                 <MealCard
                   key={item.id}
                   meal={item}
-                  onOpenDetail={() => openMealModal(item.id)}
+                  onOpenDetail={() => openMeal(item.id)}
                   onDelete={(id) => handleDelete(id)}
                 />
               )
@@ -146,7 +124,7 @@ export default function Timeline() {
 
       <MealDetailModal
         isOpen={!!modalData}
-        onClose={() => setModalData(null)}
+        onClose={closeModal}
         data={modalData}
         onDelete={handleDelete}
       />

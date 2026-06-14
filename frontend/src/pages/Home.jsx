@@ -9,12 +9,19 @@ import EmptyState from "../components/shared/EmptyState";
 import MealCard from "../components/meal/MealCard";
 import GroupedMealCard from "../components/meal/GroupedMealCard";
 import MealDetailModal from "../components/meal/MealDetailModal";
+import { useMealModal } from "../hooks/useMealModal";
+import { emptyMacros, addMacros } from "../utils/macros";
 
 function buildDisplayItems(meals) {
   const items = [];
   const groupMap = {};
 
   for (const meal of meals) {
+    // Timeline rows carry macros as flat columns; reshape into a macros object.
+    const mealMacros = {
+      calories: meal.calories, protein_g: meal.protein_g, carbs_g: meal.carbs_g,
+      fat_g: meal.fat_g, fiber_g: meal.fiber_g, sugar_g: meal.sugar_g, sodium_mg: meal.sodium_mg,
+    };
     if (meal.group_id) {
       if (!groupMap[meal.group_id]) {
         const group = {
@@ -22,7 +29,7 @@ function buildDisplayItems(meals) {
           group_id: meal.group_id,
           logged_at: meal.logged_at,
           sub_meals: [],
-          total_macros: { calories: 0, protein_g: 0, carbs_g: 0, fat_g: 0, fiber_g: 0, sugar_g: 0, sodium_mg: 0 },
+          total_macros: emptyMacros(),
         };
         groupMap[meal.group_id] = group;
         items.push(group);
@@ -33,21 +40,9 @@ function buildDisplayItems(meals) {
         meal_name: meal.meal_name,
         meal_type: meal.meal_type,
         logged_at: meal.logged_at,
-        macros: {
-          calories: meal.calories, protein_g: meal.protein_g, carbs_g: meal.carbs_g,
-          fat_g: meal.fat_g, fiber_g: meal.fiber_g, sugar_g: meal.sugar_g, sodium_mg: meal.sodium_mg,
-        },
+        macros: mealMacros,
       });
-      const t = g.total_macros;
-      g.total_macros = {
-        calories: t.calories + meal.calories,
-        protein_g: t.protein_g + meal.protein_g,
-        carbs_g: t.carbs_g + meal.carbs_g,
-        fat_g: t.fat_g + meal.fat_g,
-        fiber_g: t.fiber_g + (meal.fiber_g || 0),
-        sugar_g: t.sugar_g + (meal.sugar_g || 0),
-        sodium_mg: t.sodium_mg + (meal.sodium_mg || 0),
-      };
+      addMacros(g.total_macros, mealMacros);
     } else {
       items.push({ item_type: "meal", ...meal });
     }
@@ -60,9 +55,8 @@ export default function Home() {
   const navigate = useNavigate();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [mealDetails, setMealDetails] = useState({});
   const [groupDetails, setGroupDetails] = useState({});
-  const [modalData, setModalData] = useState(null);
+  const { modalData, setModalData, openMeal, closeModal } = useMealModal();
 
   const load = async () => {
     setLoading(true);
@@ -86,16 +80,6 @@ export default function Home() {
   };
 
   useEffect(() => { load(); }, [profile.id]);
-
-  const openMealModal = async (mealId) => {
-    const cached = mealDetails[mealId];
-    if (cached) { setModalData({ type: "meal", meal: cached }); return; }
-    try {
-      const { data } = await client.get(`/meals/${mealId}`);
-      setMealDetails((prev) => ({ ...prev, [mealId]: data }));
-      setModalData({ type: "meal", meal: data });
-    } catch {}
-  };
 
   const openGroupModal = async (group) => {
     const cached = groupDetails[group.group_id];
@@ -197,7 +181,7 @@ export default function Home() {
                 <MealCard
                   key={item.id}
                   meal={item}
-                  onOpenDetail={() => openMealModal(item.id)}
+                  onOpenDetail={() => openMeal(item.id)}
                   onDelete={(id) => handleDelete(id)}
                 />
               )
@@ -208,7 +192,7 @@ export default function Home() {
 
       <MealDetailModal
         isOpen={!!modalData}
-        onClose={() => setModalData(null)}
+        onClose={closeModal}
         data={modalData}
         onDelete={handleDelete}
       />

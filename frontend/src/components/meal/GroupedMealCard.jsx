@@ -1,18 +1,13 @@
 import { useState } from "react";
 import client from "../../api/client";
 import ConfirmModal from "../shared/ConfirmModal";
-
-const TYPE_COLORS = {
-  breakfast: "bg-yellow-100 text-yellow-700",
-  lunch: "bg-green-100 text-green-700",
-  dinner: "bg-blue-100 text-blue-700",
-  snack: "bg-purple-100 text-purple-700",
-};
+import { MEAL_TYPE_COLORS } from "../../constants";
+import { formatTime } from "../../utils/format";
 
 export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
   const [deleting, setDeleting] = useState(false);
   const [confirming, setConfirming] = useState(false);
-  const time = new Date(group.logged_at + "Z").toLocaleTimeString("en-US", { hour: "2-digit", minute: "2-digit" });
+  const time = formatTime(group.logged_at);
   const t = group.total_macros;
 
   const mealTypes = [...new Set(group.sub_meals.map((s) => s.meal_type))];
@@ -54,7 +49,7 @@ export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
             {mealTypes.map((type) => (
               <span
                 key={type}
-                className={`text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_COLORS[type] || "bg-gray-100 text-gray-600"}`}
+                className={`text-xs px-2 py-0.5 rounded-full font-medium ${MEAL_TYPE_COLORS[type] || "bg-gray-100 text-gray-600"}`}
               >
                 {type}
               </span>

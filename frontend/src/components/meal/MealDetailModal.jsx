@@ -3,13 +3,8 @@ import client from "../../api/client";
 import MicroGrid from "./MicroGrid";
 import MacroHighlights from "./MacroHighlights";
 import ConfirmModal from "../shared/ConfirmModal";
-
-const TYPE_COLORS = {
-  breakfast: "bg-yellow-100 text-yellow-700",
-  lunch: "bg-green-100 text-green-700",
-  dinner: "bg-blue-100 text-blue-700",
-  snack: "bg-purple-100 text-purple-700",
-};
+import { MEAL_TYPE_COLORS } from "../../constants";
+import { formatDateTime } from "../../utils/format";
 
 function MacroRow({ macros }) {
   return (
@@ -55,10 +50,7 @@ function SingleMealView({ meal, onDelete }) {
   const [deleting, setDeleting] = useState(false);
   const [confirming, setConfirming] = useState(false);
 
-  const time = new Date(meal.logged_at + "Z").toLocaleString("en-US", {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
+  const time = formatDateTime(meal.logged_at);
 
   const handleDelete = async () => {
     setConfirming(false);
@@ -77,7 +69,7 @@ function SingleMealView({ meal, onDelete }) {
         <div>
           <h2 className="text-lg font-bold text-gray-900">{meal.meal_name}</h2>
           <div className="flex items-center gap-2 mt-1">
-            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${TYPE_COLORS[meal.meal_type] || "bg-gray-100 text-gray-600"}`}>
+            <span className={`text-xs px-2 py-0.5 rounded-full font-medium ${MEAL_TYPE_COLORS[meal.meal_type] || "bg-gray-100 text-gray-600"}`}>
               {meal.meal_type}
             </span>
             <span className="text-xs text-gray-400">{time}</span>
@@ -141,7 +133,7 @@ function SubMealCard({ sub, isDeleting, onDelete }) {
       <div className="flex items-center justify-between">
         <div>
           <p className="font-semibold text-gray-800 text-sm">{sub.meal_name}</p>
-          <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${TYPE_COLORS[sub.meal_type] || "bg-gray-100 text-gray-600"}`}>
+          <span className={`text-xs px-1.5 py-0.5 rounded-full font-medium ${MEAL_TYPE_COLORS[sub.meal_type] || "bg-gray-100 text-gray-600"}`}>
             {sub.meal_type}
           </span>
         </div>
@@ -212,10 +204,7 @@ function GroupMealView({ group, onDelete, onClose }) {
     });
   };
 
-  const time = new Date(group.logged_at + "Z").toLocaleString("en-US", {
-    weekday: "short", month: "short", day: "numeric",
-    hour: "2-digit", minute: "2-digit",
-  });
+  const time = formatDateTime(group.logged_at);
 
   return (
     <div className="space-y-4">

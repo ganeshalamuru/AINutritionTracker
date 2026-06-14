@@ -6,8 +6,7 @@ import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
 import MacroHighlights from "../components/meal/MacroHighlights";
-
-const uid = () => Math.random().toString(36).slice(2) + Math.random().toString(36).slice(2);
+import { uid } from "../utils/uid";
 
 // A dish's baseline portion: the model's dish grams, or the sum of its ingredient grams
 // when the dish itself has no weight (decomposed dishes sometimes only weigh the parts).

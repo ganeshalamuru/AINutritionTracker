@@ -4,42 +4,37 @@ import { useProfile } from "../context/ProfileContext";
 import client from "../api/client";
 import Toast from "../components/shared/Toast";
 import ConfirmModal from "../components/shared/ConfirmModal";
+import ApiKeyCard from "../components/settings/ApiKeyCard";
+
+// Provider -> its selectable models. The provider dropdown picks the group; the
+// model dropdown lists that group's `models`.
+const PROVIDERS = [
+  { id: "groq", label: "Groq (cloud)", models: [
+    { model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout — fast, ~1k/day" },
+  ]},
+  { id: "gemini", label: "Gemini (cloud)", models: [
+    { model: "gemini-2.5-flash", label: "2.5 Flash — reliable, ~20/day" },
+    { model: "gemma-4-31b-it", label: "Gemma 4 31B — high RPD but low TPM" },
+  ]},
+  { id: "ollama", label: "Ollama (local)", models: [
+    { model: "qwen3-vl:4b-instruct", label: "Qwen3-VL 4B — fast, fits 8 GB GPU" },
+    { model: "qwen3-vl:8b-instruct", label: "Qwen3-VL 8B — more accurate, slower on 8 GB" },
+  ]},
+];
+const modelsFor = (p) => (PROVIDERS.find((x) => x.id === p)?.models ?? []);
 
 export default function Settings() {
   const { profile, logout } = useProfile();
   const navigate = useNavigate();
-  const [apiKey, setApiKey] = useState("");
   const [keySet, setKeySet] = useState(false);
-  const [saving, setSaving] = useState(false);
-  const [groqKey, setGroqKey] = useState("");
   const [groqSet, setGroqSet] = useState(false);
-  const [savingGroq, setSavingGroq] = useState(false);
-  const [usdaKey, setUsdaKey] = useState("");
   const [usdaSet, setUsdaSet] = useState(false);
-  const [savingUsda, setSavingUsda] = useState(false);
   const [provider, setProvider] = useState("groq");
   const [model, setModel] = useState("");
   const [savingModel, setSavingModel] = useState(false);
   const [profiles, setProfiles] = useState([]);
   const [toast, setToast] = useState(null);
   const [confirmDelete, setConfirmDelete] = useState(null);
-
-  // Provider -> its selectable models. The provider dropdown picks the group; the
-  // model dropdown lists that group's `models`.
-  const PROVIDERS = [
-    { id: "groq", label: "Groq (cloud)", models: [
-      { model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout — fast, ~1k/day" },
-    ]},
-    { id: "gemini", label: "Gemini (cloud)", models: [
-      { model: "gemini-2.5-flash", label: "2.5 Flash — reliable, ~20/day" },
-      { model: "gemma-4-31b-it", label: "Gemma 4 31B — high RPD but low TPM" },
-    ]},
-    { id: "ollama", label: "Ollama (local)", models: [
-      { model: "qwen3-vl:4b-instruct", label: "Qwen3-VL 4B — fast, fits 8 GB GPU" },
-      { model: "qwen3-vl:8b-instruct", label: "Qwen3-VL 8B — more accurate, slower on 8 GB" },
-    ]},
-  ];
-  const modelsFor = (p) => (PROVIDERS.find((x) => x.id === p)?.models ?? []);
 
   useEffect(() => {
     client.get("/config").then((r) => {
@@ -72,48 +67,17 @@ export default function Settings() {
   const onProviderChange = (p) => saveConfig(p, modelsFor(p)[0]?.model || "");
   const onModelChange = (m) => saveConfig(provider, m);
 
-  const saveKey = async () => {
-    if (!apiKey.trim()) return;
-    setSaving(true);
+  // Persist a single API key. ApiKeyCard owns the input + saving state and only renders
+  // here; on success we flip the matching "is set" flag and toast. Throwing on failure lets
+  // the card clear its saving state without wiping the typed value.
+  const makeKeySaver = (field, markSet, savedMessage) => async (value) => {
     try {
-      await client.put("/config", { gemini_api_key: apiKey.trim() });
-      setKeySet(true);
-      setApiKey("");
-      setToast({ message: "API key saved!", type: "success" });
+      await client.put("/config", { [field]: value });
+      markSet(true);
+      setToast({ message: savedMessage, type: "success" });
     } catch {
       setToast({ message: "Failed to save key", type: "error" });
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const saveGroqKey = async () => {
-    if (!groqKey.trim()) return;
-    setSavingGroq(true);
-    try {
-      await client.put("/config", { groq_api_key: groqKey.trim() });
-      setGroqSet(true);
-      setGroqKey("");
-      setToast({ message: "Groq key saved!", type: "success" });
-    } catch {
-      setToast({ message: "Failed to save key", type: "error" });
-    } finally {
-      setSavingGroq(false);
-    }
-  };
-
-  const saveUsdaKey = async () => {
-    if (!usdaKey.trim()) return;
-    setSavingUsda(true);
-    try {
-      await client.put("/config", { usda_api_key: usdaKey.trim() });
-      setUsdaSet(true);
-      setUsdaKey("");
-      setToast({ message: "USDA key saved!", type: "success" });
-    } catch {
-      setToast({ message: "Failed to save key", type: "error" });
-    } finally {
-      setSavingUsda(false);
+      throw new Error("save failed");
     }
   };
 
@@ -170,99 +134,47 @@ export default function Settings() {
         </div>
       </div>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-        <h3 className="font-semibold text-gray-800">
-          Groq API Key {provider === "groq" && <span className="text-xs text-green-500">(active)</span>}
-        </h3>
-        <p className="text-xs text-gray-500">
-          Used by the Groq vision provider.{" "}
-          <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-green-600 underline">
-            Get a free key here
-          </a>
-        </p>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded-full font-medium ${groqSet ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-            {groqSet ? "Key saved" : "Not set"}
-          </span>
-        </div>
-        <input
-          type="password"
-          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 font-mono"
-          placeholder="gsk_..."
-          value={groqKey}
-          onChange={(e) => setGroqKey(e.target.value)}
-        />
-        <button
-          onClick={saveGroqKey}
-          disabled={savingGroq || !groqKey.trim()}
-          className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
-        >
-          {savingGroq ? "Saving..." : groqSet ? "Update Key" : "Save Key"}
-        </button>
-      </div>
+      <ApiKeyCard
+        title="Groq API Key"
+        active={provider === "groq"}
+        isSet={groqSet}
+        placeholder="gsk_..."
+        onSave={makeKeySaver("groq_api_key", setGroqSet, "Groq key saved!")}
+      >
+        Used by the Groq vision provider.{" "}
+        <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-green-600 underline">
+          Get a free key here
+        </a>
+      </ApiKeyCard>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-        <h3 className="font-semibold text-gray-800">
-          Gemini API Key {provider === "gemini" && <span className="text-xs text-green-500">(active)</span>}
-        </h3>
-        <p className="text-xs text-gray-500">
-          Only needed for the Gemini fallback models.{" "}
-          <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-green-600 underline">
-            Get a free key here
-          </a>
-        </p>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded-full font-medium ${keySet ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-            {keySet ? "Key saved" : "Not set"}
-          </span>
-        </div>
-        <input
-          type="password"
-          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 font-mono"
-          placeholder="AIza..."
-          value={apiKey}
-          onChange={(e) => setApiKey(e.target.value)}
-        />
-        <button
-          onClick={saveKey}
-          disabled={saving || !apiKey.trim()}
-          className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
-        >
-          {saving ? "Saving..." : keySet ? "Update Key" : "Save Key"}
-        </button>
-      </div>
+      <ApiKeyCard
+        title="Gemini API Key"
+        active={provider === "gemini"}
+        isSet={keySet}
+        placeholder="AIza..."
+        onSave={makeKeySaver("gemini_api_key", setKeySet, "API key saved!")}
+      >
+        Only needed for the Gemini fallback models.{" "}
+        <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-green-600 underline">
+          Get a free key here
+        </a>
+      </ApiKeyCard>
 
-      <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
-        <h3 className="font-semibold text-gray-800">USDA Food Database Key</h3>
-        <p className="text-xs text-gray-500">
-          Supplies the real macro/micro numbers. The AI only identifies ingredients;
-          their nutrients are looked up in USDA FoodData Central.{" "}
-          <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
-            Get a free key here
-          </a>.{" "}
-          <span className="text-yellow-700">Recommended:</span> the shared DEMO_KEY is
-          throttled to ~30/hr &amp; 50/day (a few meals exhaust it); a free signed key gives 1,000/hr.
-        </p>
-        <div className="flex items-center gap-2">
-          <span className={`text-xs px-2 py-1 rounded-full font-medium ${usdaSet ? "bg-green-100 text-green-700" : "bg-red-100 text-red-600"}`}>
-            {usdaSet ? "Key saved" : "Using DEMO_KEY"}
-          </span>
-        </div>
-        <input
-          type="password"
-          className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 font-mono"
-          placeholder="USDA API key"
-          value={usdaKey}
-          onChange={(e) => setUsdaKey(e.target.value)}
-        />
-        <button
-          onClick={saveUsdaKey}
-          disabled={savingUsda || !usdaKey.trim()}
-          className="w-full py-2.5 bg-green-500 text-white rounded-xl text-sm font-medium hover:bg-green-600 disabled:opacity-50"
-        >
-          {savingUsda ? "Saving..." : usdaSet ? "Update Key" : "Save Key"}
-        </button>
-      </div>
+      <ApiKeyCard
+        title="USDA Food Database Key"
+        isSet={usdaSet}
+        unsetLabel="Using DEMO_KEY"
+        placeholder="USDA API key"
+        onSave={makeKeySaver("usda_api_key", setUsdaSet, "USDA key saved!")}
+      >
+        Supplies the real macro/micro numbers. The AI only identifies ingredients;
+        their nutrients are looked up in USDA FoodData Central.{" "}
+        <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
+          Get a free key here
+        </a>.{" "}
+        <span className="text-yellow-700">Recommended:</span> the shared DEMO_KEY is
+        throttled to ~30/hr &amp; 50/day (a few meals exhaust it); a free signed key gives 1,000/hr.
+      </ApiKeyCard>
 
       <div className="bg-white rounded-2xl shadow-sm border border-gray-100 p-4 space-y-3">
         <h3 className="font-semibold text-gray-800">Profiles</h3>

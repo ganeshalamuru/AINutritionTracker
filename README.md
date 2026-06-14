@@ -191,17 +191,29 @@ backend/
 ### Frontend (`frontend/src/`)
 
 ```
-App.jsx · main.jsx · context/ProfileContext.jsx · api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
+App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/ProfileContext.jsx
+api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
 pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
-components/  layout/ (Layout, TopBar, BottomNav)
-            meal/   (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MicroGrid)
-            summary/(MacroProgressBar)   shared/(Spinner, Toast, EmptyState, ConfirmModal)
+components/  layout/   (Layout, TopBar, BottomNav)
+            meal/     (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MacroHighlights, MicroGrid)
+            summary/  (MacroProgressBar)   profile/(PinPad)
+            settings/ (ApiKeyCard)         shared/ (Spinner, Toast, EmptyState, ConfirmModal)
+hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & Timeline)
+utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros) · uid
 ```
 
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call) → optional AI hint → Analyze →
-review (editable per-dish portions rescale client-side) → log. `uid()` (Math.random) replaces
-`crypto.randomUUID` for browser compatibility. All destructive actions use the shared
-`ConfirmModal` — never a browser `confirm()`.
+review (editable per-dish portions rescale client-side) → log. All destructive actions use the
+shared `ConfirmModal` — never a browser `confirm()`.
+
+**Shared frontend layer (single sources of truth, mirroring the backend convention).** Cross-cutting
+pieces live in one place rather than copy-pasted across files: meal-type badge colors in
+`constants.js`; date/time formatting in `utils/format.js` (all parse the backend's naive-UTC
+`logged_at` via `parseUTC`); macro-total shape + summation in `utils/macros.js`; `uid()` (Math.random,
+**not** `crypto.randomUUID` — browser compatibility) in `utils/uid.js`. The reusable `ApiKeyCard`
+backs the three Settings key cards (Groq/Gemini/USDA), and `useMealModal` holds the meal-detail
+modal state + cache shared by Home and Timeline (group-modal fetching stays per-page, since Home
+caches full group detail while Timeline opens the in-memory group).
 
 In the **Home** and **Timeline** feeds a grouped multi-photo session renders with
 `GroupedMealCard` — a layered "deck" look (two offset shadow layers behind the card) plus a
