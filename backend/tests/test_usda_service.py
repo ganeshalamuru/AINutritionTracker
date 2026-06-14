@@ -129,7 +129,7 @@ class NutritionDbTest(unittest.TestCase):
     def test_base_ingredient_aliases(self):
         # Dish-decomposition base ingredients map to USDA-friendly generic queries.
         self.assertEqual(nd._aliased("toor dal"), "pigeon peas cooked")
-        self.assertEqual(nd._aliased("urad dal"), "lentils cooked")  # USDA has no urad
+        self.assertEqual(nd._aliased("urad dal"), "lentils mature boiled")  # USDA has no urad
         self.assertEqual(nd._aliased("filter coffee"), "brewed coffee")
         self.assertEqual(nd._aliased("coconut"), "coconut raw")
         self.assertEqual(nd._aliased("carrot"), "carrots raw")
@@ -213,7 +213,7 @@ class NutritionDbTest(unittest.TestCase):
             return FakeResp(200, {"foods": [hit]})
 
         with patch.object(nd._client.session, "post", side_effect=post):
-            # alias 'onions cooked' -> noun 'onions' (stem 'onion') matches 'Onions'
+            # alias 'onions cooked boiled drained' -> noun stem 'onion' matches 'Onions'
             self.assertIsNotNone(nd.lookup_nutrients("onion"))
 
     def test_genuine_miss_returns_none(self):

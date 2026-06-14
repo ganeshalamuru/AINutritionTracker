@@ -31,7 +31,7 @@ DEFAULT_USDA_KEY = "DEMO_KEY"
 # Version of the USDA food-cache contents. BUMP THIS whenever the matching/alias logic
 # (services/usda_service.py + services/nutrition_data/) changes, so stale cached lookups
 # are discarded. core/lifespan.py purges food_cache on startup when the stored version differs.
-CACHE_VERSION = "7"
+CACHE_VERSION = "8"
 
 
 def get_value(db: Session, key: str, default: str = "") -> str:

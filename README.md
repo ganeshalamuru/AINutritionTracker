@@ -297,9 +297,13 @@ midnight land on the right day regardless of timezone.
   output can't 500.
 - **DB identifiers use a naming convention.** `Base.metadata` (`core.database`) sets a
   `naming_convention` so indexes/FKs/PKs get deterministic names.
-- **Dish aliases are curated empirically.** Add to `DISH_ALIASES` only after confirming an FNDDS
-  match via `python check_aliases.py <key>`. An unverified dish is harmless — it just falls back to
-  decomposition.
+- **Aliases are curated empirically.** Add or change entries in `DISH_ALIASES`/`FOOD_ALIASES` only
+  after confirming the resolved USDA entry via `python check_aliases.py <key>` — the script prints
+  the chosen description + cal/100g, which catches food aliases that *match but resolve to the wrong
+  variant* (e.g. a generic "mung beans cooked" landing the **sprouted, stir-fried** ~50 cal entry
+  instead of plain boiled ~105). Curate the alias value so the distinctive food word lands **last**
+  (the `_food_noun` gate). An unverified dish is harmless — it just falls back to decomposition;
+  drop `DISH_ALIASES` entries that don't match FNDDS so they skip the wasted speculative call.
 - **`core` depends on nothing above it.** If `core` needs something from `services`, move the
   shared piece down into `core`. (The lifespan's startup call into `vision_service.reload_clients`
   is a deliberate exception via a local import.)
