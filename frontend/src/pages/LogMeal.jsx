@@ -18,9 +18,11 @@ const dishBaseline = (dish) =>
 // scaling always derives from the original baseline and repeated edits never compound
 // rounding. A dish's contribution is linear in its grams (whole-dish match or decomposed
 // sum alike), so this is identical to re-running the USDA lookup — no network call needed.
-function scaledTotals(dishes, dishBase, dishGrams, field) {
+// Dishes the user removed in review contribute nothing.
+function scaledTotals(dishes, dishBase, dishGrams, dishRemoved, field) {
   const total = {};
   dishes.forEach((dish, i) => {
+    if (dishRemoved[i]) return;
     const base = dishBase[i];
     const f = base > 0 ? (dishGrams[i] || 0) / base : 1;
     const vals = dish[field] || {};
@@ -96,9 +98,11 @@ export default function LogMeal() {
           ? {
               ...p, analyzing: false, analysis: data,
               mealName: data.meal_name, mealType: data.meal_type,
-              // Editable portion state: baselines + current grams + live (edited) totals.
+              // Editable portion state: baselines + current grams + per-dish removal +
+              // live (edited) totals.
               dishBase,
               dishGrams: [...dishBase],
+              dishRemoved: dishBase.map(() => false),
               liveMacros: data.macros,
               liveMicros: data.micros,
             }
@@ -134,8 +138,23 @@ export default function LogMeal() {
       return {
         ...p,
         dishGrams,
-        liveMacros: scaledTotals(dishes, p.dishBase, dishGrams, "macros"),
-        liveMicros: scaledTotals(dishes, p.dishBase, dishGrams, "micros"),
+        liveMacros: scaledTotals(dishes, p.dishBase, dishGrams, p.dishRemoved, "macros"),
+        liveMicros: scaledTotals(dishes, p.dishBase, dishGrams, p.dishRemoved, "micros"),
+      };
+    }));
+
+  // Remove (or restore) a dish from the analysis; re-sum the meal without it.
+  const setDishRemoved = (id, dishIndex, removed) =>
+    setPhotos((prev) => prev.map((p) => {
+      if (p.id !== id || !p.analysis) return p;
+      const dishRemoved = [...p.dishRemoved];
+      dishRemoved[dishIndex] = removed;
+      const dishes = p.analysis.dishes || [];
+      return {
+        ...p,
+        dishRemoved,
+        liveMacros: scaledTotals(dishes, p.dishBase, p.dishGrams, dishRemoved, "macros"),
+        liveMicros: scaledTotals(dishes, p.dishBase, p.dishGrams, dishRemoved, "micros"),
       };
     }));
 
@@ -244,6 +263,7 @@ export default function LogMeal() {
               photo={photo}
               onUpdate={(updates) => updatePhoto(photo.id, updates)}
               onDishGrams={(dishIndex, grams) => setDishGrams(photo.id, dishIndex, grams)}
+              onDishRemoved={(dishIndex, removed) => setDishRemoved(photo.id, dishIndex, removed)}
               onRemove={!isAnalyzing ? () => removePhoto(photo.id) : undefined}
               onRetry={() => retryPhoto(photo.id)}
             />
@@ -325,7 +345,7 @@ export default function LogMeal() {
   );
 }
 
-function PhotoCard({ photo, onUpdate, onDishGrams, onRemove, onRetry }) {
+function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onRemove, onRetry }) {
   // Live (portion-edited) totals when present, else the original analysis values.
   const macros = photo.liveMacros || photo.analysis?.macros;
   const micros = photo.liveMicros || photo.analysis?.micros;
@@ -429,7 +449,9 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onRemove, onRetry }) {
                       dish={dish}
                       grams={photo.dishGrams?.[i]}
                       base={photo.dishBase?.[i]}
+                      removed={photo.dishRemoved?.[i]}
                       onGrams={(g) => onDishGrams(i, g)}
+                      onToggleRemove={(r) => onDishRemoved(i, r)}
                     />
                   ))}
                 </div>
@@ -475,18 +497,20 @@ const ING_STYLE = {
   skipped: "bg-gray-200 text-gray-500 line-through",
 };
 
-function DishRow({ dish, grams, base, onGrams }) {
+function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
   // Editable portion. When there's no baseline weight (no dish grams and no ingredient
   // grams) there's nothing to scale from, so the field is locked and the factor stays 1.
   const locked = !(base > 0);
   const factor = locked ? 1 : (grams || 0) / base;
   return (
-    <div>
+    <div className={removed ? "opacity-60" : ""}>
       {/* Dish header — highlighted green when the whole dish matched in USDA */}
       <div className="flex items-center gap-1.5 flex-wrap">
         <span
           className={`text-xs px-2 py-1 rounded-full font-medium ${
-            dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
+            removed
+              ? "bg-gray-100 text-gray-400 line-through"
+              : dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
           }`}
         >
           {dish.name}
@@ -498,26 +522,46 @@ function DishRow({ dish, grams, base, onGrams }) {
             inputMode="numeric"
             value={Number.isFinite(grams) ? grams : 0}
             onChange={(e) => onGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
-            disabled={locked}
+            disabled={locked || removed}
             className="w-14 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400 disabled:bg-gray-100 disabled:text-gray-400"
           />
           <span className="text-[11px] text-gray-400">g</span>
         </span>
-        {dish.matched ? (
+        {!removed && (dish.matched ? (
           <span className="text-[10px] text-green-700 font-medium">matched</span>
         ) : (
           <span className="text-[10px] text-gray-400">from ingredients</span>
+        ))}
+        {/* Remove / Undo toggle, pushed to the right */}
+        {removed ? (
+          <span className="ml-auto flex items-center gap-1.5">
+            <span className="text-[10px] text-gray-400">removed</span>
+            <button
+              onClick={() => onToggleRemove(false)}
+              className="text-[11px] text-green-600 font-medium hover:text-green-700"
+            >
+              Undo
+            </button>
+          </span>
+        ) : (
+          <button
+            onClick={() => onToggleRemove(true)}
+            className="ml-auto text-[11px] text-red-400 hover:text-red-500"
+            title="Remove this dish from the meal"
+          >
+            Remove
+          </button>
         )}
       </div>
 
       {/* Ingredients — de-emphasized when the dish matched (they weren't looked up),
           colored by their own USDA outcome when the dish was decomposed. Grams scale
-          with the dish portion. */}
+          with the dish portion. Greyed out when the dish is removed. */}
       {dish.ingredients?.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1 pl-3">
           {dish.ingredients.map((ing, i) => {
             const g = Math.round((ing.grams || 0) * factor);
-            const style = dish.matched
+            const style = removed || dish.matched
               ? "bg-transparent text-gray-400"
               : ING_STYLE[ing.status] || "bg-white text-gray-600";
             return (
