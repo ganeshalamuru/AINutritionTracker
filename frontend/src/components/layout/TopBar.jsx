@@ -1,8 +1,9 @@
 import { useNavigate } from "react-router-dom";
 import { useProfile } from "../../context/ProfileContext";
+import ProfileMenu from "./ProfileMenu";
 
 export default function TopBar() {
-  const { profile, logout } = useProfile();
+  const { profile } = useProfile();
   const navigate = useNavigate();
   const now = new Date();
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 17 ? "Good afternoon" : "Good evening";
@@ -26,14 +27,7 @@ export default function TopBar() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
           </button>
-          <div
-            className="w-8 h-8 rounded-full flex items-center justify-center text-white text-sm font-bold cursor-pointer"
-            style={{ backgroundColor: profile?.avatar_color || "#22c55e" }}
-            onClick={() => { logout(); navigate("/"); }}
-            title="Switch profile"
-          >
-            {profile?.name?.charAt(0).toUpperCase()}
-          </div>
+          <ProfileMenu />
         </div>
       </div>
     </div>
