@@ -194,7 +194,7 @@ backend/
 App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/ProfileContext.jsx
 api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
 pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
-components/  layout/   (Layout, TopBar, BottomNav)
+components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
             meal/     (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MacroHighlights, MicroGrid)
             summary/  (MacroProgressBar)   profile/(PinPad)
             settings/ (ApiKeyCard)         shared/ (Spinner, Toast, EmptyState, ConfirmModal)
@@ -203,8 +203,14 @@ utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emp
 ```
 
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call) → optional AI hint → Analyze →
-review (editable per-dish portions rescale client-side) → log. All destructive actions use the
-shared `ConfirmModal` — never a browser `confirm()`.
+review → log. In review, each identified dish can be **re-portioned** (edit grams) or **removed**
+(reversible, with Undo); both rescale the meal totals client-side via `scaledTotals` (dish subtotals
+come from the immutable analysis, so no re-lookup). Logging sends the live macros/micros — not the
+dish breakdown — so edits/removals persist with no backend change. All destructive actions on *saved*
+data use the shared `ConfirmModal` — never a browser `confirm()`.
+
+The TopBar avatar opens **`ProfileMenu`** — a dropdown to switch profiles (PIN-verified inline via
+`PinPad` + `POST /profiles/verify`) or log out, rather than logging out on click.
 
 **Shared frontend layer (single sources of truth, mirroring the backend convention).** Cross-cutting
 pieces live in one place rather than copy-pasted across files: meal-type badge colors in
