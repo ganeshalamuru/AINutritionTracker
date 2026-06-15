@@ -51,7 +51,7 @@ def _build_gemini(api_key: str, model: str):
     genai.configure(api_key=api_key)  # process-global key (matches the one-key reality)
     return genai.GenerativeModel(
         model,
-        generation_config={"max_output_tokens": 512, "temperature": 0},
+        generation_config={"max_output_tokens": 1024, "temperature": 0},
     )
 
 
@@ -96,41 +96,42 @@ OLLAMA_TIMEOUT = 120
 # Override via env only if a very high-res photo ever truncates.
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
 
-# Ollama structured-output schema for the compact response. The cloud models (Llama 4
-# Scout / Gemini) follow the prompt's shape from `format: "json"` alone, but a local 4B
-# collapses a single-dish photo to the bare {n,g,i} object and drops the {n,t,c,d:[...]}
-# wrapper — so _parse_compact finds no `d` array and returns zero dishes. Passing the
-# schema constrains decoding to the exact wrapper; the model only fills the values.
+# Ollama structured-output schema for the response. The cloud models (Llama 4 Scout /
+# Gemini) follow the prompt's shape from `format: "json"` alone, but a local 4B collapses
+# a single-dish photo to a bare {name,total_grams,components} object and drops the
+# {meal_name,type,confidence,dishes:[...]} wrapper — so _parse_compact finds no `dishes`
+# array and returns zero dishes. Passing the schema constrains decoding to the exact
+# wrapper; the model only fills the values.
 _OLLAMA_FORMAT = {
     "type": "object",
     "properties": {
-        "n": {"type": "string"},
-        "t": {"type": "string"},
-        "c": {"type": "string"},
-        "d": {
+        "meal_name": {"type": "string"},
+        "type": {"type": "string"},
+        "confidence": {"type": "string"},
+        "dishes": {
             "type": "array",
             "items": {
                 "type": "object",
                 "properties": {
-                    "n": {"type": "string"},
-                    "g": {"type": "number"},
-                    "i": {
+                    "name": {"type": "string"},
+                    "total_grams": {"type": "number"},
+                    "components": {
                         "type": "array",
                         "items": {
                             "type": "object",
                             "properties": {
-                                "f": {"type": "string"},
-                                "g": {"type": "number"},
+                                "item": {"type": "string"},
+                                "grams": {"type": "number"},
                             },
-                            "required": ["f", "g"],
+                            "required": ["item", "grams"],
                         },
                     },
                 },
-                "required": ["n", "g", "i"],
+                "required": ["name", "total_grams", "components"],
             },
         },
     },
-    "required": ["n", "t", "c", "d"],
+    "required": ["meal_name", "type", "confidence", "dishes"],
 }
 
 # Mock vision output: the dish list (macros/micros come from the lookup stage, which
@@ -158,16 +159,21 @@ MOCK_RESPONSE = {
     ],
 }
 
-NUTRITION_PROMPT = """Identify the dishes in this meal photo. Output ONLY compact JSON, no markdown or prose:
-{"n":"meal name","t":"breakfast|lunch|dinner|snack","c":"high|medium|low","d":[{"n":"dish","g":grams,"i":[{"f":"ingredient","g":grams},...]}]}
+NUTRITION_PROMPT = """Identify the dishes in this meal photo and estimate their weights.
 
-- One entry per distinct dish/food; never merge dishes. "n"=common dish name, "g"=its total edible grams in the photo. Estimate grams conservatively — when unsure, lean low rather than high.
-- "i"=base-ingredient fallback (used only if the dish isn't found): plain single foods (grains, dals, vegetables, dairy, meat, nuts, oil, sugar, spices) with grams.
-- Do NOT estimate calories or nutrients. "c": high=clear, medium=probable, low=unclear.
+Assumptions:
+- If tableware size is ambiguous, assume a standard 10-inch dinner plate or 150ml bowls.
+- Be conservative with weight estimates (lean low if unsure).
 
-Examples:
-idli -> {"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]}
-sambar -> {"n":"sambar","g":150,"i":[{"f":"toor dal","g":30},{"f":"mixed vegetables","g":60},{"f":"tamarind","g":5},{"f":"vegetable oil","g":5}]}"""
+Output a single, compact JSON object matching this schema exactly. Do not include markdown code blocks, prose, or explanations:
+
+{"meal_name":"Name","type":"breakfast|lunch|dinner|snack","confidence":"high|medium|low","dishes":[{"name":"dish name","total_grams":0,"components":[{"item":"ingredient/component","grams":0}]}]}
+
+Guidelines:
+1. One entry per distinct food item (never merge separate items).
+2. "components" should break down the dish into its 2-4 primary macro-ingredients (e.g., for "Chicken Rice": chicken and rice). Avoid listing minor spices or oils unless they contribute significantly to the weight.
+3. Only list components you can actually see in the photo. Do not guess ingredients that are not visible.
+4. Ensure the sum of component grams logically matches the total_grams."""
 
 
 def _is_quota_error(err: str) -> bool:
@@ -187,44 +193,45 @@ def _is_number(v) -> bool:
 
 
 def _parse_items(arr) -> list[dict]:
-    """Keep well-formed {food, grams} entries from the model's ingredient list.
-    Tolerant of junk: non-dict entries, missing/blank names, or bad weights are
-    dropped; a non-numeric weight defaults to 0 (contributes nothing downstream)."""
+    """Keep well-formed {item, grams} components from the model's ingredient list,
+    remapped to our internal {food, grams} shape. Tolerant of junk: non-dict entries,
+    missing/blank names, or bad weights are dropped; a non-numeric weight defaults to 0
+    (contributes nothing downstream)."""
     out = []
     if not isinstance(arr, list):
         return out
     for entry in arr:
         if not isinstance(entry, dict):
             continue
-        food = (entry.get("f") or "").strip()
+        food = (entry.get("item") or "").strip()
         if not food:
             continue
-        grams = entry.get("g")
+        grams = entry.get("grams")
         out.append({"food": food, "grams": grams if _is_number(grams) else 0})
     return out
 
 
 def _parse_dishes(arr) -> list[dict]:
-    """Keep well-formed dishes from the model's `d` list. Each dish is
-    {name, grams, items}: a named dish, its estimated portion grams, and its
-    base-ingredient breakdown (parsed by _parse_items, used as a lookup fallback).
-    Tolerant of junk: non-dict entries and nameless dishes are dropped; a bad grams
-    value defaults to 0."""
+    """Keep well-formed dishes from the model's `dishes` list, remapped to our internal
+    {name, grams, items} shape: a named dish, its estimated portion grams (from the
+    model's `total_grams`), and its component breakdown (from `components`, parsed by
+    _parse_items, used as a lookup fallback). Tolerant of junk: non-dict entries and
+    nameless dishes are dropped; a bad grams value defaults to 0."""
     out = []
     if not isinstance(arr, list):
         return out
     for entry in arr:
         if not isinstance(entry, dict):
             continue
-        name = (entry.get("n") or "").strip()
+        name = (entry.get("name") or "").strip()
         if not name:
             continue
-        grams = entry.get("g")
+        grams = entry.get("total_grams")
         out.append(
             {
                 "name": name,
                 "grams": grams if _is_number(grams) else 0,
-                "items": _parse_items(entry.get("i")),
+                "items": _parse_items(entry.get("components")),
             }
         )
     return out
@@ -243,18 +250,18 @@ def _norm(value, allowed: set, default: str) -> str:
 
 
 def _parse_compact(text: str) -> dict:
-    """Strip fences, parse the compact JSON, and remap to the named schema. The
-    vision stage returns a list of dishes (each with a fallback ingredient breakdown),
-    not nutrient numbers."""
+    """Strip fences, parse the model's JSON, and remap to our internal named schema. The
+    vision stage returns a list of dishes (each with a fallback component breakdown),
+    not nutrient numbers. The model's `type` key maps to our `meal_type`."""
     text = text.strip()
     text = re.sub(r"^```(?:json)?\s*", "", text)
     text = re.sub(r"\s*```$", "", text)
     data = json.loads(text)
     return {
-        "meal_name": data.get("n") or "Unknown meal",
-        "meal_type": _norm(data.get("t"), _MEAL_TYPES, "snack"),
-        "confidence": _norm(data.get("c"), _CONFIDENCE_LEVELS, "medium"),
-        "dishes": _parse_dishes(data.get("d")),
+        "meal_name": data.get("meal_name") or "Unknown meal",
+        "meal_type": _norm(data.get("type"), _MEAL_TYPES, "snack"),
+        "confidence": _norm(data.get("confidence"), _CONFIDENCE_LEVELS, "medium"),
+        "dishes": _parse_dishes(data.get("dishes")),
     }
 
 
@@ -292,7 +299,7 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, st
             }
         ],
         temperature=0,
-        max_tokens=512,
+        max_tokens=1024,
         response_format={"type": "json_object"},
         timeout=CALL_TIMEOUT,
     )
@@ -304,7 +311,8 @@ def _ollama_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, 
     """Local vision via the Ollama daemon (no API key, no client to pre-build — it's a
     stateless HTTP endpoint on the machine). Mirrors _groq_analyze's shape: image goes in
     as base64, `format` carries the response JSON schema so decoding is constrained to our
-    {n,t,c,d:[...]} shape (a 4B drops the wrapper otherwise), temperature 0 for determinism."""
+    {meal_name,type,confidence,dishes:[...]} shape (a 4B drops the wrapper otherwise),
+    temperature 0 for determinism."""
     b64 = base64.b64encode(image_bytes).decode()
     response = requests.post(
         f"{OLLAMA_HOST}/api/chat",

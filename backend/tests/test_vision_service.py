@@ -17,9 +17,9 @@ import services.vision_service as gs
 class ParseCompactTest(unittest.TestCase):
     def test_parses_dish_list(self):
         raw = (
-            '{"n":"South Indian Breakfast","t":"breakfast","c":"high","d":['
-            '{"n":"idli","g":160,"i":[{"f":"rice","g":90},{"f":"urad dal","g":30}]},'
-            '{"n":"sambar","g":150,"i":[{"f":"toor dal","g":30}]}]}'
+            '{"meal_name":"South Indian Breakfast","type":"breakfast","confidence":"high","dishes":['
+            '{"name":"idli","total_grams":160,"components":[{"item":"rice","grams":90},{"item":"urad dal","grams":30}]},'
+            '{"name":"sambar","total_grams":150,"components":[{"item":"toor dal","grams":30}]}]}'
         )
         out = gs._parse_compact(raw)
         self.assertEqual(out["meal_name"], "South Indian Breakfast")
@@ -39,8 +39,8 @@ class ParseCompactTest(unittest.TestCase):
 
     def test_strips_markdown_fences(self):
         raw = (
-            '```json\n{"n":"Toast","t":"breakfast","c":"low","d":['
-            '{"n":"toast","g":40,"i":[{"f":"bread","g":40}]}]}\n```'
+            '```json\n{"meal_name":"Toast","type":"breakfast","confidence":"low","dishes":['
+            '{"name":"toast","total_grams":40,"components":[{"item":"bread","grams":40}]}]}\n```'
         )
         out = gs._parse_compact(raw)
         self.assertEqual(out["meal_name"], "Toast")
@@ -53,9 +53,9 @@ class ParseCompactTest(unittest.TestCase):
 
     def test_drops_junk_dishes_and_items(self):
         raw = (
-            '{"n":"x","t":"snack","c":"medium","d":['
-            '{"n":"rice bowl","g":100,"i":[{"f":"rice","g":100},{"junk":1},{"f":"","g":5},"nope",{"f":"oil"}]},'
-            '{"g":50},"bad",{"n":"  "}]}'
+            '{"meal_name":"x","type":"snack","confidence":"medium","dishes":['
+            '{"name":"rice bowl","total_grams":100,"components":[{"item":"rice","grams":100},{"junk":1},{"item":"","grams":5},"nope",{"item":"oil"}]},'
+            '{"total_grams":50},"bad",{"name":"  "}]}'
         )  # nameless/blank dishes dropped; oil missing grams -> 0
         out = gs._parse_compact(raw)
         self.assertEqual(
@@ -77,10 +77,12 @@ class ParseCompactTest(unittest.TestCase):
         self.assertEqual(out["dishes"], [])
 
     def test_bad_dishes_type_yields_empty_list(self):
-        self.assertEqual(gs._parse_compact('{"n":"x","d":"not a list"}')["dishes"], [])
+        self.assertEqual(gs._parse_compact('{"meal_name":"x","dishes":"not a list"}')["dishes"], [])
 
     def test_bad_items_type_yields_dish_with_empty_items(self):
-        out = gs._parse_compact('{"n":"x","d":[{"n":"a","g":10,"i":"nope"}]}')
+        out = gs._parse_compact(
+            '{"meal_name":"x","dishes":[{"name":"a","total_grams":10,"components":"nope"}]}'
+        )
         self.assertEqual(out["dishes"], [{"name": "a", "grams": 10, "items": []}])
 
 
@@ -120,8 +122,8 @@ class OllamaAnalyzeTest(unittest.TestCase):
 
     def test_posts_image_and_parses_dish_list(self):
         content = (
-            '{"n":"Lunch","t":"lunch","c":"high","d":['
-            '{"n":"dosa","g":120,"i":[{"f":"rice","g":80}]}]}'
+            '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":['
+            '{"name":"dosa","total_grams":120,"components":[{"item":"rice","grams":80}]}]}'
         )
 
         class FakeResponse:
@@ -146,7 +148,7 @@ class OllamaAnalyzeTest(unittest.TestCase):
         self.assertEqual(payload["model"], "qwen3-vl:8b-instruct")
         # format carries the response JSON schema (constrained decoding), not just "json".
         self.assertEqual(payload["format"], gs._OLLAMA_FORMAT)
-        self.assertIn("d", payload["format"]["required"])
+        self.assertIn("dishes", payload["format"]["required"])
         self.assertFalse(payload["stream"])
         # num_ctx is capped so Ollama doesn't reserve VRAM for the model's 262k context
         # and offload layers to CPU.

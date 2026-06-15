@@ -128,8 +128,23 @@ The core design splits **perception** (LLM) from **facts** (USDA):
                                                           (USDA FNDDS via offline FTS5 or online API + cache)
 ```
 
-- **Stage 1 — perception** (`vision_service`): the vision model returns a compact list of
+- **Stage 1 — perception** (`vision_service`): the vision model returns a JSON list of
   **dishes**, each with a portion weight and a fallback base-ingredient breakdown — no nutrients.
+  The prompt (`NUTRITION_PROMPT`) asks for an explicit, readable schema:
+
+  ```json
+  {"meal_name":"Name","type":"breakfast|lunch|dinner|snack","confidence":"high|medium|low",
+   "dishes":[{"name":"dish name","total_grams":0,
+              "components":[{"item":"ingredient/component","grams":0}]}]}
+  ```
+
+  `components` is the 2–4 primary macro-ingredient fallback (used only when Stage 2 finds no
+  dish-level match); the prompt instructs the model to list **only components it can actually see**
+  and not guess ingredients that aren't visible (it otherwise hallucinates expected toppings — e.g.
+  a phantom sausage on a chicken pizza). `vision_service._parse_compact` remaps this to the internal shape
+  (`meal_type`/`dishes:[{name, grams, items:[{food, grams}]}]`) and coerces `type`/`confidence`
+  to the known vocabularies before the strict `AnalyzeResponse`. For local Ollama the same schema
+  is passed as `format` so a small model can't drop the wrapper.
 - **Stage 2 — nutrient lookup** (`usda_service`) is **dish-first**: it looks the whole dish up in
   USDA's **FNDDS** database (which carries composite dishes, including Indian ones like
   idli/dosa/sambar) and only **decomposes into base ingredients when no dish-level match exists**.
