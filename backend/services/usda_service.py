@@ -25,6 +25,7 @@ from sqlalchemy import text
 from core.database import engine
 from core.logging_config import configure_logging
 from core.nutrients import MACRO_KEYS, MICRO_KEYS
+from core.request_context import profile_id_var, request_id_var
 from services import usda_local_search
 
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
@@ -55,6 +56,26 @@ from services.nutrition_data import (
 
 configure_logging()
 logger = logging.getLogger("nutriai.nutrition_db")
+
+
+def _bind_log_context():
+    """Snapshot the request's correlation ids so pool workers can re-apply them.
+
+    The shared ThreadPoolExecutor's worker threads don't inherit the request's contextvars
+    (unlike asyncio.to_thread), so without this their `usda-lookup_*` log lines would lose
+    the request_id/profile_id. We capture the ids here (on the calling thread, which is
+    inside the request context) and return a wrapper that sets them before running each
+    pooled task. Pool threads are reused, so every task re-sets them — no reset needed."""
+    rid = request_id_var.get()
+    pid = profile_id_var.get()
+
+    def run(fn):
+        request_id_var.set(rid)
+        profile_id_var.set(pid)
+        return fn()
+
+    return run
+
 
 # --- shared USDA client (a pooled Session + a worker pool, with the key on a header) ---
 
@@ -564,7 +585,11 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
-    results = list(_client.pool.map(lambda q: (q, lookup_nutrients(q)), to_lookup))
+    # _bind_log_context() carries the request_id/profile_id into the pool workers' logs.
+    run_in_ctx = _bind_log_context()
+    results = list(
+        _client.pool.map(lambda q: run_in_ctx(lambda: (q, lookup_nutrients(q))), to_lookup)
+    )
     profiles = dict(results)  # query -> per_100g | None
 
     skipped: list = []
@@ -669,10 +694,11 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
     budget -= min(len(dish_uncached), budget)
 
     # Parallel dish lookups (UsdaRateLimitError propagates when we iterate).
+    run_in_ctx = _bind_log_context()
     dish_pairs = list(
         zip(
             dish_lookup,
-            _client.pool.map(lambda d: lookup_dish(d["name"]), dish_lookup),
+            _client.pool.map(lambda d: run_in_ctx(lambda: lookup_dish(d["name"])), dish_lookup),
             strict=True,
         )
     )

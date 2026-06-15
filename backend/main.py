@@ -4,6 +4,7 @@ core.config; per-domain logic in services/. This file stays a thin assembly."""
 
 import logging
 import os
+import time
 
 from dotenv import load_dotenv
 
@@ -20,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from core.config import DIST_DIR
 from core.lifespan import lifespan
+from core.request_context import new_request_id, profile_id_var, request_id_var
 from routers import admin, config, foods, meals, nutrition, profiles
 
 logger = logging.getLogger("nutriai")
@@ -69,6 +71,42 @@ if _cors_origins:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+
+@app.middleware("http")
+async def request_context_middleware(request: Request, call_next):
+    """Bind a request id (trace id) and the caller's profile id for the duration of the
+    request so every downstream log line is correlated, then emit one access-log line with
+    method/path/status/duration. The request id is taken from an inbound X-Request-ID
+    (lets a proxy/client supply its own trace) or generated, and echoed back on the
+    response. The profile id comes from the X-Profile-Id header the frontend sends on every
+    call. Both are reset in `finally` so values never bleed across requests."""
+    req_id = request.headers.get("x-request-id") or new_request_id()
+    profile_id = request.headers.get("x-profile-id", "-")
+    req_token = request_id_var.set(req_id)
+    prof_token = profile_id_var.set(profile_id)
+    start = time.perf_counter()
+    try:
+        response = await call_next(request)
+        response.headers["X-Request-ID"] = req_id
+        # Single, correlated access line (uvicorn's own access log is disabled in
+        # core.logging_config). Include the query string + client IP so nothing uvicorn
+        # logged is lost. Query strings here carry no secrets (profile_id/dates/paging only;
+        # keys travel in the body/headers). In dev the client IP is the Vite proxy.
+        path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
+        client_host = request.client.host if request.client else "-"
+        logger.info(
+            "%s %s -> %d (%.0f ms) from %s",
+            request.method,
+            path,
+            response.status_code,
+            (time.perf_counter() - start) * 1000,
+            client_host,
+        )
+        return response
+    finally:
+        request_id_var.reset(req_token)
+        profile_id_var.reset(prof_token)
 
 
 @app.exception_handler(Exception)

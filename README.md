@@ -179,13 +179,14 @@ FastAPI + SQLAlchemy + SQLite, in four layers. **Dependencies point one way:
 
 ```
 backend/
-├── main.py                  # entrypoint: load env, configure logging, assemble routers, serve frontend
+├── main.py                  # entrypoint: load env, configure logging, request-context/access-log middleware, assemble routers, serve frontend
 │
 ├── build_usda_db.py         # one-time ETL: usda_data/ CSVs -> backend/usda_local.db (offline FTS5 search index)
 │
 ├── core/                    # infrastructure & cross-cutting concerns (no business logic)
 │   ├── database.py          #   SQLAlchemy engine (pool_pre_ping + SQLite WAL/busy_timeout pragmas), SessionLocal, Base, get_db
-│   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named formatter for app + uvicorn
+│   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named, request-correlated formatter (app + uvicorn); LOG_LEVEL env
+│   ├── request_context.py   #   per-request trace id + profile id (contextvars) + log-record factory that stamps them onto every line
 │   ├── config.py            #   app_config table access + vision/nutrition_source defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/17-micro schema + to_*_data / sum_* helpers
 │   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision + USDA clients
@@ -368,8 +369,22 @@ midnight land on the right day regardless of timezone.
   instead of JSON)). Rate limits (429/403) surface as HTTP 429 and fail fast, never silent zeros.
 - **`MOCK_GEMINI=1`** short-circuits *both* stages (canned dish list + canned totals, no network).
   The name is historical — it is provider-agnostic, not Gemini-only.
-- **Logging** is timestamped and thread-named (`core.logging_config`); parallel USDA workers log
-  under `usda-lookup_*` so they're distinguishable from the request thread.
+- **Logging** is timestamped, thread-named, and **request-correlated** (`core.logging_config`).
+  Every line carries `[req:<id> p:<profile_id>]` — a per-request trace id and the calling
+  profile — so concurrent requests/profiles are distinguishable. The ids live in
+  `contextvars` (`core.request_context`) and are injected onto every record by a
+  log-record factory (so startup/uvicorn/library logs render `req:- p:-` rather than
+  erroring). An `@app.middleware("http")` in `main.py` binds them per request: the trace id
+  comes from an inbound `X-Request-ID` (else generated) and is **echoed back** on the
+  response; the profile id comes from the `X-Profile-Id` header the frontend sends on every
+  call (`api/client.js`). The middleware also emits the single **access-log line** per
+  request (`METHOD /path?query -> status (N ms) from <client-ip>`); uvicorn's own
+  `uvicorn.access` logger is disabled in `core.logging_config` because it logs after the
+  middleware resets the context (so it couldn't carry `req`/`p`) and would just duplicate
+  this line. Because `asyncio.to_thread` copies the context, the
+  ids reach the Stage-1/Stage-2 worker threads automatically; the parallel `usda-lookup_*`
+  pool workers re-apply them via `usda_service._bind_log_context` (a `ThreadPoolExecutor`
+  doesn't inherit contextvars). Set `LOG_LEVEL` (default `INFO`) to change verbosity.
 
 ---
 
