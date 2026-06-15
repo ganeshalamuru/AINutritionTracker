@@ -401,8 +401,8 @@ immediately) or seeded from env vars on first launch by `core.config.seed_defaul
 `GET /api/config` reports only whether each key is set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
 (comma-separated) only if a separate origin must reach the API. `GET /api/health` returns
 `{"status":"ok"}`; a global exception handler logs unhandled errors and returns a clean 500.
-Interactive docs (`/docs`, `/redoc`, `/openapi.json`) are on by default; set `APP_ENV=production`
-to disable them for a shared deployment.
+Interactive docs (`/docs` Swagger UI, `/redoc` ReDoc, `/scalar` Scalar, `/openapi.json` schema)
+are on by default; set `APP_ENV=production` to disable them for a shared deployment.
 
 ---
 
@@ -444,8 +444,9 @@ GET    /api/admin/config          app_config rows; *_api_key values redacted
 POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mode=ro; SELECT-only; app secrets/PINs redacted)
 ```
 
-**Interactive docs (Swagger UI): `http://localhost:8000/docs`** (ReDoc at `/redoc`, schema at
-`/openapi.json`). Set `APP_ENV=production` to disable all three **and** the `/api/admin/*` routes.
+**Interactive docs (Swagger UI): `http://localhost:8000/docs`** (ReDoc at `/redoc`, Scalar at
+`/scalar`, schema at `/openapi.json`). Set `APP_ENV=production` to disable all four **and** the
+`/api/admin/*` routes.
 The read-only SQL console (`POST /api/admin/query/{which}`) only accepts a single `SELECT`/`WITH`
 statement and runs it on a `mode=ro` connection, so writes are impossible; on the app DB, API-key
 values and profile PINs are redacted from results. **Group routes are declared before `/{meal_id}`**

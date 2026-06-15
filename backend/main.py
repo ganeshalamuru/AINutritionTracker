@@ -18,6 +18,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
+from scalar_fastapi import get_scalar_api_reference
 
 from core.config import DIST_DIR
 from core.lifespan import lifespan
@@ -120,6 +121,21 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 @app.get("/api/health", tags=["health"], summary="Health check")
 async def health():
     return {"status": "ok"}
+
+
+# Scalar API reference — an alternative to Swagger UI (/docs) / ReDoc (/redoc), driven by the
+# same /openapi.json schema. Gated on the same APP_ENV switch (openapi_url is None in production,
+# so this is hidden alongside the others). Declared before the catch-all serve_react route so it
+# isn't swallowed. telemetry off to keep with the app's fully-local posture.
+if _docs_on:
+
+    @app.get("/scalar", include_in_schema=False)
+    async def scalar_docs():
+        return get_scalar_api_reference(
+            openapi_url=app.openapi_url,
+            title=app.title,
+            telemetry=False,
+        )
 
 
 app.include_router(profiles.router, prefix="/api")
