@@ -154,9 +154,13 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   small model can't drop the wrapper.
 - **Stage 2 — nutrient lookup** (`usda_service`) is **dish-first**: it looks the whole dish up in
   USDA's **FNDDS** database (which carries composite dishes, including Indian ones like
-  idli/dosa/sambar) and only **decomposes into base ingredients when no dish-level match exists**.
-  A whole "idli" entry scaled by portion weight is far more accurate than summing mis-stated
-  "cooked rice + cooked lentils"; decomposition is the safety net for anything FNDDS lacks.
+  idli/dosa/sambar — and sweets such as ladoo/barfi natively, or via a close proxy where FNDDS
+  lacks the exact name, e.g. `gulab jamun → jelly doughnut`, `jalebi → funnel cake`) and only
+  **decomposes into base ingredients when no dish-level match exists**. A whole "idli" entry scaled
+  by portion weight is far more accurate than summing mis-stated "cooked rice + cooked lentils";
+  decomposition is the safety net for anything FNDDS lacks. A proxy is added only when it's
+  genuinely close on calories — dishes with no honest match (e.g. rasgulla, halwa) stay unmatched
+  rather than report a wrong number.
 - **Two search backends, one matching pipeline.** The single seam is `usda_service._search_usda`,
   which returns USDA-shaped candidates either from the **offline** local FTS5 index
   (`usda_local_search`, default) or the **online** FDC API. Everything downstream — alias/simplify

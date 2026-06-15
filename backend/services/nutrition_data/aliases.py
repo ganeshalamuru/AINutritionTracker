@@ -287,9 +287,27 @@ DISH_ALIASES = {
     "rice kheer": "rice pudding",
     "payasam": "rice pudding",
     "idli sambar": "idli",
+    # Indian sweets. FNDDS carries ladoo/barfi natively; jalebi≈funnel cake and gulab
+    # jamun≈jelly doughnut are close fried-sweet proxies (real ~340–400 cal/100g). All four
+    # verified against the offline index + check_aliases.py (2026-06). Curating them runs the
+    # dish-first lookup, so the whole portion resolves instead of the model's unreliable
+    # decomposition (e.g. gulab jamun → "deep-fried dumplings", a USDA miss → 0 nutrients).
+    "ladoo": "ladoo",
+    "laddu": "ladoo",
+    "besan ladoo": "ladoo",
+    "boondi ladoo": "ladoo",
+    "barfi": "barfi",
+    "burfi": "barfi",
+    "jalebi": "funnel cake",
+    "jilebi": "funnel cake",
+    "gulab jamun": "jelly doughnut",
+    "gulab jamoon": "jelly doughnut",
+    "gulab jaman": "jelly doughnut",
     # Verified 0-hit in FNDDS (check_aliases.py, 2026-06) and therefore intentionally NOT
     # aliased — they skip the speculative dish lookup and decompose to ingredients instead:
     #   chana masala, chole, rajma, paneer curry, raita, pongal, poha, uttapam, dal makhani,
     #   aloo gobi, korma, chicken/lamb/goat tikka masala, khichdi, rasam, kadhi, pav bhaji,
-    #   dhokla, halwa, lassi, gulab jamun, lemon/tamarind/curd rice, chutneys.
+    #   dhokla, halwa, lassi, lemon/tamarind/curd rice, chutneys. rasgulla and halwa have no
+    #   honest calorie proxy (spongy chenna ~180; halwa varies sooji/carrot/moong), so they
+    #   stay unmatched rather than report a wrong number.
 }
