@@ -14,7 +14,7 @@ request flows, and conventions. (Session-by-session history lives in `git log`.)
 
 | Layer | Technology |
 |---|---|
-| Backend | Python 3.14 + FastAPI + SQLAlchemy |
+| Backend | Python 3.14 + FastAPI + SQLAlchemy (deps managed with **uv**) |
 | Database | SQLite (`backend/nutrition.db`, WAL) — persists across restarts |
 | AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct` / `qwen3-vl:8b-instruct`) selectable. Identifies dishes/ingredients only. |
 | Nutrient data | **USDA FoodData Central**, two interchangeable backends (Settings → *Nutrition Data Source*, `nutrition_source`): **offline** (default) — local SQLite **FTS5** index `backend/usda_local.db` built by `build_usda_db.py`, no network/limits; **online** — the FDC API (`usda_api_key`, default `DEMO_KEY`). Both feed the same matching code; results cached in SQLite `food_cache`. |
@@ -52,6 +52,14 @@ bash start.sh --dev   |   bash start.sh   |   bash start.sh --skip-build
 
 > **Always run `.\start.ps1` (full rebuild) after any frontend change** — `-SkipBuild` serves
 > stale JS.
+
+**Python dependencies use [uv](https://docs.astral.sh/uv/).** `backend/pyproject.toml` declares the
+runtime + dev (`ruff`, `pytest`) dependencies and `backend/uv.lock` pins the full graph. The start
+scripts prefer uv (`uv sync` → `uv run uvicorn …`) and **fall back to `pip install -r
+requirements.txt` when uv isn't on PATH**, so the app still starts without it. `requirements.txt` is
+a generated export of the lock (`uv export`), kept for that fallback and pip-only environments —
+**don't hand-edit it**; change `pyproject.toml` then run `uv lock` + `uv export --no-hashes --no-dev
+-o requirements.txt`. Work in the backend directly with `uv run` (e.g. `uv run uvicorn main:app`).
 
 **First-time AI setup:** get a free Groq key at <https://console.groq.com/keys> (no card) and
 paste it into **Settings**. Optionally seed via `GROQ_API_KEY` / `GEMINI_API_KEY` env vars before
@@ -183,7 +191,7 @@ FastAPI + SQLAlchemy + SQLite, in four layers. **Dependencies point one way:
 
 ```
 backend/
-├── main.py                  # entrypoint: load env, configure logging, request-context/access-log middleware, assemble routers, serve frontend
+├── main.py                  # entrypoint: load env, configure logging, optional Sentry/Prometheus, request-context/access-log middleware, health/readiness, assemble routers, serve frontend
 │
 ├── build_usda_db.py         # one-time ETL: usda_data/ CSVs -> backend/usda_local.db (offline FTS5 search index)
 │
@@ -400,9 +408,65 @@ the `app_config` table, editable via Settings (`PUT /api/config`, which also cal
 immediately) or seeded from env vars on first launch by `core.config.seed_defaults`.
 `GET /api/config` reports only whether each key is set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
 (comma-separated) only if a separate origin must reach the API. `GET /api/health` returns
-`{"status":"ok"}`; a global exception handler logs unhandled errors and returns a clean 500.
+`{"status":"ok"}` (liveness) and `GET /api/health/ready` runs a `SELECT 1` and returns
+`{"status":"ready"}` or 503 (readiness — used by the Docker `HEALTHCHECK`/orchestrator); a global
+exception handler logs unhandled errors and returns a clean 500.
+
+**Observability (all opt-in, off by default in local dev):**
+
+- **Prometheus** — `GET /metrics` exposes request metrics in Prometheus text format
+  (`prometheus-fastapi-instrumentator`). On by default; disable with `METRICS_ENABLED=0`.
+- **Sentry** — error tracking initializes **only when `SENTRY_DSN` is set** (no DSN is ever
+  hardcoded, so local runs are unaffected). `SENTRY_TRACES_SAMPLE_RATE` (default `0.0`) controls
+  tracing; `environment` is taken from `APP_ENV`. Errors flow to Sentry *in addition to* the
+  existing logging + global exception handler.
 Interactive docs (`/docs` Swagger UI, `/redoc` ReDoc, `/scalar` Scalar, `/openapi.json` schema)
 are on by default; set `APP_ENV=production` to disable them for a shared deployment.
+
+---
+
+## Docker & deployment
+
+A **multi-stage `Dockerfile`** (repo root) builds a single production image: stage 1
+(`node:20-alpine`) builds the React app to `frontend/dist`; stage 2
+(`ghcr.io/astral-sh/uv:python3.14-bookworm-slim`) installs the locked deps with `uv sync
+--frozen --no-dev`, copies the backend + built frontend into the same relative layout the code
+serves from (`DIST_DIR = backend/../frontend/dist`), runs as a non-root user, and serves the API
++ frontend on port 8000. Build and run locally:
+
+```bash
+docker build -t nutriai .
+docker run -p 8000:8000 -e NUTRITION_SOURCE=online -e USDA_API_KEY=<key> nutriai
+```
+
+> **Offline USDA index is not in the image.** `usda_local.db` and its source CSVs are gitignored,
+> so the container defaults to `APP_ENV=production` + `NUTRITION_SOURCE=online` (set `USDA_API_KEY`).
+> To run the image fully offline, mount a prebuilt index at `/app/backend/usda_local.db` and set
+> `NUTRITION_SOURCE=offline`.
+
+**Runtime env vars:** `APP_ENV` (`production` disables docs + admin), `NUTRITION_SOURCE`
+(`online`|`offline`), `USDA_API_KEY`, optional `GROQ_API_KEY`/`GEMINI_API_KEY`, `CORS_ORIGINS`,
+`SENTRY_DSN` (+ `SENTRY_TRACES_SAMPLE_RATE`), `METRICS_ENABLED`, `LOG_LEVEL`.
+
+### CI/CD (GitHub Actions)
+
+- **`.github/workflows/ci.yml`** — on every push/PR to `main`/`master`: `uv sync` then
+  `ruff check`, `ruff format --check`, and `pytest` (backend), plus an `npm ci && npm run build`
+  frontend job.
+- **`.github/workflows/docker-publish.yml`** — on push to `main`/`master`, tags (`v*`), and
+  releases: builds the Dockerfile and pushes to **GitHub Container Registry**
+  (`ghcr.io/<owner>/ai-nutrition-tracker`) with branch/semver/sha/`latest` tags.
+
+### One-click deploy (Koyeb)
+
+Koyeb builds straight from the `Dockerfile` (or pulls the published GHCR image), so no extra
+config file is needed.
+
+[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/<owner>/ai-nutrition-tracker&branch=main&ports=8000;http;/&env[APP_ENV]=production&env[NUTRITION_SOURCE]=online)
+
+Set the service to **port 8000**, health-check path **`/api/health`**, and the env vars above
+(at minimum `USDA_API_KEY` and a vision key, e.g. `GROQ_API_KEY`). Replace `<owner>` in the button
+URL with your GitHub org/user.
 
 ---
 
@@ -416,6 +480,8 @@ PATCH  /api/profiles/{id}         Update goals {calorie_goal} (500–10000)
 DELETE /api/profiles/{id}         Soft-delete profile
 
 GET    /api/health                {status:"ok"} — liveness check
+GET    /api/health/ready          {status:"ready"} or 503 — readiness (DB SELECT 1)
+GET    /metrics                   Prometheus metrics (text; METRICS_ENABLED=0 to disable)
 POST   /api/meals/analyze         Image → AI analysis (no DB write); returns dishes[] breakdown
 POST   /api/meals/log             Save a single analyzed meal
 POST   /api/meals/log-group       Save {group_id, meals:[...]} as a grouped session
@@ -471,21 +537,24 @@ Micros are shown as raw values (no goal bars) in a collapsible `MicroGrid`.
 
 ## Tests
 
-`backend/tests/` — stdlib `unittest`, **no network** (USDA calls via `usda_service._client.session.post`
-are stubbed; the cache points at a temp DB so the real `nutrition.db` is untouched). Run from
-`backend/`:
+`backend/tests/` — stdlib `unittest` style, **no network** (USDA calls via
+`usda_service._client.session.post` are stubbed; the cache points at a temp DB so the real
+`nutrition.db` is untouched). Run them with **pytest** (the dev dependency that CI runs) or plain
+unittest — both discover the same tests. From `backend/`:
 
 ```
-python -m unittest discover -s tests
+uv run pytest                         # what CI runs (pytest config in pyproject.toml)
+python -m unittest discover -s tests  # equivalent, no extra deps
 ```
 
 `test_vision_service.py` covers Stage-1 dish parsing and `reload_clients`; `test_usda_service.py`
 covers aliasing, matching, the cache (incl. negative caching), the lookup cap, the curated
 dish-lookup gate, transient-timeout retries, and rate-limit propagation.
 
-**Linting:** Ruff is configured in `backend/pyproject.toml` (runtime deps stay in
-`requirements.txt`). Install with `python -m pip install ruff`, then from `backend/`:
-`ruff check` and `ruff format`.
+**Linting:** Ruff is configured in `backend/pyproject.toml` (it now also declares the runtime +
+dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `uv sync`; from
+`backend/` run `uv run ruff check` and `uv run ruff format`. CI enforces `ruff check`,
+`ruff format --check`, and `pytest` on every push/PR.
 
 ---
 

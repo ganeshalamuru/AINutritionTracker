@@ -9,11 +9,20 @@ Write-Host "     NutriAI - Nutrition Tracker  " -ForegroundColor Green
 Write-Host "==================================" -ForegroundColor Green
 Write-Host ""
 
-# Install Python dependencies
-Write-Host "Installing Python dependencies..." -ForegroundColor Cyan
+# Install Python dependencies. Prefer uv (fast, uses uv.lock); fall back to pip + requirements.txt
+# so a machine without uv still starts. $pyExe/$pyArgs become the uvicorn launcher below.
 Set-Location (Join-Path $ROOT "backend")
-pip install -r requirements.txt -q
-if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed. Make sure Python is installed." -ForegroundColor Red; exit 1 }
+if (Get-Command uv -ErrorAction SilentlyContinue) {
+    Write-Host "Installing Python dependencies with uv..." -ForegroundColor Cyan
+    uv sync
+    if ($LASTEXITCODE -ne 0) { Write-Host "uv sync failed." -ForegroundColor Red; exit 1 }
+    $pyExe = "uv"; $pyArgs = @("run", "uvicorn")
+} else {
+    Write-Host "uv not found - installing Python dependencies with pip..." -ForegroundColor Cyan
+    pip install -r requirements.txt -q
+    if ($LASTEXITCODE -ne 0) { Write-Host "pip install failed. Make sure Python (or uv) is installed." -ForegroundColor Red; exit 1 }
+    $pyExe = "python"; $pyArgs = @("-m", "uvicorn")
+}
 
 # Install frontend dependencies
 Write-Host "Installing frontend dependencies..." -ForegroundColor Cyan
@@ -35,8 +44,8 @@ if ($Dev) {
     Write-Host ""
 
     $backendDir = Join-Path $ROOT "backend"
-    $backend = Start-Process python `
-        -ArgumentList "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8001", "--reload" `
+    $backend = Start-Process $pyExe `
+        -ArgumentList ($pyArgs + @("main:app", "--host", "0.0.0.0", "--port", "8001", "--reload")) `
         -WorkingDirectory $backendDir `
         -PassThru -NoNewWindow
     Write-Host "Backend started on :8001 (PID: $($backend.Id))" -ForegroundColor DarkGray
@@ -73,5 +82,5 @@ if ($Dev) {
     Write-Host "  Press Ctrl+C to stop." -ForegroundColor Gray
     Write-Host ""
 
-    python -m uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    & $pyExe ($pyArgs + @("main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"))
 }

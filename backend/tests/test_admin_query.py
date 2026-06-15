@@ -19,7 +19,9 @@ class ValidateSelectTest(unittest.TestCase):
     def test_accepts_select_and_with(self):
         self.assertEqual(aq.validate_select("SELECT 1"), "SELECT 1")
         self.assertEqual(aq.validate_select("  select * from foods ;  "), "select * from foods")
-        self.assertTrue(aq.validate_select("WITH x AS (SELECT 1) SELECT * FROM x").startswith("WITH"))
+        self.assertTrue(
+            aq.validate_select("WITH x AS (SELECT 1) SELECT * FROM x").startswith("WITH")
+        )
 
     def test_rejects_writes_and_ddl(self):
         for bad in (
@@ -59,7 +61,9 @@ class RunQueryTest(unittest.TestCase):
         os.unlink(self._tmp.name)
 
     def test_returns_columns_and_rows(self):
-        cols, rows, truncated = aq.run_query(self._tmp.name, "SELECT id, name FROM t ORDER BY id LIMIT 3")
+        cols, rows, truncated = aq.run_query(
+            self._tmp.name, "SELECT id, name FROM t ORDER BY id LIMIT 3"
+        )
         self.assertEqual(cols, ["id", "name"])
         self.assertEqual(rows, [[0, "row0"], [1, "row1"], [2, "row2"]])
         self.assertFalse(truncated)

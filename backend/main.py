@@ -19,18 +19,38 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from scalar_fastapi import get_scalar_api_reference
+from sqlalchemy import text
 
 from core.config import DIST_DIR
+from core.database import engine
 from core.lifespan import lifespan
 from core.request_context import new_request_id, profile_id_var, request_id_var
 from routers import admin, config, foods, meals, nutrition, profiles
 
 logger = logging.getLogger("nutriai")
 
+_app_env = os.getenv("APP_ENV", "development").lower()
+
+# Sentry error tracking — initialized only when SENTRY_DSN is set, so local/dev runs with no
+# DSN are unaffected and no DSN is ever hardcoded. Must run before the app is created so the
+# auto-enabled FastAPI/Starlette integrations wrap it. Errors flow to Sentry in addition to the
+# existing logging + global exception handler. send_default_pii stays off (no request bodies/keys).
+_sentry_dsn = os.getenv("SENTRY_DSN")
+if _sentry_dsn:
+    import sentry_sdk
+
+    sentry_sdk.init(
+        dsn=_sentry_dsn,
+        environment=_app_env,
+        traces_sample_rate=float(os.getenv("SENTRY_TRACES_SAMPLE_RATE", "0.0")),
+        send_default_pii=False,
+    )
+    logger.info("Sentry error tracking enabled (environment=%s)", _app_env)
+
 # Interactive docs are on by default (local/dev convenience) and hidden when the app is
 # run as a shared deployment — set APP_ENV=production to disable /docs, /redoc, /openapi.json
 # (and, with them, the dev-only /api/admin/* data-inspection routes).
-_docs_on = os.getenv("APP_ENV", "development").lower() != "production"
+_docs_on = _app_env != "production"
 
 # Per-tag descriptions surfaced in the Swagger UI sidebar.
 _openapi_tags = [
@@ -120,7 +140,31 @@ async def unhandled_exception_handler(request: Request, exc: Exception):
 
 @app.get("/api/health", tags=["health"], summary="Health check")
 async def health():
+    """Liveness probe — the process is up. Used by the Docker HEALTHCHECK and Koyeb."""
     return {"status": "ok"}
+
+
+@app.get("/api/health/ready", tags=["health"], summary="Readiness check")
+async def health_ready():
+    """Readiness probe — the process can reach its database. Returns 503 if a `SELECT 1`
+    against the app DB fails, so an orchestrator can hold traffic until the DB is reachable."""
+    try:
+        with engine.connect() as conn:
+            conn.execute(text("SELECT 1"))
+    except Exception:
+        logger.exception("readiness check failed")
+        return JSONResponse(status_code=503, content={"status": "unavailable"})
+    return {"status": "ready"}
+
+
+# Prometheus metrics at /metrics (scrapeable text). instrument() adds the timing middleware and
+# expose() registers the route; both run here at import time, before the catch-all serve_react
+# route below, so /metrics isn't swallowed (same ordering concern noted for /scalar). Opt out
+# with METRICS_ENABLED=0.
+if os.getenv("METRICS_ENABLED", "1").lower() not in ("0", "false", "no"):
+    from prometheus_fastapi_instrumentator import Instrumentator
+
+    Instrumentator().instrument(app).expose(app, endpoint="/metrics", include_in_schema=False)
 
 
 # Scalar API reference — an alternative to Swagger UI (/docs) / ReDoc (/redoc), driven by the

@@ -38,7 +38,9 @@ class FoodsApiTest(unittest.TestCase):
     def test_search_data_type_filter(self):
         hits = foods.search_foods(q="idli", data_type="Survey (FNDDS)", require_all=True, limit=10)
         self.assertEqual([h.fdc_id for h in hits], [2])
-        self.assertEqual(foods.search_foods(q="idli", data_type="SR Legacy", require_all=True, limit=10), [])
+        self.assertEqual(
+            foods.search_foods(q="idli", data_type="SR Legacy", require_all=True, limit=10), []
+        )
 
     def test_get_food_returns_detail_with_nutrients(self):
         detail = foods.get_food(1)  # Rice, white, cooked, regular

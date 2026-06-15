@@ -61,7 +61,7 @@ def _load_foods(dataset_dir: str) -> dict[int, tuple[str, str]]:
                 continue
             try:
                 fdc_id = int(row["fdc_id"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
             foods[fdc_id] = (row["description"], display)
     return foods
@@ -88,14 +88,14 @@ def _nutrient_translation(dataset_dir: str) -> dict[int, int]:
         for row in csv.DictReader(f):
             try:
                 nid = int(row["id"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
             if nid not in KEEP_NUTRIENT_IDS:
                 continue
             out[nid] = nid  # Foundation/SR Legacy reference by FDC id
             try:
                 nbr = int(float(row["nutrient_nbr"]))
-            except (ValueError, KeyError, TypeError):
+            except ValueError, KeyError, TypeError:
                 continue
             assert nbr not in out or out[nbr] == nid, (
                 f"nutrient_nbr {nbr} collides among tracked ids in {dataset_dir}"
@@ -114,7 +114,7 @@ def _load_nutrients(dataset_dir: str, keep_ids: set[int]):
             try:
                 fdc_id = int(row["fdc_id"])
                 raw_nid = int(row["nutrient_id"])
-            except (ValueError, KeyError):
+            except ValueError, KeyError:
                 continue
             if fdc_id not in keep_ids:
                 continue

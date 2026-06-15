@@ -80,7 +80,9 @@ class LocalSearchTest(unittest.TestCase):
         self.assertEqual(per["carbs_g"], 28)
 
     def test_data_type_filter(self):
-        self.assertEqual([f["fdcId"] for f in ls.search("idli", data_types=["Survey (FNDDS)"])], [2])
+        self.assertEqual(
+            [f["fdcId"] for f in ls.search("idli", data_types=["Survey (FNDDS)"])], [2]
+        )
         self.assertEqual(ls.search("idli", data_types=["SR Legacy"]), [])
 
     def test_strict_requires_all_words_loose_does_not(self):

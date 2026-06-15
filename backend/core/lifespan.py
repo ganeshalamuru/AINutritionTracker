@@ -50,9 +50,7 @@ def _migrate_and_prepare_cache():
         except Exception:
             pass  # column already exists
         try:
-            conn.execute(
-                text("ALTER TABLE profiles ADD COLUMN calorie_goal INTEGER DEFAULT 2000")
-            )
+            conn.execute(text("ALTER TABLE profiles ADD COLUMN calorie_goal INTEGER DEFAULT 2000"))
             conn.commit()
         except Exception:
             pass  # column already exists

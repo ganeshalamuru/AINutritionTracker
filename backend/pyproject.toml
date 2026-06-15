@@ -1,5 +1,46 @@
-# Ruff config only — runtime dependencies stay in requirements.txt (start.ps1/start.sh
-# install from there). Install the linter with: python -m pip install ruff
+[project]
+name = "nutriai-backend"
+version = "1.0.0"
+description = "NutriAI — two-stage (vision LLM + USDA) nutrition tracker backend"
+requires-python = ">=3.12"
+# Runtime dependencies. Managed with uv (uv.lock is the source of truth); requirements.txt
+# is a generated export (uv export) kept as a pip fallback for the start scripts.
+dependencies = [
+    "fastapi==0.115.0",
+    "uvicorn[standard]==0.30.6",
+    "sqlalchemy==2.0.35",
+    "python-multipart==0.0.12",
+    "google-generativeai==0.8.3",
+    "groq==1.4.0",
+    "requests==2.32.3",
+    "python-dotenv==1.0.1",
+    "aiofiles==23.2.1",
+    "scalar-fastapi==1.8.2",
+    # Observability: Prometheus /metrics + Sentry error tracking (Sentry is inert unless
+    # SENTRY_DSN is set, see main.py).
+    "prometheus-fastapi-instrumentator==7.0.0",
+    "sentry-sdk[fastapi]==2.19.2",
+]
+
+# Dev-only tooling (installed by `uv sync`, excluded from `uv sync --no-dev` and the Docker image).
+[dependency-groups]
+dev = [
+    "ruff==0.15.17",  # >=0.9 required for the py314 ruff target below
+    "pytest==8.3.4",
+]
+
+[tool.uv]
+# This is an application, not a distributable package — don't try to build/install it.
+package = false
+
+[tool.pytest.ini_options]
+# The existing tests are stdlib unittest-style; pytest discovers and runs them. pythonpath="."
+# lets them import main/core/services when run from backend/ (no installed package).
+testpaths = ["tests"]
+pythonpath = ["."]
+
+# ---------------------------------------------------------------------------
+# Ruff (linter + formatter). Runtime deps live above; this block is unchanged.
 [tool.ruff]
 line-length = 100
 target-version = "py314"

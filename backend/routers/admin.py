@@ -90,7 +90,7 @@ def food_cache(
     for q, fdc_id, nutrients_json, fetched_at in rows:
         try:
             nutrients = json.loads(nutrients_json) if nutrients_json else {}
-        except (ValueError, TypeError):
+        except ValueError, TypeError:
             nutrients = {}
         out.append(
             FoodCacheEntry(query=q, fdc_id=fdc_id, nutrients=nutrients, fetched_at=fetched_at)

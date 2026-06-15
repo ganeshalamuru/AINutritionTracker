@@ -1,0 +1,29 @@
+# Dependencies & build artifacts (reinstalled/rebuilt inside the image)
+**/node_modules
+frontend/dist
+**/__pycache__
+**/*.py[cod]
+backend/.venv
+backend/.ruff_cache
+.pytest_cache
+.mypy_cache
+
+# Local data — must never be baked into the image
+backend/*.db
+backend/*.db-shm
+backend/*.db-wal
+backend/uploads/
+usda_data/
+
+# Secrets & env
+**/.env
+**/.env.*
+
+# VCS, CI, editor, docs/plans
+.git
+.github
+.vscode
+.idea
+.claude
+*.log
+*.md
