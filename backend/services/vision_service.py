@@ -121,9 +121,10 @@ _OLLAMA_FORMAT = {
                             "type": "object",
                             "properties": {
                                 "item": {"type": "string"},
+                                "usda_name": {"type": "string"},
                                 "grams": {"type": "number"},
                             },
-                            "required": ["item", "grams"],
+                            "required": ["item", "usda_name", "grams"],
                         },
                     },
                 },
@@ -167,13 +168,14 @@ Assumptions:
 
 Output a single, compact JSON object matching this schema exactly. Do not include markdown code blocks, prose, or explanations:
 
-{"meal_name":"Name","type":"breakfast|lunch|dinner|snack","confidence":"high|medium|low","dishes":[{"name":"dish name","total_grams":0,"components":[{"item":"ingredient/component","grams":0}]}]}
+{"meal_name":"Name","type":"breakfast|lunch|dinner|snack","confidence":"high|medium|low","dishes":[{"name":"dish name","total_grams":0,"components":[{"item":"ingredient/component","usda_name":"generic name","grams":0}]}]}
 
 Guidelines:
 1. One entry per distinct food item (never merge separate items).
 2. "components" should break down the dish into its 2-4 primary macro-ingredients (e.g., for "Chicken Rice": chicken and rice). Avoid listing minor spices or oils unless they contribute significantly to the weight.
 3. Only list components you can actually see in the photo. Do not guess ingredients that are not visible.
-4. Ensure the sum of component grams logically matches the total_grams."""
+4. For each component also give "usda_name": a simple, generic, singular English food name a nutrition database (USDA) would list — no brand or regional terms, no fancy adjectives; include a basic cooked/raw state when it matters. Examples: jeera rice -> cooked white rice; bhindi -> okra; dahi -> plain yogurt; paneer -> paneer cheese. If "item" is already a generic English name, repeat it.
+5. Ensure the sum of component grams logically matches the total_grams."""
 
 
 def _is_quota_error(err: str) -> bool:
@@ -193,10 +195,12 @@ def _is_number(v) -> bool:
 
 
 def _parse_items(arr) -> list[dict]:
-    """Keep well-formed {item, grams} components from the model's ingredient list,
-    remapped to our internal {food, grams} shape. Tolerant of junk: non-dict entries,
-    missing/blank names, or bad weights are dropped; a non-numeric weight defaults to 0
-    (contributes nothing downstream)."""
+    """Keep well-formed {item, usda_name, grams} components from the model's ingredient
+    list, remapped to our internal {food, grams, usda_name} shape. `food` is the visible
+    label (for display + status); `usda_name` is the generic query Stage 2 searches USDA
+    with, defaulting to `food` when the model omits or blanks it (so behavior matches the
+    pre-usda_name pipeline). Tolerant of junk: non-dict entries, missing/blank names, or
+    bad weights are dropped; a non-numeric weight defaults to 0 (contributes nothing)."""
     out = []
     if not isinstance(arr, list):
         return out
@@ -206,8 +210,11 @@ def _parse_items(arr) -> list[dict]:
         food = (entry.get("item") or "").strip()
         if not food:
             continue
+        usda_name = (entry.get("usda_name") or "").strip() or food
         grams = entry.get("grams")
-        out.append({"food": food, "grams": grams if _is_number(grams) else 0})
+        out.append(
+            {"food": food, "grams": grams if _is_number(grams) else 0, "usda_name": usda_name}
+        )
     return out
 
 

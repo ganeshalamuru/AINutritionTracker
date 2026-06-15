@@ -508,13 +508,24 @@ def clear_cache():
         logger.warning("could not clear food_cache: %s", e)
 
 
+def _ingredient_query(it: dict) -> str:
+    """The USDA search/cache key for a decomposed ingredient: the Stage-1 generic
+    `usda_name` (a model-suggested USDA-friendly name) when present, else the visible
+    `food` label. Display, status, and the unmatched/skipped reports all stay keyed on
+    `food`; only the actual lookup + cache use this query."""
+    return (it.get("usda_name") or "").strip() or (it.get("food") or "").strip()
+
+
 def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, list]:
     """Decomposition path: look each base ingredient up in USDA, scale by grams, sum.
 
-    Cached lookups are free; only `budget` distinct *uncached* ingredients are looked up
-    (largest portions first), the rest go to `skipped`. Returns
-    (totals, unmatched, skipped, lines) where lines is one {food, grams, source:"ingredient"}
-    entry per valid ingredient (for the UI breakdown). Raises UsdaRateLimitError on throttle.
+    Each ingredient is searched by its `usda_name` query (see _ingredient_query); the
+    budget/cache dedupe on that query so two dishes sharing a generic name cost one
+    lookup. Cached lookups are free; only `budget` distinct *uncached* queries are looked
+    up (largest portions first), the rest go to `skipped`. Returns
+    (totals, unmatched, skipped, lines) where unmatched/skipped are visible `food` labels
+    and lines is one {food, grams, source:"ingredient"} entry per valid ingredient (for
+    the UI breakdown). Raises UsdaRateLimitError on throttle.
     """
     totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
     lines: list = []
@@ -528,36 +539,44 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
     if not valid:
         return totals, unmatched, [], lines
 
-    # Total grams per distinct food name — used to prioritize the lookup budget.
-    grams_by_name: dict[str, float] = {}
+    # Total grams per distinct query — used to prioritize the lookup budget.
+    grams_by_query: dict[str, float] = {}
     for it in valid:
-        name = it["food"].strip()
-        grams_by_name[name] = grams_by_name.get(name, 0.0) + it["grams"]
+        grams_by_query[_ingredient_query(it)] = (
+            grams_by_query.get(_ingredient_query(it), 0.0) + it["grams"]
+        )
 
-    cached = {n for n in grams_by_name if _cache_get(_ckey(_normalize(n))) is not None}
+    cached = {q for q in grams_by_query if _cache_get(_ckey(_normalize(q))) is not None}
     uncached = sorted(
-        (n for n in grams_by_name if n not in cached), key=lambda n: grams_by_name[n], reverse=True
+        (q for q in grams_by_query if q not in cached),
+        key=lambda q: grams_by_query[q],
+        reverse=True,
     )
     budget = max(budget, 0)
     to_lookup = list(cached) + uncached[:budget]
-    skipped = uncached[budget:]
-    if skipped:
+    skipped_queries = set(uncached[budget:])
+    if skipped_queries:
         logger.info(
-            "lookup cap reached -> skipping %d smaller ingredient(s): %s", len(skipped), skipped
+            "lookup cap reached -> skipping %d smaller ingredient(s): %s",
+            len(skipped_queries),
+            sorted(skipped_queries),
         )
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
-    results = list(_client.pool.map(lambda name: (name, lookup_nutrients(name)), to_lookup))
-    profiles = dict(results)  # name -> per_100g | None
+    results = list(_client.pool.map(lambda q: (q, lookup_nutrients(q)), to_lookup))
+    profiles = dict(results)  # query -> per_100g | None
 
-    skipped_set = set(skipped)
+    skipped: list = []
     for it in valid:
         food = it["food"].strip()
+        query = _ingredient_query(it)
         lines.append({"food": food, "grams": it["grams"], "source": "ingredient"})
-        if food in skipped_set:
+        if query in skipped_queries:
+            if food not in skipped:
+                skipped.append(food)
             continue
-        per_100g = profiles.get(food)
+        per_100g = profiles.get(query)
         if per_100g is None:
             if food not in unmatched:
                 unmatched.append(food)
@@ -710,7 +729,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                 status = "unmatched"
             else:
                 status = "matched"
-                per_100g = _cache_get(_ckey(_normalize(food)))
+                per_100g = _cache_get(_ckey(_normalize(_ingredient_query(it))))
                 if per_100g and not per_100g.get("__miss__"):
                     factor = (it.get("grams") or 0) / 100.0
                     for key in dish_totals:

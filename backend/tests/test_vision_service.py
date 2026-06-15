@@ -31,9 +31,16 @@ class ParseCompactTest(unittest.TestCase):
                 {
                     "name": "idli",
                     "grams": 160,
-                    "items": [{"food": "rice", "grams": 90}, {"food": "urad dal", "grams": 30}],
+                    "items": [
+                        {"food": "rice", "grams": 90, "usda_name": "rice"},
+                        {"food": "urad dal", "grams": 30, "usda_name": "urad dal"},
+                    ],
                 },
-                {"name": "sambar", "grams": 150, "items": [{"food": "toor dal", "grams": 30}]},
+                {
+                    "name": "sambar",
+                    "grams": 150,
+                    "items": [{"food": "toor dal", "grams": 30, "usda_name": "toor dal"}],
+                },
             ],
         )
 
@@ -47,7 +54,11 @@ class ParseCompactTest(unittest.TestCase):
         self.assertEqual(
             out["dishes"],
             [
-                {"name": "toast", "grams": 40, "items": [{"food": "bread", "grams": 40}]},
+                {
+                    "name": "toast",
+                    "grams": 40,
+                    "items": [{"food": "bread", "grams": 40, "usda_name": "bread"}],
+                },
             ],
         )
 
@@ -64,8 +75,29 @@ class ParseCompactTest(unittest.TestCase):
                 {
                     "name": "rice bowl",
                     "grams": 100,
-                    "items": [{"food": "rice", "grams": 100}, {"food": "oil", "grams": 0}],
+                    "items": [
+                        {"food": "rice", "grams": 100, "usda_name": "rice"},
+                        {"food": "oil", "grams": 0, "usda_name": "oil"},
+                    ],
                 },
+            ],
+        )
+
+    def test_usda_name_captured_and_defaults_to_item(self):
+        raw = (
+            '{"meal_name":"x","type":"lunch","confidence":"high","dishes":[{"name":"thali",'
+            '"total_grams":200,"components":['
+            '{"item":"jeera rice","usda_name":"cooked white rice","grams":120},'  # generic name kept
+            '{"item":"bhindi","usda_name":"  ","grams":50},'  # blank usda_name -> falls back to item
+            '{"item":"dahi","grams":30}]}]}'  # missing usda_name -> falls back to item
+        )
+        out = gs._parse_compact(raw)
+        self.assertEqual(
+            out["dishes"][0]["items"],
+            [
+                {"food": "jeera rice", "grams": 120, "usda_name": "cooked white rice"},
+                {"food": "bhindi", "grams": 50, "usda_name": "bhindi"},
+                {"food": "dahi", "grams": 30, "usda_name": "dahi"},
             ],
         )
 
@@ -139,7 +171,13 @@ class OllamaAnalyzeTest(unittest.TestCase):
         self.assertEqual(raw, content)
         self.assertEqual(
             result["dishes"],
-            [{"name": "dosa", "grams": 120, "items": [{"food": "rice", "grams": 80}]}],
+            [
+                {
+                    "name": "dosa",
+                    "grams": 120,
+                    "items": [{"food": "rice", "grams": 80, "usda_name": "rice"}],
+                }
+            ],
         )
         # Sent to the chat endpoint with the model, JSON format, and a base64 image.
         url = post.call_args.args[0]

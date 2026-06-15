@@ -325,6 +325,37 @@ class NutritionDbTest(unittest.TestCase):
             ],
         )
 
+    def test_sum_ingredients_searches_by_usda_name_reports_by_food(self):
+        # Stage 1 supplies a generic `usda_name`; Stage 2 must search THAT (not the visible
+        # regional label), while unmatched + breakdown lines stay keyed on the visible `food`.
+        queries = []
+
+        def post(url, params=None, json=None, timeout=None):
+            q = json["query"]
+            queries.append(q)
+            if "mystery" in q:
+                return FakeResp(200, {"foods": []})
+            return FakeResp(200, {"foods": [food("SR Legacy", q, 1, {1008: 100})]})
+
+        items = [
+            {"food": "jeera rice", "usda_name": "generic rice", "grams": 200},
+            {"food": "bhindi", "usda_name": "generic okra", "grams": 100},
+            {"food": "mystery item", "grams": 30},  # no usda_name -> query falls back to food
+        ]
+        with patch.object(nd._client.session, "post", side_effect=post):
+            totals, unmatched, skipped, lines = nd._sum_ingredients(items, 8)
+
+        # Searched by the generic usda_name, never the visible regional label.
+        self.assertIn("generic rice", queries)
+        self.assertIn("generic okra", queries)
+        self.assertNotIn("jeera rice", queries)
+        self.assertNotIn("bhindi", queries)
+        self.assertAlmostEqual(totals["calories"], 300.0)  # (200+100)/100 * 100
+        # Reports + breakdown lines stay keyed on the visible food label.
+        self.assertEqual(unmatched, ["mystery item"])
+        self.assertEqual(skipped, [])
+        self.assertEqual([ln["food"] for ln in lines], ["jeera rice", "bhindi", "mystery item"])
+
     # --- dish-first behaviour ---
 
     def test_dish_first_uses_dish_nutrients_not_ingredient_sum(self):

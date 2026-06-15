@@ -135,16 +135,23 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   ```json
   {"meal_name":"Name","type":"breakfast|lunch|dinner|snack","confidence":"high|medium|low",
    "dishes":[{"name":"dish name","total_grams":0,
-              "components":[{"item":"ingredient/component","grams":0}]}]}
+              "components":[{"item":"ingredient/component","usda_name":"generic name","grams":0}]}]}
   ```
 
   `components` is the 2–4 primary macro-ingredient fallback (used only when Stage 2 finds no
   dish-level match); the prompt instructs the model to list **only components it can actually see**
   and not guess ingredients that aren't visible (it otherwise hallucinates expected toppings — e.g.
-  a phantom sausage on a chicken pizza). `vision_service._parse_compact` remaps this to the internal shape
-  (`meal_type`/`dishes:[{name, grams, items:[{food, grams}]}]`) and coerces `type`/`confidence`
-  to the known vocabularies before the strict `AnalyzeResponse`. For local Ollama the same schema
-  is passed as `format` so a small model can't drop the wrapper.
+  a phantom sausage on a chicken pizza). Each component also carries a **`usda_name`** — a generic,
+  common English name a nutrition DB would list (`jeera rice` → `cooked white rice`, `bhindi` →
+  `okra`). This pushes the open-vocabulary normalization to the stage that already understands food
+  language (the vision LLM); Stage 2 searches `usda_name` while the visible `item` is kept for
+  display/status. It's a *suggestion*, not a bypass — the query still flows through the curated
+  alias rewrite + head-noun gate (so a bad `usda_name` is no worse than today, and curated aliases
+  stay authoritative). `vision_service._parse_compact` remaps this to the internal shape
+  (`meal_type`/`dishes:[{name, grams, items:[{food, grams, usda_name}]}]`), defaulting `usda_name`
+  to `food` when the model omits it, and coerces `type`/`confidence` to the known vocabularies
+  before the strict `AnalyzeResponse`. For local Ollama the same schema is passed as `format` so a
+  small model can't drop the wrapper.
 - **Stage 2 — nutrient lookup** (`usda_service`) is **dish-first**: it looks the whole dish up in
   USDA's **FNDDS** database (which carries composite dishes, including Indian ones like
   idli/dosa/sambar) and only **decomposes into base ingredients when no dish-level match exists**.
@@ -340,6 +347,10 @@ midnight land on the right day regardless of timezone.
   instead of plain boiled ~105). Curate the alias value so the distinctive food word lands **last**
   (the `_food_noun` gate). An unverified dish is harmless — it just falls back to decomposition;
   drop `DISH_ALIASES` entries that don't match FNDDS so they skip the wasted speculative call.
+  **Curation is data-driven:** every name that still misses is negative-cached, so
+  `python list_misses.py` prints the real worklist — add the worthwhile names to
+  `FOOD_ALIASES`/`DISH_ALIASES`, validate with `check_aliases.py`, then bump `CACHE_VERSION`
+  (`core/config.py`) so the cached misses are purged and re-resolved.
 - **`core` depends on nothing above it.** If `core` needs something from `services`, move the
   shared piece down into `core`. (The lifespan's startup call into `vision_service.reload_clients`
   is a deliberate exception via a local import.)
@@ -464,6 +475,9 @@ dish-lookup gate, transient-timeout retries, and rate-limit propagation.
   USDA API through the production matching path (read-only, bypasses cache), printing each chosen
   match or `UNMATCHED`. Run from `backend/`: `python check_aliases.py <usda_key>` (or `USDA_API_KEY`
   env / `backend/.env`). Use it after editing aliases.
+- `backend/list_misses.py` — prints the names USDA matching couldn't resolve (the negative-cached
+  misses in `food_cache`, deduped + split offline/online), as the alias-curation worklist. Run
+  from `backend/`: `python list_misses.py`. Read-only.
 - `check_gemini_limits.py` (project root) — lists available Gemini models with token limits and
   tests an API key. Run: `python check_gemini_limits.py <api_key>`.
 
@@ -475,6 +489,15 @@ dish-lookup gate, transient-timeout retries, and rate-limit propagation.
   the dominant error; this is deliberately out of scope for now).
 - Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design);
   Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
+- Vector-embedding **semantic fallback** for names that still miss after the Stage-1 `usda_name`
+  normalization + aliases. Deferred deliberately: prompt-side normalization already captures most
+  of the win (the vision LLM *is* a semantic model), and a naive nearest-neighbor fights the
+  "rather report unmatched than a confident wrong number" rule (it ranks *sprouted stir-fried*
+  ~50 cal and *plain boiled* ~105 cal mung beans as near-identical). If built, it should be a
+  **threshold-gated lookup on a miss only** (a local CPU embedding model to stay no-network, USDA
+  corpus embedded in `build_usda_db.py`, vectors via `sqlite-vec` or a flat numpy/FAISS file),
+  justified by measurement — chiefly the weaker local Ollama 4B, which normalizes regional names
+  worse than Groq/Llama-4-Scout.
 - Manual edit of logged nutrition values.
 - Keep-image toggle in the LogMeal UI (backend already supports `keep_image: true` on `/meals/log`).
 - Data export (CSV / PDF); dark mode; direct camera-open on mobile.
