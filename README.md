@@ -601,9 +601,15 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
 
 - Swapping the USDA match behind a *matched* whole dish (per-ingredient gram editing + remove and
   custom ingredient search/add are **built** — see the LogMeal review above; only matched dishes
-  still scale solely as a whole). Keyboard-nav autocomplete for the add-ingredient search and an
-  online (FDC-API) backend for `/api/foods/search` (today it's offline-index only, so the search box
-  needs `usda_local.db` built / mounted) are deferred.
+  still scale solely as a whole). Keyboard-nav autocomplete for the add-ingredient search is also
+  deferred (today it's a debounced type-to-list).
+- **Online (FDC-API) backend for `/api/foods/search`.** The add-ingredient search currently runs
+  *only* over the offline index (`usda_local.db`), which is gitignored and **not in the Docker
+  image** — so the search box returns 503 in the deployed container (prod defaults to the online
+  USDA API) until the index is built/mounted. Wiring `/api/foods/*` to follow the configured
+  `nutrition_source` (offline index **or** online FDC API, the same seam Stage 2 already uses via
+  `usda_service._search_usda`) would make custom-add work in both local and deployed runs. Deferred:
+  the feature is fully usable in local dev today, and the offline/online seam already exists to reuse.
 - Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design);
   Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
 - Vector-embedding **semantic fallback** for names that still miss after the Stage-1 `usda_name`
