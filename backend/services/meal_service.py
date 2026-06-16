@@ -36,6 +36,20 @@ from services.vision_service import analyze_meal_image
 # --- analyze (Stage 1 perception + Stage 2 nutrient lookup) ---
 
 
+def _write_temp(path: str, data: bytes) -> None:
+    """Blocking write of the uploaded image to a temp path. Run off-thread by callers on
+    the async path so the event loop isn't blocked on disk I/O."""
+    with open(path, "wb") as f:
+        f.write(data)
+
+
+def _remove_temp(path: str) -> None:
+    """Best-effort temp-file removal: skip if it's already gone so cleanup never masks the
+    error that triggered it (or, on the success path, a benign double-delete)."""
+    if os.path.exists(path):
+        os.remove(path)
+
+
 def _map_vision_error(e: Exception) -> HTTPException:
     """Translate a vision-provider failure into an HTTP error. The vision service has
     already logged the error (timestamped); here we only choose the status + message."""
@@ -67,8 +81,8 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
 
     token = str(uuid.uuid4())
     temp_path = os.path.join(UPLOADS_DIR, f"{token}.jpg")
-    with open(temp_path, "wb") as f:
-        f.write(image_bytes)
+    # Offload the blocking disk write off the event loop, like the Stage-1/2 calls below.
+    await asyncio.to_thread(_write_temp, temp_path, image_bytes)
 
     # Stage 1: vision model identifies each dish + its base-ingredient fallback (no nutrients).
     try:
@@ -76,7 +90,8 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
             analyze_meal_image, image_bytes, user_note or "", model, provider
         )
     except Exception as e:
-        os.remove(temp_path)
+        # Guard cleanup so a missing temp file can't mask the original vision error.
+        _remove_temp(temp_path)
         raise _map_vision_error(e) from e
 
     # Stage 2: turn the dish list into real nutrient numbers via the USDA food database
@@ -147,9 +162,7 @@ def _create_meal_record(db: Session, data: MealLogRequest, group_id: str | None 
 
 def _cleanup_temp(data: MealLogRequest):
     if data.temp_image_token and not data.keep_image:
-        temp_path = os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg")
-        if os.path.exists(temp_path):
-            os.remove(temp_path)
+        _remove_temp(os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg"))
 
 
 def log_meal(db: Session, data: MealLogRequest) -> MealLogResponse:

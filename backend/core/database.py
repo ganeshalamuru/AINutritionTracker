@@ -1,7 +1,14 @@
+import os
+
 from sqlalchemy import MetaData, create_engine, event
 from sqlalchemy.orm import DeclarativeBase, sessionmaker
 
-DATABASE_URL = "sqlite:///./nutrition.db"
+# Anchor the SQLite file to backend/ rather than the process CWD, matching how core.config
+# resolves BACKEND_DIR. Computed locally (not imported from core.config) to avoid an import
+# cycle: config -> models -> core.database. Forward slashes keep the URI valid on Windows too.
+_BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_DB_PATH = os.path.join(_BACKEND_DIR, "nutrition.db").replace(os.sep, "/")
+DATABASE_URL = f"sqlite:///{_DB_PATH}"
 
 # File-based SQLite already gets SQLAlchemy's QueuePool by default, so basic connection
 # pooling is in place. The production-meaningful tuning for SQLite isn't pool size but
