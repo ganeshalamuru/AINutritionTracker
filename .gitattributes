@@ -1,0 +1,38 @@
+# Normalize line endings. Repo stores text as LF; checkout uses LF on every
+# platform so Windows/Linux dev and the Linux container stay byte-consistent.
+* text=auto eol=lf
+
+# Scripts that must keep their platform's native endings
+*.ps1   text eol=crlf
+*.bat   text eol=crlf
+*.cmd   text eol=crlf
+*.sh    text eol=lf
+
+# Explicit text types (helps diffs and avoids autodetection surprises)
+*.py    text
+*.js    text
+*.jsx   text
+*.ts    text
+*.tsx   text
+*.json  text
+*.css   text
+*.html  text
+*.md    text
+*.yml   text
+*.yaml  text
+*.toml  text
+*.lock  text
+*.svg   text
+
+# Binary assets — never normalize or diff as text
+*.png   binary
+*.jpg   binary
+*.jpeg  binary
+*.gif   binary
+*.ico   binary
+*.webp  binary
+*.woff  binary
+*.woff2 binary
+*.db    binary
+*.sqlite binary
+*.sqlite3 binary
