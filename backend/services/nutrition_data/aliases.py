@@ -265,12 +265,14 @@ DISH_ALIASES = {
     "biryani": "biryani",
     "chicken biryani": "chicken biryani",
     "vegetable biryani": "vegetable biryani",
-    # Pulao: "rice pilaf" resolved to a DRY unprepared mix (~359 cal); "fried rice" lands
-    # the cooked meatless fried-rice entry (~174 cal/100g), a good proxy for pulao.
-    "pulao": "fried rice",
-    "pulav": "fried rice",
-    "vegetable pulao": "fried rice",
-    "veg pulao": "fried rice",
+    # Pulao: "rice pilaf" resolved to a DRY unprepared mix (~359 cal); plain "fried rice" was
+    # worse — the head-noun gate (noun=rice) let "Rice bowl with chicken, frozen entree" pass and
+    # it outranked the meatless row on data type, so a veg dish landed a chicken entree. Pin the
+    # discriminator last ("...meatless") so the gate keeps only "Rice, fried, meatless" (FNDDS).
+    "pulao": "rice fried meatless",
+    "pulav": "rice fried meatless",
+    "vegetable pulao": "rice fried meatless",
+    "veg pulao": "rice fried meatless",
     "dal": "dal",
     "daal": "dal",
     "palak paneer": "palak paneer",
