@@ -504,17 +504,28 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
   const factor = locked ? 1 : (grams || 0) / base;
   return (
     <div className={removed ? "opacity-60" : ""}>
-      {/* Dish header — highlighted green when the whole dish matched in USDA */}
-      <div className="flex items-center gap-1.5 flex-wrap">
-        <span
-          className={`text-xs px-2 py-1 rounded-full font-medium ${
-            removed
-              ? "bg-gray-100 text-gray-400 line-through"
-              : dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
-          }`}
-        >
-          {dish.name}
-        </span>
+      {/* Dish header — a 3-column grid (name | grams | action) so the gram inputs
+          and Remove/Undo controls line up in columns across every dish row. The
+          name column flexes (1fr) and truncates; the other two stay fixed-width. */}
+      <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2">
+        {/* Column 1 — dish name pill + match-status label (absorbs variable width) */}
+        <div className="flex items-center gap-1.5 min-w-0">
+          <span
+            className={`text-xs px-2 py-1 rounded-full font-medium truncate ${
+              removed
+                ? "bg-gray-100 text-gray-400 line-through"
+                : dish.matched ? "bg-green-100 text-green-800" : "bg-white text-gray-700 border border-gray-200"
+            }`}
+          >
+            {dish.name}
+          </span>
+          {!removed && (dish.matched ? (
+            <span className="text-[10px] text-green-700 font-medium shrink-0">matched</span>
+          ) : (
+            <span className="text-[10px] text-gray-400 shrink-0">from ingredients</span>
+          ))}
+        </div>
+        {/* Column 2 — editable portion (g) */}
         <span className="flex items-center gap-0.5">
           <input
             type="number"
@@ -527,14 +538,9 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
           />
           <span className="text-[11px] text-gray-400">g</span>
         </span>
-        {!removed && (dish.matched ? (
-          <span className="text-[10px] text-green-700 font-medium">matched</span>
-        ) : (
-          <span className="text-[10px] text-gray-400">from ingredients</span>
-        ))}
-        {/* Remove / Undo toggle, pushed to the right */}
+        {/* Column 3 — Remove / Undo toggle */}
         {removed ? (
-          <span className="ml-auto flex items-center gap-1.5">
+          <span className="flex items-center gap-1.5 justify-self-end">
             <span className="text-[10px] text-gray-400">removed</span>
             <button
               onClick={() => onToggleRemove(false)}
@@ -546,7 +552,7 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
         ) : (
           <button
             onClick={() => onToggleRemove(true)}
-            className="ml-auto text-[11px] text-red-400 hover:text-red-500"
+            className="text-[11px] text-red-400 hover:text-red-500 justify-self-end"
             title="Remove this dish from the meal"
           >
             Remove

@@ -261,7 +261,9 @@ utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emp
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call) → optional AI hint → Analyze →
 review → log. In review, each identified dish can be **re-portioned** (edit grams) or **removed**
 (reversible, with Undo); both rescale the meal totals client-side via `scaledTotals` (dish subtotals
-come from the immutable analysis, so no re-lookup). Logging sends the live macros/micros — not the
+come from the immutable analysis, so no re-lookup). The breakdown rows lay each dish out as a
+3-column grid (name | grams | Remove/Undo) so the gram inputs and actions align in columns
+regardless of dish-name length. Logging sends the live macros/micros — not the
 dish breakdown — so edits/removals persist with no backend change. All destructive actions on *saved*
 data use the shared `ConfirmModal` — never a browser `confirm()`.
 
