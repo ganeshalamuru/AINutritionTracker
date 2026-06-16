@@ -13,8 +13,12 @@ env/
 
 # Environment & secrets
 .env
-.env.example
 backend/.env
+# (.env.example is intentionally committed as a template — do NOT ignore it.)
+
+# Claude Code local config (machine-specific paths; keep out of the public repo)
+.claude/settings.json
+.claude/settings.local.json
 
 # Database (incl. WAL/SHM sidecar files from WAL journal mode)
 backend/nutrition.db
