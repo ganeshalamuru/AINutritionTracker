@@ -107,25 +107,27 @@ async def request_context_middleware(request: Request, call_next):
     req_token = request_id_var.set(req_id)
     prof_token = profile_id_var.set(profile_id)
     start = time.perf_counter()
+    response = None
     try:
         response = await call_next(request)
         response.headers["X-Request-ID"] = req_id
-        # Single, correlated access line (uvicorn's own access log is disabled in
-        # core.logging_config). Include the query string + client IP so nothing uvicorn
-        # logged is lost. Query strings here carry no secrets (profile_id/dates/paging only;
-        # keys travel in the body/headers). In dev the client IP is the Vite proxy.
+        return response
+    finally:
+        # Emit one correlated access line in `finally` so requests that raise are logged too
+        # (a raise becomes a 500 via the exception handler). uvicorn's own access log is
+        # disabled in core.logging_config. Include the query string + client IP so nothing
+        # uvicorn logged is lost. Query strings here carry no secrets (profile_id/dates/paging
+        # only; keys travel in the body/headers). In dev the client IP is the Vite proxy.
         path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         client_host = request.client.host if request.client else "-"
         logger.info(
             "%s %s -> %d (%.0f ms) from %s",
             request.method,
             path,
-            response.status_code,
+            response.status_code if response is not None else 500,
             (time.perf_counter() - start) * 1000,
             client_host,
         )
-        return response
-    finally:
         request_id_var.reset(req_token)
         profile_id_var.reset(prof_token)
 
@@ -201,6 +203,10 @@ if os.path.exists(DIST_DIR):
 
 @app.get("/{full_path:path}", include_in_schema=False)
 async def serve_react(full_path: str):
+    # Unknown /api paths must not fall through to the SPA shell (which would return 200 HTML
+    # to an API client); return a JSON 404 instead. Real API routes are registered above.
+    if full_path == "api" or full_path.startswith("api/"):
+        return JSONResponse(status_code=404, content={"detail": "Not found"})
     index = os.path.join(DIST_DIR, "index.html")
     if os.path.exists(index):
         return FileResponse(index)

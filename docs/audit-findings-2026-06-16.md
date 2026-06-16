@@ -5,9 +5,9 @@ mis-resolutions). This is a transient worklist, not architecture docs — the RE
 single source of truth. Delete entries as they're fixed; delete the file when empty.
 
 **Verification status:** Area 2 alias items were validated against the offline `usda_local.db`
-through the real matching pipeline (`_aliased` → `_search_usda` → `_pick_best`). Area 1 items are
-audit observations that are **not yet runtime-verified** — confirm each against the running app /
-a test before fixing.
+through the real matching pipeline (`_aliased` → `_search_usda` → `_pick_best`). All Area 1
+(FastAPI/backend) items have been fixed and verified (75 tests pass incl. a new routing test,
+ruff clean, DB-path smoke check); only the Area 2 low-priority notes remain.
 
 ## Resolved this session (for context)
 - ~~`pulao`/`vegetable pulao` → "fried rice" landed "Rice bowl with chicken, frozen entree"
@@ -16,22 +16,11 @@ a test before fixing.
 - ~~P0 "`except ValueError, TypeError:` crashes startup" — **false positive.** Valid Python 3.14
   syntax (PEP 758, bracketless except); compiles and catches both. See memory
   `reference-py314-bracketless-except`.~~
-
-## Area 1 — FastAPI / backend (NOT yet runtime-verified)
-
-- **P1** `services/meal_service.py:70-80` — temp-image `open()/write()` runs synchronously on the
-  async `analyze_image` coroutine (Stage-1/2 calls are correctly off-thread; this write isn't).
-  Direction: offload the write, or write inside the worker thread.
-- **P1** `services/meal_service.py:79` — unguarded `os.remove(temp_path)` on the failure path could
-  raise `FileNotFoundError` and mask the original vision error. Direction: guard cleanup like
-  `_cleanup_temp` already does.
-- **P1** `main.py:202` catch-all `serve_react` — unknown `/api/...` paths fall through to the SPA
-  shell (200 HTML) instead of a JSON 404. Direction: scope the catch-all to non-`/api` paths.
-- **P2** `core/database.py:4` — `DATABASE_URL = "sqlite:///./nutrition.db"` is CWD-relative while
-  everything else anchors to `BACKEND_DIR`; fragile, and relevant to the Linux-container deploy
-  pivot. Direction: anchor the SQLite path to `BACKEND_DIR`.
-- **P2** `main.py` access-log middleware — failed requests skip the access-log line (only the
-  exception handler logs). Direction: emit the access line in a `finally`.
+- ~~**Area 1 — FastAPI / backend (5 items).**~~ **All fixed:** (1) temp-image write offloaded via
+  `asyncio.to_thread` + (2) failure-path cleanup guarded by a shared `_remove_temp` helper
+  (`meal_service.py`); (3) unknown `/api/...` paths now return a JSON 404 instead of the SPA shell +
+  (5) the access-log line moved into `finally` so failed requests are logged (`main.py`);
+  (4) `DATABASE_URL` anchored to `BACKEND_DIR` instead of CWD (`core/database.py`).
 
 ## Area 2 — USDA aliases (validated offline; mostly fine)
 
