@@ -1,9 +1,15 @@
 # NutriAI
 
-A fully local, AI-powered nutrition tracker for desktop and mobile browsers on the same WiFi.
-Photograph a meal → get an accurate macro/micro breakdown → track nutrition over time. Perception
-is done by a **vision LLM**; the **nutrient numbers come from USDA FoodData Central** (the LLM
-hallucinated nutrients when asked to do both — see [Two-stage pipeline](#two-stage-pipeline)).
+An AI-powered nutrition tracker for desktop and mobile browsers. Photograph a meal → get an
+accurate macro/micro breakdown → track nutrition over time. Perception is done by a **vision LLM**;
+the **nutrient numbers come from USDA FoodData Central** (the LLM hallucinated nutrients when asked
+to do both — see [Two-stage pipeline](#two-stage-pipeline)).
+
+> **Deployment pivot (in progress).** NutriAI began as a *fully local* app (run on your machine,
+> reachable from phones on the same WiFi) and is **pivoting toward deployment as a hosted Linux
+> container** — see [Docker & deployment](#docker--deployment). It still runs fully locally for dev;
+> development happens on Windows while the deploy target is a Linux container, so keep changes
+> portable (no hardcoded Windows-only paths/commands or local-only runtime assumptions).
 
 This file is the **single source of truth** for the project — stack, how to run, structure,
 request flows, and conventions. (Session-by-session history lives in `git log`.)
