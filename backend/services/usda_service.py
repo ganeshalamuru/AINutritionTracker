@@ -747,6 +747,10 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
             food = (it.get("food") or "").strip()
             if not food:
                 continue
+            # Per-ingredient subtotal: non-zero only for a resolved ingredient of a
+            # decomposed dish, so the client can rescale/remove it independently. Stays 0
+            # for not_looked_up/unmatched/skipped. Summed, these equal the dish subtotal.
+            ing_sub = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
             if matched:
                 status = "not_looked_up"
             elif food in skipped_set:
@@ -759,8 +763,18 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                 if per_100g and not per_100g.get("__miss__"):
                     factor = (it.get("grams") or 0) / 100.0
                     for key in dish_totals:
-                        dish_totals[key] += per_100g.get(key, 0) * factor
-            ingredients.append({"food": food, "grams": it.get("grams") or 0, "status": status})
+                        val = per_100g.get(key, 0) * factor
+                        dish_totals[key] += val
+                        ing_sub[key] = val
+            ingredients.append(
+                {
+                    "food": food,
+                    "grams": it.get("grams") or 0,
+                    "status": status,
+                    "macros": {k: round(ing_sub[k], 2) for k in MACRO_KEYS},
+                    "micros": {k: round(ing_sub[k], 4) for k in MICRO_KEYS},
+                }
+            )
         breakdown.append(
             {
                 "name": d["name"].strip(),

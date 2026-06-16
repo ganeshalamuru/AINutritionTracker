@@ -183,9 +183,10 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   unchanged. Switch backends in Settings; no restart.
 
 Per-100g nutrients are scaled by `grams/100` and summed into a **7-macro + 17-micro** schema.
-Each dish also carries its own nutrient subtotal (Σ per-dish = meal totals), so the LogMeal review
-step can rescale a dish by an edited portion **client-side** (linear in grams) without re-querying
-USDA.
+Each dish also carries its own nutrient subtotal (Σ per-dish = meal totals), and each **decomposed**
+dish's ingredients carry their *own* subtotals too (Σ per-ingredient = that dish's subtotal), so the
+LogMeal review step can rescale a dish — or an individual ingredient — by an edited portion
+**client-side** (linear in grams) without re-querying USDA.
 
 ---
 
@@ -265,13 +266,26 @@ utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emp
 ```
 
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call) → optional AI hint → Analyze →
-review → log. In review, each identified dish can be **re-portioned** (edit grams) or **removed**
-(reversible, with Undo); both rescale the meal totals client-side via `scaledTotals` (dish subtotals
-come from the immutable analysis, so no re-lookup). The breakdown rows lay each dish out as a
-3-column grid (name | grams | Remove/Undo) so the gram inputs and actions align in columns
-regardless of dish-name length. Logging sends the live macros/micros — not the
-dish breakdown — so edits/removals persist with no backend change. All destructive actions on *saved*
-data use the shared `ConfirmModal` — never a browser `confirm()`.
+review → log. On analyze it builds an editable **draft** from the immutable analysis and re-sums the
+meal from it client-side (`draftTotals`), so repeated edits scale from the original baseline and
+never compound rounding. Editing granularity follows a deliberate **clean split** by dish type:
+
+- a **matched** dish (counted whole in USDA) is re-portioned as a unit — one editable dish-grams
+  field scales its whole subtotal; its detected ingredients were never looked up, so they stay
+  read-only chips.
+- a **decomposed** dish exposes the *ingredient* as the editable unit — each resolved ingredient has
+  its own grams field and Remove/Undo (using the per-ingredient subtotals from Stage 2); the dish
+  grams is a derived read-only sum. Unmatched/skipped ingredients show but are gram-locked (no
+  nutrients to scale).
+
+Either kind can also gain **custom ingredients**: a "+ Add ingredient" control searches the offline
+USDA index (`GET /api/foods/search`, debounced type-to-list — richer keyboard-nav autocomplete is
+future scope), and the chosen food's per-100g profile (`GET /api/foods/{fdc_id}`) is scaled by the
+entered grams and added into that dish. Whole dishes are still **removable** (reversible, with Undo).
+The rows lay out as a 3-column grid (name | grams | Remove/Undo) so inputs and actions align in
+columns. Logging sends the live macros/micros — not the breakdown — so every edit, removal, and add
+persists with **no backend change to the log path**. All destructive actions on *saved* data use the
+shared `ConfirmModal` — never a browser `confirm()`.
 
 The TopBar avatar opens **`ProfileMenu`** — a dropdown to switch profiles (PIN-verified inline via
 `PinPad` + `POST /profiles/verify`) or log out, rather than logging out on click.
@@ -585,8 +599,11 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
 
 ## What's not built yet
 
-- Per-*ingredient* gram editing and swapping a matched food (dish-portion editing already covers
-  the dominant error; this is deliberately out of scope for now).
+- Swapping the USDA match behind a *matched* whole dish (per-ingredient gram editing + remove and
+  custom ingredient search/add are **built** — see the LogMeal review above; only matched dishes
+  still scale solely as a whole). Keyboard-nav autocomplete for the add-ingredient search and an
+  online (FDC-API) backend for `/api/foods/search` (today it's offline-index only, so the search box
+  needs `usda_local.db` built / mounted) are deferred.
 - Single-item LLM nutrient fallback for `unmatched` foods (currently warn-only by design);
   Open Food Facts barcode path; IFCT 2017 for dish-level Indian accuracy.
 - Vector-embedding **semantic fallback** for names that still miss after the Stage-1 `usda_name`

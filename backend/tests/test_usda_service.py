@@ -47,9 +47,18 @@ def food(data_type, desc, fdc_id, nutrients=None, score=0):
 
 
 def structure(dishes):
-    """A breakdown's structural fields only — drops the per-dish macros/micros subtotals
-    (added for client-side portion rescaling) so tests can assert dish/ingredient shape."""
-    return [{k: v for k, v in d.items() if k not in ("macros", "micros")} for d in dishes]
+    """A breakdown's structural fields only — drops the per-dish AND per-ingredient
+    macros/micros subtotals (added for client-side portion rescaling) so tests can assert
+    dish/ingredient shape."""
+    out = []
+    for d in dishes:
+        dd = {k: v for k, v in d.items() if k not in ("macros", "micros")}
+        dd["ingredients"] = [
+            {k: v for k, v in ing.items() if k not in ("macros", "micros")}
+            for ing in dd.get("ingredients", [])
+        ]
+        out.append(dd)
+    return out
 
 
 class NutritionDbTest(unittest.TestCase):
@@ -355,6 +364,74 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(unmatched, ["mystery item"])
         self.assertEqual(skipped, [])
         self.assertEqual([ln["food"] for ln in lines], ["jeera rice", "bhindi", "mystery item"])
+
+    def test_decomposed_dish_ingredients_carry_own_nutrients(self):
+        # A decomposed (un-curated) dish surfaces each resolved ingredient's OWN nutrient
+        # subtotal so the client can rescale/remove one ingredient. Unmatched ingredients
+        # carry zeros, and Σ per-ingredient subtotals == the dish subtotal (an invariant).
+        def post(url, params=None, json=None, timeout=None):
+            if json["dataType"] == nd.DISH_DATA_TYPES:
+                return FakeResp(200, {"foods": []})  # no whole-dish match -> decompose
+            q = json["query"]
+            if "rice" in q:
+                return FakeResp(
+                    200,
+                    {
+                        "foods": [
+                            food("SR Legacy", "Rice, white, cooked", 1, {1008: 100, 1089: 1.0})
+                        ]
+                    },
+                )
+            if "okra" in q:
+                return FakeResp(200, {"foods": [food("SR Legacy", "Okra, cooked", 2, {1008: 50})]})
+            return FakeResp(200, {"foods": []})  # mystery sauce -> unmatched
+
+        dishes = [
+            {
+                "name": "rice and bhindi plate",  # not in DISH_ALIASES -> decomposes
+                "grams": 0,
+                "items": [
+                    {"food": "white rice, cooked", "grams": 200},  # 200 kcal, 2.0 iron
+                    {"food": "bhindi", "usda_name": "okra cooked", "grams": 100},  # 50 kcal
+                    {"food": "mystery sauce", "grams": 30},  # unmatched -> zeros
+                ],
+            }
+        ]
+        with patch.object(nd._client.session, "post", side_effect=post):
+            macros, _micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+
+        self.assertEqual(unmatched, ["mystery sauce"])
+        self.assertEqual(skipped, [])
+        dish = dishes_out[0]
+        self.assertFalse(dish["matched"])
+        ings = {ing["food"]: ing for ing in dish["ingredients"]}
+        self.assertAlmostEqual(ings["white rice, cooked"]["macros"]["calories"], 200.0)
+        self.assertAlmostEqual(ings["white rice, cooked"]["micros"]["iron_mg"], 2.0)
+        self.assertAlmostEqual(ings["bhindi"]["macros"]["calories"], 50.0)
+        self.assertAlmostEqual(ings["mystery sauce"]["macros"]["calories"], 0.0)
+        # Invariant: per-ingredient subtotals sum to the dish subtotal and the meal total.
+        self.assertAlmostEqual(
+            sum(ing["macros"]["calories"] for ing in dish["ingredients"]),
+            dish["macros"]["calories"],
+        )
+        self.assertAlmostEqual(dish["macros"]["calories"], 250.0)
+        self.assertAlmostEqual(macros["calories"], 250.0)
+
+    def test_matched_dish_ingredients_have_zero_subtotals(self):
+        # A whole-dish match counts the dish as one unit; its ingredients aren't looked up,
+        # so each carries a zero subtotal (the client keeps them read-only / dish-scaled).
+        def post(url, params=None, json=None, timeout=None):
+            if json["dataType"] == nd.DISH_DATA_TYPES and "idli" in json["query"]:
+                return FakeResp(200, {"foods": [food("Survey (FNDDS)", "Idli", 1, {1008: 150})]})
+            return FakeResp(200, {"foods": []})
+
+        dishes = [{"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]}]
+        with patch.object(nd._client.session, "post", side_effect=post):
+            _macros, _micros, _unmatched, _skipped, dishes_out = nd.nutrients_for_meal(dishes)
+
+        ing = dishes_out[0]["ingredients"][0]
+        self.assertEqual(ing["status"], "not_looked_up")
+        self.assertAlmostEqual(ing["macros"]["calories"], 0.0)
 
     # --- dish-first behaviour ---
 
