@@ -458,23 +458,26 @@ docker run -p 8000:8000 -e NUTRITION_SOURCE=online -e USDA_API_KEY=<key> nutriai
 
 ### CI/CD (GitHub Actions)
 
-- **`.github/workflows/ci.yml`** — on every push/PR to `main`/`master`: `uv sync` then
-  `ruff check`, `ruff format --check`, and `pytest` (backend), plus an `npm ci && npm run build`
-  frontend job.
-- **`.github/workflows/docker-publish.yml`** — on push to `main`/`master`, tags (`v*`), and
-  releases: builds the Dockerfile and pushes to **GitHub Container Registry**
-  (`ghcr.io/<owner>/ai-nutrition-tracker`) with branch/semver/sha/`latest` tags.
+> **Paused pre-launch.** Both workflows currently trigger on `workflow_dispatch` only (manual
+> run from the Actions tab); their automatic triggers are kept as comments. To re-enable
+> automation, uncomment the `push`/`pull_request`/`tags`/`release` triggers in each file.
 
-### One-click deploy (Koyeb)
+- **`.github/workflows/ci.yml`** — `uv sync` then `ruff check`, `ruff format --check`, and
+  `pytest` (backend), plus an `npm ci && npm run build` frontend job. (Original trigger: every
+  push/PR to `main`/`master`.)
+- **`.github/workflows/docker-publish.yml`** — builds the Dockerfile and pushes to **GitHub
+  Container Registry** (`ghcr.io/<owner>/ai-nutrition-tracker`) with branch/semver/sha/`latest`
+  tags. (Original trigger: push to `main`/`master`, tags `v*`, and releases.)
+
+### Deploying to Koyeb
+
+> **One-click deploy is disabled pre-launch.** Create the Koyeb service manually for now (steps
+> below). To restore the one-click button later, add a link to `app.koyeb.com/deploy` with your
+> repo and the env defaults (`APP_ENV=production`, `NUTRITION_SOURCE=online`).
 
 Koyeb builds straight from the `Dockerfile` (or pulls the published GHCR image), so no extra
-config file is needed.
-
-[![Deploy to Koyeb](https://www.koyeb.com/static/images/deploy/button.svg)](https://app.koyeb.com/deploy?type=git&repository=github.com/<owner>/ai-nutrition-tracker&branch=main&ports=8000;http;/&env[APP_ENV]=production&env[NUTRITION_SOURCE]=online)
-
-Set the service to **port 8000**, health-check path **`/api/health`**, and the env vars above
-(at minimum `USDA_API_KEY` and a vision key, e.g. `GROQ_API_KEY`). Replace `<owner>` in the button
-URL with your GitHub org/user.
+config file is needed. Set the service to **port 8000**, health-check path **`/api/health`**, and
+the env vars above (at minimum `USDA_API_KEY` and a vision key, e.g. `GROQ_API_KEY`).
 
 ---
 
