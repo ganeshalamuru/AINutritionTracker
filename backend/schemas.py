@@ -109,6 +109,12 @@ class IngredientBreakdown(BaseModel):
     # USDA outcome: matched | unmatched | skipped (over the lookup cap) |
     # not_looked_up (its dish matched whole, so the ingredient wasn't searched)
     status: IngredientStatus = IngredientStatus.matched
+    # This ingredient's own nutrient subtotal at its `grams`. Non-zero only for a resolved
+    # ingredient of a *decomposed* dish; 0 for not_looked_up (matched dish), unmatched, and
+    # skipped. Lets the client rescale or remove a single ingredient without re-querying USDA.
+    # Across a decomposed dish, Σ ingredients == the dish subtotal (an invariant).
+    macros: MacrosData = Field(default_factory=MacrosData)
+    micros: MicrosData = Field(default_factory=MicrosData)
 
 
 class DishBreakdown(BaseModel):

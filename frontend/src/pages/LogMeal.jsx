@@ -1,4 +1,4 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useProfile } from "../context/ProfileContext";
 import client from "../api/client";
@@ -13,23 +13,84 @@ import { uid } from "../utils/uid";
 const dishBaseline = (dish) =>
   dish.grams > 0 ? dish.grams : (dish.ingredients || []).reduce((s, i) => s + (i.grams || 0), 0);
 
-// Re-sum the meal from each dish's per-dish nutrient subtotal, scaled by its edited
-// portion (curGrams / baseGrams). The subtotals come from the immutable analysis, so
-// scaling always derives from the original baseline and repeated edits never compound
-// rounding. A dish's contribution is linear in its grams (whole-dish match or decomposed
-// sum alike), so this is identical to re-running the USDA lookup — no network call needed.
-// Dishes the user removed in review contribute nothing.
-function scaledTotals(dishes, dishBase, dishGrams, dishRemoved, field) {
+// Build the editable review draft from a fresh analysis. A draft holds the *editable* shape
+// the review UI mutates (dish portion, per-ingredient grams, removals, custom adds); the
+// immutable analysis stays the baseline we scale from, so repeated edits never compound
+// rounding. Editing granularity is split by dish type (the "clean split"):
+//   - matched dish  → the *dish* is the unit: one editable dish-grams field scales the whole
+//                     dish subtotal. Its detected ingredients were never looked up, so they
+//                     stay read-only chips. Custom-added ingredients are additive on top.
+//   - decomposed dish → the *ingredient* is the unit: each resolved ingredient carries its own
+//                     nutrients and is individually editable/removable; the dish grams is a
+//                     derived (read-only) sum.
+function buildDraft(data) {
+  return (data.dishes || []).map((dish) => {
+    const baseGrams = Math.round(dishBaseline(dish));
+    return {
+      name: dish.name,
+      matched: dish.matched,
+      baseGrams,
+      grams: baseGrams, // editable for matched dishes; derived for decomposed
+      macros: dish.macros || {},
+      micros: dish.micros || {},
+      removed: false,
+      ingredients: (dish.ingredients || []).map((ing) => ({
+        id: uid(),
+        food: ing.food,
+        status: ing.status,
+        baseGrams: ing.grams || 0,
+        grams: ing.grams || 0,
+        macros: ing.macros || {},
+        micros: ing.micros || {},
+        removed: false,
+        custom: false,
+      })),
+    };
+  });
+}
+
+// A detected ingredient of a decomposed dish only carries nutrients when USDA resolved it
+// (status "matched"); unmatched/skipped contribute nothing, so editing their grams is a no-op
+// and the field is locked. Custom adds always carry their own nutrients.
+const ingHasNutrients = (ing) => ing.custom || ing.status === "matched";
+
+// Re-sum the meal from the draft. A matched dish contributes its whole subtotal scaled by the
+// edited dish portion (grams/baseGrams). A decomposed dish — and any custom add on either kind —
+// contributes per-ingredient (each ingredient's own subtotal scaled by its own grams/baseGrams).
+// Detected ingredients of a matched dish are already inside the dish subtotal, so they're skipped
+// here. Removed dishes/ingredients contribute nothing. Linear in grams, so identical to re-running
+// the USDA lookup — no network call. Seeded with the full zeroed key set from `seed` (the analysis
+// macros/micros) so every field is always present — totals stay a complete object (all zeros) even
+// when the user removes everything, instead of a sparse object that would render NaN.
+function draftTotals(draft, field, seed) {
   const total = {};
-  dishes.forEach((dish, i) => {
-    if (dishRemoved[i]) return;
-    const base = dishBase[i];
-    const f = base > 0 ? (dishGrams[i] || 0) / base : 1;
-    const vals = dish[field] || {};
+  for (const k in seed || {}) total[k] = 0;
+  const add = (vals, f) => {
     for (const k in vals) total[k] = (total[k] || 0) + vals[k] * f;
+  };
+  (draft || []).forEach((dish) => {
+    if (dish.removed) return;
+    if (dish.matched) {
+      const f = dish.baseGrams > 0 ? (dish.grams || 0) / dish.baseGrams : 1;
+      add(dish[field] || {}, f);
+    }
+    dish.ingredients.forEach((ing) => {
+      if (ing.removed) return;
+      if (dish.matched && !ing.custom) return; // already counted inside the dish subtotal
+      const f = ing.baseGrams > 0 ? (ing.grams || 0) / ing.baseGrams : 1;
+      add(ing[field] || {}, f);
+    });
   });
   return total;
 }
+
+// Immutable draft updaters — map down to the dish/ingredient being changed.
+const mapDish = (draft, dishIndex, fn) =>
+  draft.map((d, i) => (i === dishIndex ? fn(d) : d));
+const mapIngredient = (dish, ingId, fn) => ({
+  ...dish,
+  ingredients: dish.ingredients.map((ing) => (ing.id === ingId ? fn(ing) : ing)),
+});
 
 // Downscale a photo in the browser before upload — cuts input tokens, upload time,
 // and latency. 384px keeps both dimensions ≤384 so vision APIs bill a flat ~258
@@ -92,19 +153,16 @@ export default function LogMeal() {
         // local model isn't cut off mid-analysis; cloud providers still finish well under it.
         timeout: 180000,
       });
-      const dishBase = (data.dishes || []).map((d) => Math.round(dishBaseline(d)));
+      const draft = buildDraft(data);
       setPhotos((prev) => prev.map((p) =>
         p.id === id
           ? {
               ...p, analyzing: false, analysis: data,
               mealName: data.meal_name, mealType: data.meal_type,
-              // Editable portion state: baselines + current grams + per-dish removal +
-              // live (edited) totals.
-              dishBase,
-              dishGrams: [...dishBase],
-              dishRemoved: dishBase.map(() => false),
-              liveMacros: data.macros,
-              liveMicros: data.micros,
+              // Editable review state + live (edited) totals derived from it.
+              draft,
+              liveMacros: draftTotals(draft, "macros", data.macros),
+              liveMicros: draftTotals(draft, "micros", data.micros),
             }
           : p
       ));
@@ -128,35 +186,34 @@ export default function LogMeal() {
   const updatePhoto = (id, updates) =>
     setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, ...updates } : p));
 
-  // Edit a dish's portion grams; scale that dish proportionally and re-sum the meal.
-  const setDishGrams = (id, dishIndex, grams) =>
+  // Apply a draft transform to one photo and re-derive the live meal totals from it.
+  const mutateDraft = (id, fn) =>
     setPhotos((prev) => prev.map((p) => {
-      if (p.id !== id || !p.analysis) return p;
-      const dishGrams = [...p.dishGrams];
-      dishGrams[dishIndex] = grams;
-      const dishes = p.analysis.dishes || [];
+      if (p.id !== id || !p.draft) return p;
+      const draft = fn(p.draft);
       return {
         ...p,
-        dishGrams,
-        liveMacros: scaledTotals(dishes, p.dishBase, dishGrams, p.dishRemoved, "macros"),
-        liveMicros: scaledTotals(dishes, p.dishBase, dishGrams, p.dishRemoved, "micros"),
+        draft,
+        liveMacros: draftTotals(draft, "macros", p.analysis.macros),
+        liveMicros: draftTotals(draft, "micros", p.analysis.micros),
       };
     }));
 
-  // Remove (or restore) a dish from the analysis; re-sum the meal without it.
-  const setDishRemoved = (id, dishIndex, removed) =>
-    setPhotos((prev) => prev.map((p) => {
-      if (p.id !== id || !p.analysis) return p;
-      const dishRemoved = [...p.dishRemoved];
-      dishRemoved[dishIndex] = removed;
-      const dishes = p.analysis.dishes || [];
-      return {
-        ...p,
-        dishRemoved,
-        liveMacros: scaledTotals(dishes, p.dishBase, p.dishGrams, dishRemoved, "macros"),
-        liveMicros: scaledTotals(dishes, p.dishBase, p.dishGrams, dishRemoved, "micros"),
-      };
-    }));
+  // Edit a matched dish's portion grams (scales the whole dish subtotal).
+  const onDishGrams = (id, di, grams) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => ({ ...d, grams })));
+  // Remove (or restore) a whole dish — excludes it and all its ingredients from the total.
+  const onDishRemoved = (id, di, removed) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => ({ ...d, removed })));
+  // Edit one ingredient's grams (decomposed-dish ingredient or a custom add).
+  const onIngGrams = (id, di, ingId, grams) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => mapIngredient(d, ingId, (ing) => ({ ...ing, grams }))));
+  // Remove (or restore) a single ingredient.
+  const onIngRemoved = (id, di, ingId, removed) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => mapIngredient(d, ingId, (ing) => ({ ...ing, removed }))));
+  // Append a custom (user-searched) ingredient to a dish.
+  const onAddIngredient = (id, di, ingredient) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => ({ ...d, ingredients: [...d.ingredients, ingredient] })));
 
   const removePhoto = (id) =>
     setPhotos((prev) => prev.filter((p) => p.id !== id));
@@ -262,8 +319,11 @@ export default function LogMeal() {
               key={photo.id}
               photo={photo}
               onUpdate={(updates) => updatePhoto(photo.id, updates)}
-              onDishGrams={(dishIndex, grams) => setDishGrams(photo.id, dishIndex, grams)}
-              onDishRemoved={(dishIndex, removed) => setDishRemoved(photo.id, dishIndex, removed)}
+              onDishGrams={(di, g) => onDishGrams(photo.id, di, g)}
+              onDishRemoved={(di, removed) => onDishRemoved(photo.id, di, removed)}
+              onIngGrams={(di, ingId, g) => onIngGrams(photo.id, di, ingId, g)}
+              onIngRemoved={(di, ingId, removed) => onIngRemoved(photo.id, di, ingId, removed)}
+              onAddIngredient={(di, ingredient) => onAddIngredient(photo.id, di, ingredient)}
               onRemove={!isAnalyzing ? () => removePhoto(photo.id) : undefined}
               onRetry={() => retryPhoto(photo.id)}
             />
@@ -345,7 +405,7 @@ export default function LogMeal() {
   );
 }
 
-function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onRemove, onRetry }) {
+function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onAddIngredient, onRemove, onRetry }) {
   // Live (portion-edited) totals when present, else the original analysis values.
   const macros = photo.liveMacros || photo.analysis?.macros;
   const micros = photo.liveMicros || photo.analysis?.micros;
@@ -432,26 +492,26 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onRemove, onRe
               </div>
             </div>
 
-            {photo.analysis.dishes?.length > 0 && (
+            {photo.draft?.length > 0 && (
               <div className="bg-gray-50 rounded-xl p-3">
                 <span className="text-xs font-semibold text-gray-700 block mb-1">
                   Breakdown
                 </span>
                 <p className="text-[11px] text-gray-400 mb-2">
-                  Green = found in the food database. A matched dish is counted whole; an
-                  unmatched dish is counted from its ingredients. Adjust a portion (g) and
-                  nutrition updates automatically.
+                  Green = found in the food database. A matched dish is counted whole (edit its
+                  portion); an unmatched dish is counted from its ingredients (edit each one).
+                  Add or remove items and nutrition updates automatically.
                 </p>
                 <div className="space-y-2.5">
-                  {photo.analysis.dishes.map((dish, i) => (
+                  {photo.draft.map((dish, i) => (
                     <DishRow
                       key={i}
                       dish={dish}
-                      grams={photo.dishGrams?.[i]}
-                      base={photo.dishBase?.[i]}
-                      removed={photo.dishRemoved?.[i]}
-                      onGrams={(g) => onDishGrams(i, g)}
-                      onToggleRemove={(r) => onDishRemoved(i, r)}
+                      onDishGrams={(g) => onDishGrams(i, g)}
+                      onDishRemoved={(r) => onDishRemoved(i, r)}
+                      onIngGrams={(ingId, g) => onIngGrams(i, ingId, g)}
+                      onIngRemoved={(ingId, r) => onIngRemoved(i, ingId, r)}
+                      onAddIngredient={(ingredient) => onAddIngredient(i, ingredient)}
                     />
                   ))}
                 </div>
@@ -459,7 +519,7 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onRemove, onRe
                   <p className="text-xs text-yellow-700 mt-2.5">
                     Couldn't find {photo.analysis.unmatched.length} item
                     {photo.analysis.unmatched.length > 1 ? "s" : ""} in the food database —
-                    totals may be undercounted.
+                    add them manually below their dish to count them.
                   </p>
                 )}
                 {photo.analysis.skipped?.length > 0 && (
@@ -490,23 +550,38 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onRemove, onRe
   );
 }
 
-// Status colors for a decomposed ingredient (only used when its dish did NOT match).
+// Status colors for a decomposed/custom ingredient.
 const ING_STYLE = {
   matched: "bg-green-50 text-green-700",
   unmatched: "bg-yellow-100 text-yellow-700",
   skipped: "bg-gray-200 text-gray-500 line-through",
 };
 
-function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
-  // Editable portion. When there's no baseline weight (no dish grams and no ingredient
-  // grams) there's nothing to scale from, so the field is locked and the factor stays 1.
-  const locked = !(base > 0);
-  const factor = locked ? 1 : (grams || 0) / base;
+function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onAddIngredient }) {
+  const removed = dish.removed;
+  const decomposed = !dish.matched;
+  // Matched dishes scale by an editable dish portion; decomposed dishes derive their grams
+  // from the (live) sum of their non-removed ingredients, so the field is read-only there.
+  const liveGrams = decomposed
+    ? Math.round(
+        dish.ingredients.reduce((s, ing) => (ing.removed ? s : s + (ing.grams || 0)), 0)
+      )
+    : dish.grams;
+  // No baseline weight on a matched dish → nothing to scale from, so lock the field.
+  const dishLocked = removed || (!decomposed && !(dish.baseGrams > 0));
+  const factor = !decomposed && dish.baseGrams > 0 ? (dish.grams || 0) / dish.baseGrams : 1;
+
+  // For a matched dish the detected ingredients were never looked up → read-only chips that
+  // scale with the dish portion. Custom adds are always editable rows.
+  const chipIngredients = dish.matched ? dish.ingredients.filter((ing) => !ing.custom) : [];
+  const rowIngredients = dish.matched
+    ? dish.ingredients.filter((ing) => ing.custom)
+    : dish.ingredients;
+
   return (
     <div className={removed ? "opacity-60" : ""}>
       {/* Dish header — a 3-column grid (name | grams | action) so the gram inputs
-          and Remove/Undo controls line up in columns across every dish row. The
-          name column flexes (1fr) and truncates; the other two stay fixed-width. */}
+          and Remove/Undo controls line up in columns across every dish row. */}
       <div className="grid grid-cols-[1fr_auto_auto] items-center gap-2">
         {/* Column 1 — dish name pill + match-status label (absorbs variable width) */}
         <div className="flex items-center gap-1.5 min-w-0">
@@ -525,25 +600,26 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
             <span className="text-[10px] text-gray-400 shrink-0">from ingredients</span>
           ))}
         </div>
-        {/* Column 2 — editable portion (g) */}
+        {/* Column 2 — editable portion (matched) or derived sum (decomposed) */}
         <span className="flex items-center gap-0.5">
           <input
             type="number"
             min="0"
             inputMode="numeric"
-            value={Number.isFinite(grams) ? grams : 0}
-            onChange={(e) => onGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
-            disabled={locked || removed}
+            value={Number.isFinite(liveGrams) ? liveGrams : 0}
+            onChange={(e) => onDishGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+            disabled={dishLocked || decomposed}
+            title={decomposed ? "Total of the ingredient portions below" : undefined}
             className="w-14 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400 disabled:bg-gray-100 disabled:text-gray-400"
           />
           <span className="text-[11px] text-gray-400">g</span>
         </span>
-        {/* Column 3 — Remove / Undo toggle */}
+        {/* Column 3 — Remove / Undo toggle (whole dish) */}
         {removed ? (
           <span className="flex items-center gap-1.5 justify-self-end">
             <span className="text-[10px] text-gray-400">removed</span>
             <button
-              onClick={() => onToggleRemove(false)}
+              onClick={() => onDishRemoved(false)}
               className="text-[11px] text-green-600 font-medium hover:text-green-700"
             >
               Undo
@@ -551,7 +627,7 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
           </span>
         ) : (
           <button
-            onClick={() => onToggleRemove(true)}
+            onClick={() => onDishRemoved(true)}
             className="text-[11px] text-red-400 hover:text-red-500 justify-self-end"
             title="Remove this dish from the meal"
           >
@@ -560,24 +636,246 @@ function DishRow({ dish, grams, base, removed, onGrams, onToggleRemove }) {
         )}
       </div>
 
-      {/* Ingredients — de-emphasized when the dish matched (they weren't looked up),
-          colored by their own USDA outcome when the dish was decomposed. Grams scale
-          with the dish portion. Greyed out when the dish is removed. */}
-      {dish.ingredients?.length > 0 && (
+      {/* Read-only ingredient chips for a matched dish (not individually looked up). */}
+      {chipIngredients.length > 0 && (
         <div className="flex flex-wrap gap-1 mt-1 pl-3">
-          {dish.ingredients.map((ing, i) => {
+          {chipIngredients.map((ing) => {
             const g = Math.round((ing.grams || 0) * factor);
-            const style = removed || dish.matched
-              ? "bg-transparent text-gray-400"
-              : ING_STYLE[ing.status] || "bg-white text-gray-600";
+            const style = removed ? "bg-transparent text-gray-400" : "bg-transparent text-gray-500";
             return (
-              <span key={i} className={`text-[11px] px-1.5 py-0.5 rounded-full ${style}`}>
+              <span key={ing.id} className={`text-[11px] px-1.5 py-0.5 rounded-full ${style}`}>
                 {ing.food}{g > 0 ? ` · ${g}g` : ""}
               </span>
             );
           })}
         </div>
       )}
+
+      {/* Editable ingredient rows: every ingredient of a decomposed dish, plus custom adds. */}
+      {rowIngredients.length > 0 && (
+        <div className="space-y-1 mt-1.5">
+          {rowIngredients.map((ing) => (
+            <IngredientRow
+              key={ing.id}
+              ing={ing}
+              locked={removed || !ingHasNutrients(ing)}
+              onGrams={(g) => onIngGrams(ing.id, g)}
+              onRemove={() => onIngRemoved(ing.id, true)}
+              onUndo={() => onIngRemoved(ing.id, false)}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Search USDA foods and add a custom ingredient into this dish. */}
+      {!removed && <AddIngredient onAdd={onAddIngredient} />}
+    </div>
+  );
+}
+
+function IngredientRow({ ing, locked, onGrams, onRemove, onUndo }) {
+  const removed = ing.removed;
+  return (
+    <div className={`grid grid-cols-[1fr_auto_auto] items-center gap-2 ${removed ? "opacity-60" : ""}`}>
+      <div className="flex items-center gap-1.5 min-w-0 pl-3">
+        <span
+          className={`text-[11px] px-1.5 py-0.5 rounded-full truncate ${
+            removed ? "bg-gray-100 text-gray-400 line-through" : ING_STYLE[ing.status] || "bg-white text-gray-600"
+          }`}
+        >
+          {ing.food}
+        </span>
+        {!removed && ing.custom && <span className="text-[10px] text-green-600 shrink-0">added</span>}
+        {!removed && !ing.custom && ing.status === "unmatched" && (
+          <span className="text-[10px] text-yellow-600 shrink-0">not found</span>
+        )}
+        {!removed && !ing.custom && ing.status === "skipped" && (
+          <span className="text-[10px] text-gray-400 shrink-0">over limit</span>
+        )}
+      </div>
+      <span className="flex items-center gap-0.5">
+        <input
+          type="number"
+          min="0"
+          inputMode="numeric"
+          value={Number.isFinite(ing.grams) ? ing.grams : 0}
+          onChange={(e) => onGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+          disabled={locked}
+          className="w-14 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400 disabled:bg-gray-100 disabled:text-gray-400"
+        />
+        <span className="text-[11px] text-gray-400">g</span>
+      </span>
+      {removed ? (
+        <span className="flex items-center gap-1.5 justify-self-end">
+          <span className="text-[10px] text-gray-400">removed</span>
+          <button onClick={onUndo} className="text-[11px] text-green-600 font-medium hover:text-green-700">Undo</button>
+        </span>
+      ) : (
+        <button
+          onClick={onRemove}
+          className="text-[11px] text-red-400 hover:text-red-500 justify-self-end"
+          title="Remove this ingredient"
+        >
+          Remove
+        </button>
+      )}
+    </div>
+  );
+}
+
+// Search the offline USDA index and add a chosen food (scaled to the entered grams) as a
+// custom ingredient. Type-to-list with a short debounce; a richer keyboard-nav autocomplete
+// is deliberately future scope. Falls back gracefully when the offline index isn't built (503).
+function AddIngredient({ onAdd }) {
+  const [open, setOpen] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [selected, setSelected] = useState(null); // chosen FoodSummary
+  const [grams, setGrams] = useState(100);
+  const [adding, setAdding] = useState(false);
+
+  // Debounced search whenever the query changes (and nothing is selected yet).
+  useEffect(() => {
+    if (!open || selected) return;
+    const term = q.trim();
+    if (term.length < 2) {
+      setResults([]);
+      setError(null);
+      return;
+    }
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    const t = setTimeout(async () => {
+      try {
+        const { data } = await client.get("/foods/search", { params: { q: term, limit: 8 } });
+        if (!cancelled) setResults(data);
+      } catch (err) {
+        if (!cancelled) {
+          setResults([]);
+          setError(
+            err.response?.status === 503
+              ? "Food search isn't available (offline index not built)."
+              : "Search failed — try again."
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }, 300);
+    return () => {
+      cancelled = true;
+      clearTimeout(t);
+    };
+  }, [q, open, selected]);
+
+  const reset = () => {
+    setOpen(false);
+    setQ("");
+    setResults([]);
+    setSelected(null);
+    setGrams(100);
+    setError(null);
+  };
+
+  const confirmAdd = async () => {
+    if (!selected) return;
+    setAdding(true);
+    setError(null);
+    try {
+      const { data } = await client.get(`/foods/${selected.fdc_id}`);
+      const g = Math.max(0, Number(grams) || 0);
+      const scale = g / 100;
+      const macros = {};
+      for (const k in data.macros) macros[k] = data.macros[k] * scale;
+      const micros = {};
+      for (const k in data.micros) micros[k] = data.micros[k] * scale;
+      onAdd({
+        id: uid(),
+        food: data.description,
+        status: "matched",
+        baseGrams: g,
+        grams: g,
+        macros,
+        micros,
+        removed: false,
+        custom: true,
+      });
+      reset();
+    } catch {
+      setError("Couldn't add that food — try again.");
+    } finally {
+      setAdding(false);
+    }
+  };
+
+  if (!open) {
+    return (
+      <button
+        onClick={() => setOpen(true)}
+        className="text-[11px] text-green-600 hover:text-green-700 font-medium mt-1.5 pl-3"
+      >
+        + Add ingredient
+      </button>
+    );
+  }
+
+  return (
+    <div className="mt-1.5 pl-3 space-y-1.5">
+      <input
+        autoFocus
+        className="w-full border border-gray-200 rounded-lg px-2 py-1 text-xs focus:outline-none focus:border-green-400"
+        placeholder="Search foods (e.g. olive oil)"
+        value={q}
+        onChange={(e) => {
+          setQ(e.target.value);
+          setSelected(null);
+        }}
+      />
+      {loading && <p className="text-[11px] text-gray-400">Searching…</p>}
+      {error && <p className="text-[11px] text-yellow-600">{error}</p>}
+      {!selected && results.length > 0 && (
+        <div className="border border-gray-100 rounded-lg divide-y divide-gray-50 max-h-40 overflow-auto bg-white">
+          {results.map((f) => (
+            <button
+              key={f.fdc_id}
+              onClick={() => {
+                setSelected(f);
+                setQ(f.description);
+                setResults([]);
+              }}
+              className="block w-full text-left px-2 py-1 text-[11px] text-gray-700 hover:bg-green-50"
+            >
+              {f.description}
+            </button>
+          ))}
+        </div>
+      )}
+      {selected && (
+        <div className="flex items-center gap-2">
+          <input
+            type="number"
+            min="0"
+            inputMode="numeric"
+            value={grams}
+            onChange={(e) => setGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
+            className="w-16 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400"
+          />
+          <span className="text-[11px] text-gray-400">g</span>
+          <button
+            onClick={confirmAdd}
+            disabled={adding}
+            className="text-[11px] bg-green-500 text-white px-2.5 py-1 rounded-lg hover:bg-green-600 disabled:opacity-50"
+          >
+            {adding ? "Adding…" : "Add"}
+          </button>
+        </div>
+      )}
+      <button onClick={reset} className="text-[11px] text-gray-400 hover:text-gray-600 block">
+        Close
+      </button>
     </div>
   );
 }
