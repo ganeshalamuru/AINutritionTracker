@@ -2,7 +2,7 @@
 name = "nutriai-backend"
 version = "1.0.0"
 description = "NutriAI — two-stage (vision LLM + USDA) nutrition tracker backend"
-requires-python = ">=3.12"
+requires-python = ">=3.14"
 # Runtime dependencies. Managed with uv (uv.lock is the source of truth); requirements.txt
 # is a generated export (uv export) kept as a pip fallback for the start scripts.
 dependencies = [
