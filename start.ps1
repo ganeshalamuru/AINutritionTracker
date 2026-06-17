@@ -82,5 +82,5 @@ if ($Dev) {
     Write-Host "  Press Ctrl+C to stop." -ForegroundColor Gray
     Write-Host ""
 
-    & $pyExe ($pyArgs + @("main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"))
+    & $pyExe ($pyArgs + @("main:app", "--host", "0.0.0.0", "--port", "8000"))
 }

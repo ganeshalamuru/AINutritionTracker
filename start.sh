@@ -84,5 +84,5 @@ else
   echo "  Press Ctrl+C to stop."
   echo ""
 
-  "${PY_RUN[@]}" main:app --host 0.0.0.0 --port 8000 --reload
+  "${PY_RUN[@]}" main:app --host 0.0.0.0 --port 8000
 fi
