@@ -254,7 +254,7 @@ backend/
 ### Frontend (`frontend/src/`)
 
 ```
-App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/ProfileContext.jsx
+App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/ProfileContext.jsx · context/LogDraftContext.jsx
 api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
 pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
 components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
@@ -265,8 +265,13 @@ hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & 
 utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros) · uid
 ```
 
-`LogMeal.jsx` is the heart: multi-photo upload (staged, no call) → optional AI hint → Analyze →
-review → log. On analyze it builds an editable **draft** from the immutable analysis and re-sums the
+`LogMeal.jsx` is the heart: multi-photo upload (staged, no call, **up to 4 photos**) → a **per-photo**
+AI hint → Analyze → review → log. Each photo carries its own optional hint (sent as `user_note`), and
+an analyzed photo can be **re-analyzed** with an edited hint (rebuilds that photo's draft, discarding
+its manual edits). The in-progress log (staged photos + drafts + hints) lives in `LogDraftContext`
+above the router, so it **survives switching tabs and returning** — it's in-memory only (cleared on a
+successful log or a profile switch/logout, lost on a full page refresh). On analyze it builds an
+editable **draft** from the immutable analysis and re-sums the
 meal from it client-side (`draftTotals`), so repeated edits scale from the original baseline and
 never compound rounding. Editing granularity follows a deliberate **clean split** by dish type:
 

@@ -1,12 +1,17 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { useProfile } from "../context/ProfileContext";
+import { useLogDraft } from "../context/LogDraftContext";
 import client from "../api/client";
 import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
 import MacroHighlights from "../components/meal/MacroHighlights";
 import { uid } from "../utils/uid";
+
+// Cap a single meal log at 4 photos — keeps the multi-photo analyze burst within free-tier
+// rate limits and the review screen scannable.
+const MAX_PHOTOS = 4;
 
 // A dish's baseline portion: the model's dish grams, or the sum of its ingredient grams
 // when the dish itself has no weight (decomposed dishes sometimes only weigh the parts).
@@ -118,20 +123,33 @@ export default function LogMeal() {
   const { profile } = useProfile();
   const navigate = useNavigate();
   const fileRef = useRef();
-  const [photos, setPhotos] = useState([]);
-  const [hint, setHint] = useState("");
+  // Photos live in a context above the router so the in-progress log survives switching tabs
+  // and coming back (LogMeal unmounts on navigation).
+  const { photos, setPhotos } = useLogDraft();
   const [logging, setLogging] = useState(false);
   const [toast, setToast] = useState(null);
 
-  // Just stage photos — no auto-analyze
+  // Just stage photos — no auto-analyze. Cap the total at MAX_PHOTOS: take only what fits and
+  // toast about the rest rather than silently dropping them.
   const handleFiles = (fileList) => {
-    const newPhotos = Array.from(fileList).map((file) => ({
+    const incoming = Array.from(fileList);
+    const room = MAX_PHOTOS - photos.length;
+    if (room <= 0) {
+      setToast({ message: `Up to ${MAX_PHOTOS} photos per meal`, type: "error" });
+      return;
+    }
+    const accepted = incoming.slice(0, room);
+    if (accepted.length < incoming.length) {
+      setToast({ message: `Up to ${MAX_PHOTOS} photos per meal`, type: "error" });
+    }
+    const newPhotos = accepted.map((file) => ({
       id: uid(),
       file,
       previewUrl: URL.createObjectURL(file),
       analysis: null,
       analyzing: false,
       error: null,
+      hint: "",
       mealName: "",
       mealType: "snack",
       notes: "",
@@ -139,7 +157,7 @@ export default function LogMeal() {
     setPhotos((prev) => [...prev, ...newPhotos]);
   };
 
-  const analyzePhoto = async (id, file) => {
+  const analyzePhoto = async (id, file, hint = "") => {
     setPhotos((prev) => prev.map((p) => p.id === id ? { ...p, analyzing: true, error: null } : p));
     try {
       const fd = new FormData();
@@ -175,11 +193,12 @@ export default function LogMeal() {
     }
   };
 
-  // Analyze all photos that don't have results yet (pending + previously errored)
+  // Analyze all photos that don't have results yet (pending + previously errored), each with
+  // its own hint.
   const analyzeAll = async () => {
     const toAnalyze = photos.filter((p) => !p.analysis && !p.analyzing);
     for (const photo of toAnalyze) {
-      await analyzePhoto(photo.id, photo.file);
+      await analyzePhoto(photo.id, photo.file, photo.hint);
     }
   };
 
@@ -218,14 +237,15 @@ export default function LogMeal() {
   const removePhoto = (id) =>
     setPhotos((prev) => prev.filter((p) => p.id !== id));
 
+  // Retry a failed analysis, or deliberately re-analyze a photo that already has a result
+  // (e.g. after editing its hint). A fresh analysis rebuilds the draft, discarding manual edits.
   const retryPhoto = (id) => {
     const photo = photos.find((p) => p.id === id);
-    if (photo) analyzePhoto(id, photo.file);
+    if (photo) analyzePhoto(id, photo.file, photo.hint);
   };
 
   const reset = () => {
     setPhotos([]);
-    setHint("");
     if (fileRef.current) fileRef.current.value = "";
   };
 
@@ -263,7 +283,9 @@ export default function LogMeal() {
         });
       }
       setToast({ message: ready.length > 1 ? `${ready.length} meals logged!` : "Meal logged!", type: "success" });
-      setTimeout(() => navigate("/home"), 1200);
+      // Clear the persisted draft once it's saved — otherwise the logged photos would linger in
+      // the context and reappear on the next visit to /log.
+      setTimeout(() => { reset(); navigate("/home"); }, 1200);
     } catch {
       setToast({ message: "Failed to log meal", type: "error" });
     } finally {
@@ -275,6 +297,7 @@ export default function LogMeal() {
   const unanalyzed = photos.filter((p) => !p.analysis && !p.analyzing);
   const readyCount = photos.filter((p) => p.analysis).length;
   const hasPhotos = photos.length > 0;
+  const atCapacity = photos.length >= MAX_PHOTOS;
   // Show analyze section when there are photos without results (pending or previously errored)
   const showAnalyzeSection = hasPhotos && unanalyzed.length > 0 && !isAnalyzing;
   const showLogSection = hasPhotos && !isAnalyzing && readyCount > 0 && unanalyzed.length === 0;
@@ -329,21 +352,10 @@ export default function LogMeal() {
             />
           ))}
 
-          {/* Hint + Analyze — shown before analysis, hidden once all are done */}
+          {/* Analyze — shown before analysis, hidden once all are done. Each photo carries its
+              own hint (edited on its card), so there's no shared hint box here anymore. */}
           {(showAnalyzeSection || isAnalyzing) && (
             <div className="bg-gray-50 rounded-2xl p-4 space-y-3">
-              <div>
-                <label className="text-xs font-medium text-gray-600 mb-1.5 block">
-                  Hint for AI <span className="font-normal text-gray-400">(optional)</span>
-                </label>
-                <input
-                  className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-400 bg-white"
-                  placeholder='e.g. "I only ate half", "small portion", "homemade dal rice"'
-                  value={hint}
-                  onChange={(e) => setHint(e.target.value)}
-                  disabled={isAnalyzing}
-                />
-              </div>
               <button
                 onClick={analyzeAll}
                 disabled={isAnalyzing}
@@ -354,12 +366,18 @@ export default function LogMeal() {
                   : `Analyze ${unanalyzed.length} photo${unanalyzed.length > 1 ? "s" : ""}`}
               </button>
               {!isAnalyzing && (
-                <button
-                  onClick={() => fileRef.current?.click()}
-                  className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
-                >
-                  + Add another photo
-                </button>
+                atCapacity ? (
+                  <p className="text-center text-xs text-gray-400 py-1">
+                    Maximum {MAX_PHOTOS} photos per meal
+                  </p>
+                ) : (
+                  <button
+                    onClick={() => fileRef.current?.click()}
+                    className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
+                  >
+                    + Add another photo
+                  </button>
+                )
               )}
             </div>
           )}
@@ -430,6 +448,31 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
           <div className="bg-red-50 border border-red-200 rounded-xl p-3 text-xs text-red-600">
             {photo.error}
             <button onClick={onRetry} className="ml-2 underline text-red-500 hover:text-red-700">Retry</button>
+          </div>
+        )}
+
+        {/* Per-photo hint for the AI — editable before analysis and after, so it can drive a
+            re-analyze. Once a result exists, a Re-analyze button reruns Stage 1+2 with this hint
+            (rebuilding the draft, discarding manual edits to this photo). */}
+        {!photo.analyzing && (
+          <div>
+            <label className="text-xs font-medium text-gray-600 mb-1.5 block">
+              Hint for AI <span className="font-normal text-gray-400">(optional)</span>
+            </label>
+            <input
+              className="w-full border border-gray-200 rounded-xl px-3 py-2 text-sm focus:outline-none focus:border-green-400 bg-white"
+              placeholder='e.g. "I only ate half", "small portion", "homemade dal rice"'
+              value={photo.hint}
+              onChange={(e) => onUpdate({ hint: e.target.value })}
+            />
+            {photo.analysis && (
+              <button
+                onClick={onRetry}
+                className="mt-2 w-full py-2 border border-green-200 text-green-600 font-medium rounded-xl text-sm hover:bg-green-50 transition-colors"
+              >
+                Re-analyze with this hint
+              </button>
+            )}
           </div>
         )}
 

@@ -1,5 +1,6 @@
 import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
 import { ProfileProvider, useProfile } from "./context/ProfileContext";
+import { LogDraftProvider } from "./context/LogDraftContext";
 import ProfileSelect from "./pages/ProfileSelect";
 import Home from "./pages/Home";
 import LogMeal from "./pages/LogMeal";
@@ -32,9 +33,11 @@ function AppRoutes() {
 export default function App() {
   return (
     <ProfileProvider>
-      <BrowserRouter>
-        <AppRoutes />
-      </BrowserRouter>
+      <LogDraftProvider>
+        <BrowserRouter>
+          <AppRoutes />
+        </BrowserRouter>
+      </LogDraftProvider>
     </ProfileProvider>
   );
 }
