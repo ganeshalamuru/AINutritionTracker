@@ -268,7 +268,9 @@ utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emp
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call, **up to 4 photos**) → a **per-photo**
 AI hint → Analyze → review → log. Each photo carries its own optional hint (sent as `user_note`), and
 an analyzed photo can be **re-analyzed** with an edited hint (rebuilds that photo's draft, discarding
-its manual edits). The in-progress log (staged photos + drafts + hints) lives in `LogDraftContext`
+its manual edits). More photos can also be staged **after** analysis (an "Add another photo" control
+on the review/log step, up to the 4-photo cap) — only the new photo is analyzed, the already-analyzed
+ones are left untouched. The in-progress log (staged photos + drafts + hints) lives in `LogDraftContext`
 above the router, so it **survives switching tabs and returning** — it's in-memory only (cleared on a
 successful log or a profile switch/logout, lost on a full page refresh). On analyze it builds an
 editable **draft** from the immutable analysis and re-sums the

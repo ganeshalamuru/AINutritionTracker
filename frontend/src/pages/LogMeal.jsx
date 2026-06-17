@@ -371,42 +371,44 @@ export default function LogMeal() {
                     Maximum {MAX_PHOTOS} photos per meal
                   </p>
                 ) : (
-                  <button
-                    onClick={() => fileRef.current?.click()}
-                    className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
-                  >
-                    + Add another photo
-                  </button>
+                  <AddPhotoButton onClick={() => fileRef.current?.click()} />
                 )
               )}
             </div>
           )}
 
-          {/* Log section — shown only after all photos are analyzed */}
+          {/* Log section — shown only after all photos are analyzed. The "Add another photo"
+              affordance lives here too: once everything is analyzed the analyze section (which
+              normally hosts it) is hidden, so without this there'd be no way to stage more.
+              Adding a photo re-shows the analyze step for just that one — analyzeAll only picks
+              up photos with no result, so the already-analyzed ones are never re-analyzed. */}
           {showLogSection && (
-            profile.isGuest ? (
-              <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-center">
-                <p className="text-sm text-green-800 font-medium mb-2">Create a profile to save meals</p>
+            <div className="space-y-3">
+              {!atCapacity && <AddPhotoButton onClick={() => fileRef.current?.click()} />}
+              {profile.isGuest ? (
+                <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-center">
+                  <p className="text-sm text-green-800 font-medium mb-2">Create a profile to save meals</p>
+                  <button
+                    onClick={() => navigate("/")}
+                    className="bg-green-500 text-white px-6 py-2 rounded-xl text-sm font-medium hover:bg-green-600"
+                  >
+                    Create Profile
+                  </button>
+                </div>
+              ) : (
                 <button
-                  onClick={() => navigate("/")}
-                  className="bg-green-500 text-white px-6 py-2 rounded-xl text-sm font-medium hover:bg-green-600"
+                  onClick={handleLog}
+                  disabled={logging}
+                  className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
                 >
-                  Create Profile
+                  {logging
+                    ? "Logging..."
+                    : readyCount > 1
+                      ? `Log ${readyCount} meals as a group`
+                      : "Log this Meal"}
                 </button>
-              </div>
-            ) : (
-              <button
-                onClick={handleLog}
-                disabled={logging}
-                className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
-              >
-                {logging
-                  ? "Logging..."
-                  : readyCount > 1
-                    ? `Log ${readyCount} meals as a group`
-                    : "Log this Meal"}
-              </button>
-            )
+              )}
+            </div>
           )}
         </div>
       )}
@@ -420,6 +422,20 @@ export default function LogMeal() {
         onChange={(e) => { if (e.target.files?.length) handleFiles(e.target.files); e.target.value = ""; }}
       />
     </div>
+  );
+}
+
+// Dashed "stage one more photo" button, shared by the analyze step and the review/log step
+// (so more photos can be added even after everything's been analyzed). Callers gate it on
+// `atCapacity` — it's only rendered when there's room under MAX_PHOTOS.
+function AddPhotoButton({ onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      className="w-full py-2.5 border-2 border-dashed border-gray-300 rounded-2xl text-sm text-gray-500 hover:border-green-300 hover:text-green-600 hover:bg-green-50 transition-colors"
+    >
+      + Add another photo
+    </button>
   );
 }
 
