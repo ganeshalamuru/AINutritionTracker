@@ -39,6 +39,5 @@ Verify the change, then commit it. **Do not commit if tests fail.**
 ## Rules
 
 - Commit **only after** lint + tests pass and the user's stated goals are verified.
-- If on `main`/`master`, branch first unless the user said otherwise.
 - Never use `--no-verify` or skip hooks; if a hook fails, fix the underlying issue.
 - Don't run external probes / USDA API calls as part of verification (see `CLAUDE.md`).
