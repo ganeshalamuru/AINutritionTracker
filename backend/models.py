@@ -79,6 +79,15 @@ class Micros(Base):
     potassium_mg = Column(Float, default=0)
     zinc_mg = Column(Float, default=0)
     phosphorus_mg = Column(Float, default=0)
+    selenium_mcg = Column(Float, default=0)
+    copper_mg = Column(Float, default=0)
+    choline_mg = Column(Float, default=0)
+    caffeine_mg = Column(Float, default=0)
+    saturated_fat_g = Column(Float, default=0)
+    mono_fat_g = Column(Float, default=0)
+    poly_fat_g = Column(Float, default=0)
+    cholesterol_mg = Column(Float, default=0)
+    omega3_g = Column(Float, default=0)
 
     meal = relationship("Meal", back_populates="micros")
 

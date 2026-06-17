@@ -24,6 +24,14 @@ const MINERALS = [
   { key: "potassium_mg", label: "Potassium", unit: "mg", dv: 4700 },
   { key: "zinc_mg", label: "Zinc", unit: "mg", dv: 11 },
   { key: "phosphorus_mg", label: "Phosphorus", unit: "mg", dv: 1250 },
+  { key: "selenium_mcg", label: "Selenium", unit: "mcg", dv: 55 },
+  { key: "copper_mg", label: "Copper", unit: "mg", dv: 0.9 },
+];
+
+// Choline has an FDA DV; caffeine has none, so it renders value-only (pct 0 -> no bar fill).
+const OTHER = [
+  { key: "choline_mg", label: "Choline", unit: "mg", dv: 550 },
+  { key: "caffeine_mg", label: "Caffeine", unit: "mg", dv: null },
 ];
 
 const round1 = (n) => Math.round((n || 0) * 10) / 10;
@@ -52,21 +60,23 @@ function Section({ title, items }) {
     <div>
       <p className="text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">{title}</p>
       <div className="space-y-2.5">
-        {items.map(({ key, label, unit, value, pct }) => (
+        {items.map(({ key, label, unit, value, pct, dv }) => (
           <div key={key} className="flex flex-col gap-1">
             <div className="flex justify-between items-baseline text-sm">
               <span className="font-medium text-gray-700">{label}</span>
               <span className="text-gray-500">
                 {round1(value)}{unit}
-                <span className="text-gray-400"> · {Math.round(pct)}%</span>
+                {dv ? <span className="text-gray-400"> · {Math.round(pct)}%</span> : null}
               </span>
             </div>
-            <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
-              <div
-                className="h-full rounded-full transition-all duration-500"
-                style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: richColor(pct) }}
-              />
-            </div>
+            {dv ? (
+              <div className="h-2 bg-gray-100 rounded-full overflow-hidden">
+                <div
+                  className="h-full rounded-full transition-all duration-500"
+                  style={{ width: `${Math.min(pct, 100)}%`, backgroundColor: richColor(pct) }}
+                />
+              </div>
+            ) : null}
           </div>
         ))}
       </div>
@@ -99,9 +109,11 @@ export default function MicroGrid({ micros, alwaysOpen = false }) {
 
   const vitamins = presentItems(VITAMINS, micros);
   const minerals = presentItems(MINERALS, micros);
-  const hasAny = vitamins.length > 0 || minerals.length > 0;
-  // Rich-in spans both groups, still ordered richest first.
-  const allPresent = [...vitamins, ...minerals].sort((a, b) => b.pct - a.pct);
+  const other = presentItems(OTHER, micros);
+  const hasAny = vitamins.length > 0 || minerals.length > 0 || other.length > 0;
+  // Rich-in spans the DV-bearing groups, still ordered richest first (caffeine has no
+  // DV so it never qualifies as "rich in" anyway).
+  const allPresent = [...vitamins, ...minerals, ...other].sort((a, b) => b.pct - a.pct);
 
   return (
     <div className="mt-3">
@@ -123,6 +135,7 @@ export default function MicroGrid({ micros, alwaysOpen = false }) {
               <RichIn items={allPresent} />
               <Section title="Vitamins" items={vitamins} />
               <Section title="Minerals" items={minerals} />
+              <Section title="Other" items={other} />
             </>
           ) : (
             <p className="text-xs text-gray-400">No notable micronutrients.</p>

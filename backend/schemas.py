@@ -98,6 +98,15 @@ class MicrosData(BaseModel):
     potassium_mg: float = Field(default=0, ge=0)
     zinc_mg: float = Field(default=0, ge=0)
     phosphorus_mg: float = Field(default=0, ge=0)
+    selenium_mcg: float = Field(default=0, ge=0)
+    copper_mg: float = Field(default=0, ge=0)
+    choline_mg: float = Field(default=0, ge=0)
+    caffeine_mg: float = Field(default=0, ge=0)
+    saturated_fat_g: float = Field(default=0, ge=0)
+    mono_fat_g: float = Field(default=0, ge=0)
+    poly_fat_g: float = Field(default=0, ge=0)
+    cholesterol_mg: float = Field(default=0, ge=0)
+    omega3_g: float = Field(default=0, ge=0)
 
 
 # --- Meals ---

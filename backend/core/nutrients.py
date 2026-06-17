@@ -1,6 +1,6 @@
 """Single source of truth for the nutrient schema.
 
-The 7 macros and 17 micros are listed here ONCE; every other module imports these
+The 7 macros and 26 micros are listed here ONCE; every other module imports these
 lists instead of re-declaring them (they used to be duplicated in the vision service,
 the USDA service, and the nutrition router). Also holds the small ORM<->schema
 conversion and summation helpers those modules all need.
@@ -29,6 +29,17 @@ MICRO_KEYS = [
     "potassium_mg",
     "zinc_mg",
     "phosphorus_mg",
+    "selenium_mcg",
+    "copper_mg",
+    "choline_mg",
+    "caffeine_mg",
+    # Fat breakdown — stored as micros (display-only, grouped under Fat in the UI),
+    # not macros, so they don't enter goal-scaling / the dashboard rings.
+    "saturated_fat_g",
+    "mono_fat_g",
+    "poly_fat_g",
+    "cholesterol_mg",
+    "omega3_g",
 ]
 
 

@@ -18,4 +18,14 @@ MOCK_MICROS = {
     "iron_mg": 2.8,
     "magnesium_mg": 62,
     "potassium_mg": 520,
+    "selenium_mcg": 22,
+    "copper_mg": 0.3,
+    "choline_mg": 95,
+    "caffeine_mg": 0,
+    # Fat breakdown (sums under the meal's 12 g total fat).
+    "saturated_fat_g": 3.2,
+    "mono_fat_g": 5.1,
+    "poly_fat_g": 2.4,
+    "cholesterol_mg": 65,
+    "omega3_g": 0.12,
 }

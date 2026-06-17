@@ -7,6 +7,7 @@ import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
 import MacroHighlights from "../components/meal/MacroHighlights";
+import FatBreakdown from "../components/meal/FatBreakdown";
 import { uid } from "../utils/uid";
 
 // Cap a single meal log at 4 photos — keeps the multi-photo analyze burst within free-tier
@@ -586,6 +587,9 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
                   <p className="text-gray-400">Fat</p>
                 </div>
               </div>
+              <div className="mt-2">
+                <FatBreakdown micros={micros} />
+              </div>
               <div className="flex justify-around mt-2 text-xs text-gray-400">
                 <span>Fiber {Math.round(macros.fiber_g)}g</span>
                 <span>Sugar {Math.round(macros.sugar_g)}g</span>
@@ -701,6 +705,9 @@ function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, o
   // For a matched dish the detected ingredients were never looked up → read-only chips that
   // scale with the dish portion. Custom adds are always editable rows.
   const chipIngredients = dish.matched ? dish.ingredients.filter((ing) => !ing.custom) : [];
+  // Composition split for a matched dish's read-only chips — by raw ingredient grams
+  // (they all scale by the same dish factor, so the % is portion-independent).
+  const chipTotal = chipIngredients.reduce((s, ing) => s + (ing.grams || 0), 0);
   const rowIngredients = dish.matched
     ? dish.ingredients.filter((ing) => ing.custom)
     : dish.ingredients;
@@ -769,15 +776,23 @@ function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, o
         )}
       </div>
 
-      {/* Read-only ingredient chips for a matched dish (not individually looked up). */}
+      {/* Read-only ingredient chips for a matched dish (not individually looked up).
+          Stacked row-wise with a subtle bubble so they read as a list, but kept muted
+          and input-less to signal they aren't individually editable (the dish is the unit). */}
       {chipIngredients.length > 0 && (
-        <div className="flex flex-wrap gap-1 mt-1 pl-3">
+        <div className="flex flex-col items-start gap-1 mt-1 pl-3">
           {chipIngredients.map((ing) => {
             const g = Math.round((ing.grams || 0) * factor);
-            const style = removed ? "bg-transparent text-gray-400" : "bg-transparent text-gray-500";
+            const pct = chipTotal > 0 ? Math.round(((ing.grams || 0) / chipTotal) * 100) : null;
+            const style = removed ? "bg-gray-100 text-gray-400 line-through" : "bg-white text-gray-600";
             return (
-              <span key={ing.id} className={`text-[11px] px-1.5 py-0.5 rounded-full ${style}`}>
-                {ing.food}{g > 0 ? ` · ${g}g` : ""}
+              <span key={ing.id} className="flex items-center gap-1.5">
+                <span className={`text-[11px] px-1.5 py-0.5 rounded-full ${style}`}>
+                  {ing.food}{g > 0 ? ` · ${g}g` : ""}
+                </span>
+                {pct != null && !removed && (
+                  <span className="text-[10px] text-gray-400 shrink-0">{pct}%</span>
+                )}
               </span>
             );
           })}

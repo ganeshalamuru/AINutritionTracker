@@ -120,6 +120,21 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(per["protein_g"], 20)
         self.assertEqual(per["calories"], 250)  # Atwater fallback when 1008 absent
 
+    def test_extract_per_100g_maps_lipid_panel_and_extra_micros(self):
+        per = nd._extract_per_100g(
+            food("SR Legacy", "X", 1, {1258: 3, 1253: 40, 1103: 18, 1057: 95})
+        )
+        self.assertEqual(per["saturated_fat_g"], 3)
+        self.assertEqual(per["cholesterol_mg"], 40)
+        self.assertEqual(per["selenium_mcg"], 18)
+        self.assertEqual(per["caffeine_mg"], 95)
+
+    def test_extract_per_100g_sums_omega3_epa_and_dha(self):
+        per = nd._extract_per_100g(food("SR Legacy", "X", 1, {1278: 0.2, 1272: 0.3}))
+        self.assertAlmostEqual(per["omega3_g"], 0.5)  # EPA + DHA summed into one field
+        # absent -> 0, never KeyError
+        self.assertEqual(nd._extract_per_100g(food("SR Legacy", "Y", 2, {}))["omega3_g"], 0)
+
     # --- query construction / aliasing ---
 
     def test_alias_rewrites_search_query(self):

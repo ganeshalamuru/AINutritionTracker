@@ -54,6 +54,24 @@ def _migrate_and_prepare_cache():
             conn.commit()
         except Exception:
             pass  # column already exists
+        # Micros added after the initial schema (lipid panel + extra minerals/other).
+        # Old meals get 0, consistent with the missing->0 coercion in core.nutrients.
+        for col in (
+            "selenium_mcg",
+            "copper_mg",
+            "choline_mg",
+            "caffeine_mg",
+            "saturated_fat_g",
+            "mono_fat_g",
+            "poly_fat_g",
+            "cholesterol_mg",
+            "omega3_g",
+        ):
+            try:
+                conn.execute(text(f"ALTER TABLE micros ADD COLUMN {col} FLOAT DEFAULT 0"))
+                conn.commit()
+            except Exception:
+                pass  # column already exists
         # Cache of USDA food-name -> per-100g nutrient lookups (see usda_service.py).
         conn.execute(
             text(

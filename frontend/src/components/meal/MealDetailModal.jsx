@@ -2,11 +2,12 @@ import { useState } from "react";
 import client from "../../api/client";
 import MicroGrid from "./MicroGrid";
 import MacroHighlights from "./MacroHighlights";
+import FatBreakdown from "./FatBreakdown";
 import ConfirmModal from "../shared/ConfirmModal";
 import { MEAL_TYPE_COLORS } from "../../constants";
 import { formatDateTime } from "../../utils/format";
 
-function MacroRow({ macros }) {
+function MacroRow({ macros, micros }) {
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -28,6 +29,7 @@ function MacroRow({ macros }) {
           <p className="text-xs text-gray-500">Fat</p>
         </div>
       </div>
+      <FatBreakdown micros={micros} />
       <div className="flex justify-around pt-1 text-xs text-gray-500 border-t border-gray-100">
         <div className="text-center">
           <p className="font-semibold text-gray-700">{Math.round(macros.fiber_g)}g</p>
@@ -78,7 +80,7 @@ function SingleMealView({ meal, onDelete }) {
       </div>
 
       <div className="bg-gray-50 rounded-2xl p-4">
-        <MacroRow macros={meal.macros} />
+        <MacroRow macros={meal.macros} micros={meal.micros} />
       </div>
 
       {meal.micros && (
@@ -248,7 +250,7 @@ function GroupMealView({ group, onDelete, onClose }) {
       {activeTab === "totals" && (
         <>
           <div className="bg-gray-50 rounded-2xl p-4">
-            <MacroRow macros={group.total_macros} />
+            <MacroRow macros={group.total_macros} micros={group.total_micros} />
           </div>
           {group.total_micros && (
             <div className="bg-gray-50 rounded-2xl p-4">

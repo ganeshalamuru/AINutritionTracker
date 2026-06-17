@@ -23,7 +23,7 @@ import sqlite3
 import sys
 
 from core.config import BACKEND_DIR
-from services.nutrition_data import ENERGY_FALLBACK_IDS, FDC_NUTRIENT_MAP
+from services.nutrition_data import ENERGY_FALLBACK_IDS, FDC_NUTRIENT_MAP, OMEGA3_IDS
 
 # The CSV `data_type` strings -> the API display strings the matching code expects
 # (DATA_TYPE_RANK / DISH_DATA_TYPES in services/nutrition_data/config.py). Foods whose
@@ -38,7 +38,7 @@ USDA_DATA_DIR = os.path.join(BACKEND_DIR, "..", "usda_data")
 OUTPUT_DB = os.path.join(BACKEND_DIR, "usda_local.db")
 
 # Nutrient IDs worth storing: the ones we map to our schema, plus the energy fallbacks.
-KEEP_NUTRIENT_IDS = set(FDC_NUTRIENT_MAP) | set(ENERGY_FALLBACK_IDS)
+KEEP_NUTRIENT_IDS = set(FDC_NUTRIENT_MAP) | set(ENERGY_FALLBACK_IDS) | set(OMEGA3_IDS)
 
 # csv fields can exceed the default limit on some rows; raise it generously.
 csv.field_size_limit(min(sys.maxsize, 2**31 - 1))

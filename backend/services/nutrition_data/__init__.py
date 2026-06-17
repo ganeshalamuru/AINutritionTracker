@@ -41,6 +41,7 @@ from services.nutrition_data.mock import (
 from services.nutrition_data.nutrient_map import (
     ENERGY_FALLBACK_IDS,
     FDC_NUTRIENT_MAP,
+    OMEGA3_IDS,
 )
 
 __all__ = [
@@ -63,6 +64,7 @@ __all__ = [
     "DISH_ALIASES",
     "FDC_NUTRIENT_MAP",
     "ENERGY_FALLBACK_IDS",
+    "OMEGA3_IDS",
     "MOCK_MACROS",
     "MOCK_MICROS",
 ]

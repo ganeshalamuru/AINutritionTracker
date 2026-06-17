@@ -25,7 +25,23 @@ FDC_NUTRIENT_MAP = {
     1092: "potassium_mg",
     1095: "zinc_mg",
     1091: "phosphorus_mg",
+    # Lipid panel (well-covered in FNDDS) + extra minerals/other.
+    1258: "saturated_fat_g",  # Fatty acids, total saturated
+    1292: "mono_fat_g",  # Fatty acids, total monounsaturated
+    1293: "poly_fat_g",  # Fatty acids, total polyunsaturated
+    1253: "cholesterol_mg",
+    1103: "selenium_mcg",  # Selenium, Se
+    1098: "copper_mg",  # Copper, Cu
+    1180: "choline_mg",  # Choline, total
+    1057: "caffeine_mg",
 }
 
 # Energy is sometimes reported under Atwater factors instead of 1008.
 ENERGY_FALLBACK_IDS = (2047, 2048)
+
+# Omega-3 (EPA + DHA) is the sum of two USDA nutrients, both in grams per 100g.
+# A plain id->key map entry can't sum (extraction assigns, not accumulates), so these
+# are handled with a dedicated summation in usda_service._extract_per_100g and kept by
+# build_usda_db.py via KEEP_NUTRIENT_IDS. ALA (1404) is excluded deliberately: FNDDS
+# carries it for 0 foods, so it would read 0 on every matched dish.
+OMEGA3_IDS = (1278, 1272)  # EPA (20:5 n-3), DHA (22:6 n-3) -> omega3_g

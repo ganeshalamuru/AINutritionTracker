@@ -41,6 +41,7 @@ from services.nutrition_data import (
     GENERIC_WORDS,
     MOCK_MACROS,
     MOCK_MICROS,
+    OMEGA3_IDS,
     SIMPLIFY_STRIP_WORDS,
     USDA_CONNECT_TIMEOUT,
     USDA_DATA_TYPES,
@@ -195,6 +196,8 @@ def _extract_per_100g(food: dict) -> dict:
             if alt in raw:
                 per_100g["calories"] = float(raw[alt])
                 break
+    # Omega-3 (EPA + DHA) is the sum of two USDA nutrients; the id->key map can't sum.
+    per_100g["omega3_g"] = sum(float(raw[nid]) for nid in OMEGA3_IDS if nid in raw)
     return per_100g
 
 
