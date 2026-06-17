@@ -1,10 +1,11 @@
 import { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useLocation } from "react-router-dom";
 import { useProfile } from "../context/ProfileContext";
 import client from "../api/client";
 import MacroRing from "../components/meal/MacroRing";
 import MacroProgressBar from "../components/summary/MacroProgressBar";
 import Spinner from "../components/shared/Spinner";
+import Toast from "../components/shared/Toast";
 import EmptyState from "../components/shared/EmptyState";
 import MealCard from "../components/meal/MealCard";
 import GroupedMealCard from "../components/meal/GroupedMealCard";
@@ -54,10 +55,21 @@ function buildDisplayItems(meals) {
 export default function Home() {
   const { profile } = useProfile();
   const navigate = useNavigate();
+  const location = useLocation();
   const [summary, setSummary] = useState(null);
   const [loading, setLoading] = useState(true);
   const [groupDetails, setGroupDetails] = useState({});
+  const [toast, setToast] = useState(null);
   const { modalData, setModalData, openMeal, closeModal } = useMealModal();
+
+  // Show the one-off success message handed over from LogMeal on redirect, then strip it from
+  // history so it doesn't reappear on a refresh or a back-navigation to Home.
+  useEffect(() => {
+    if (location.state?.toast) {
+      setToast(location.state.toast);
+      navigate(location.pathname, { replace: true, state: {} });
+    }
+  }, [location, navigate]);
 
   const load = async () => {
     setLoading(true);
@@ -117,6 +129,7 @@ export default function Home() {
 
   return (
     <div className="pt-4 space-y-4">
+      {toast && <Toast message={toast} type="success" onClose={() => setToast(null)} />}
       <div>
         <h2 className="text-xl font-bold text-gray-900">Today's Summary</h2>
         <p className="text-sm text-gray-500">{summary?.meal_count || 0} meal{summary?.meal_count !== 1 ? "s" : ""} logged</p>

@@ -320,10 +320,13 @@ export default function LogMeal() {
           })),
         });
       }
-      setToast({ message: ready.length > 1 ? `${ready.length} meals logged!` : "Meal logged!", type: "success" });
       // Clear the persisted draft once it's saved — otherwise the logged photos would linger in
-      // the context and reappear on the next visit to /log.
-      setTimeout(() => { reset(); navigate("/home"); }, 1200);
+      // the context and reappear on the next visit to /log. Redirect immediately and hand the
+      // success message to Home via router state, so the confirmation follows the user there
+      // instead of needing a timer to keep them on /log (which used to yank tab-switchers back).
+      const message = ready.length > 1 ? `${ready.length} meals logged!` : "Meal logged!";
+      reset();
+      navigate("/home", { state: { toast: message } });
     } catch {
       setToast({ message: "Failed to log meal", type: "error" });
     } finally {
