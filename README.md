@@ -281,9 +281,14 @@ never compound rounding. Editing granularity follows a deliberate **clean split*
   field scales its whole subtotal; its detected ingredients were never looked up, so they stay
   read-only chips.
 - a **decomposed** dish exposes the *ingredient* as the editable unit — each resolved ingredient has
-  its own grams field and Remove/Undo (using the per-ingredient subtotals from Stage 2); the dish
-  grams is a derived read-only sum. Unmatched/skipped ingredients show but are gram-locked (no
-  nutrients to scale).
+  its own grams field and Remove/Undo (using the per-ingredient subtotals from Stage 2), and shows
+  its **share of the dish (%)**. The dish grams is the live sum of its ingredients **and is itself
+  editable**: typing a dish total re-portions every ingredient proportionally (preserving the
+  composition split, via a focus-snapshotted largest-remainder distribution so the parts always sum
+  to the typed total) — convenient when re-sizing the whole dish is easier than touching each part.
+  Editing a single ingredient instead moves only that ingredient, and the dish total follows by the
+  same delta. Unmatched/skipped ingredients show but are gram-locked for *direct* edits (no nutrients
+  to scale); they still scale with a dish-level edit so the composition stays true.
 
 Either kind can also gain **custom ingredients**: a "+ Add ingredient" control searches the offline
 USDA index (`GET /api/foods/search`, debounced type-to-list — richer keyboard-nav autocomplete is

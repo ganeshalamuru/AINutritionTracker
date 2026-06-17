@@ -26,8 +26,10 @@ const dishBaseline = (dish) =>
 //                     dish subtotal. Its detected ingredients were never looked up, so they
 //                     stay read-only chips. Custom-added ingredients are additive on top.
 //   - decomposed dish → the *ingredient* is the unit: each resolved ingredient carries its own
-//                     nutrients and is individually editable/removable; the dish grams is a
-//                     derived (read-only) sum.
+//                     nutrients and is individually editable/removable. The dish grams is the
+//                     live sum of its ingredients, and is *also* editable: typing a dish total
+//                     scales every ingredient proportionally (preserving the composition split),
+//                     so you can re-portion the whole dish without touching each ingredient.
 function buildDraft(data) {
   return (data.dishes || []).map((dish) => {
     const baseGrams = Math.round(dishBaseline(dish));
@@ -96,6 +98,34 @@ const mapIngredient = (dish, ingId, fn) => ({
   ...dish,
   ingredients: dish.ingredients.map((ing) => (ing.id === ingId ? fn(ing) : ing)),
 });
+
+// Split an integer `total` across weighted `parts` ([{id, weight}]) so the rounded
+// integer shares sum *exactly* to `total` (largest-remainder method — no ±1g drift vs
+// what the user typed into the dish field). Returns {id: grams}. When the parts carry no
+// weight (composition is all-zero, nothing to preserve), it falls back to an even split.
+function distributeGrams(total, parts) {
+  const out = {};
+  if (parts.length === 0) return out;
+  const t = Math.max(0, Math.round(total));
+  const sumW = parts.reduce((s, p) => s + (p.weight || 0), 0);
+  if (sumW <= 0) {
+    const base = Math.floor(t / parts.length);
+    const extra = t - base * parts.length;
+    parts.forEach((p, i) => { out[p.id] = base + (i < extra ? 1 : 0); });
+    return out;
+  }
+  let floorSum = 0;
+  const fracs = parts.map((p) => {
+    const exact = (t * (p.weight || 0)) / sumW;
+    const floor = Math.floor(exact);
+    out[p.id] = floor;
+    floorSum += floor;
+    return { id: p.id, frac: exact - floor };
+  });
+  fracs.sort((a, b) => b.frac - a.frac);
+  for (let i = 0; i < t - floorSum; i++) out[fracs[i].id] += 1;
+  return out;
+}
 
 // Downscale a photo in the browser before upload — cuts input tokens, upload time,
 // and latency. 384px keeps both dimensions ≤384 so vision APIs bill a flat ~258
@@ -227,6 +257,14 @@ export default function LogMeal() {
   // Edit one ingredient's grams (decomposed-dish ingredient or a custom add).
   const onIngGrams = (id, di, ingId, grams) =>
     mutateDraft(id, (draft) => mapDish(draft, di, (d) => mapIngredient(d, ingId, (ing) => ({ ...ing, grams }))));
+  // Re-portion a decomposed dish as a whole: set every ingredient's grams from a precomputed
+  // {id: grams} map (proportional scale, applied in one draft mutation so the meal re-sums once).
+  const onScaleIngredients = (id, di, gramsById) =>
+    mutateDraft(id, (draft) => mapDish(draft, di, (d) => ({
+      ...d,
+      ingredients: d.ingredients.map((ing) =>
+        ing.id in gramsById ? { ...ing, grams: gramsById[ing.id] } : ing),
+    })));
   // Remove (or restore) a single ingredient.
   const onIngRemoved = (id, di, ingId, removed) =>
     mutateDraft(id, (draft) => mapDish(draft, di, (d) => mapIngredient(d, ingId, (ing) => ({ ...ing, removed }))));
@@ -346,6 +384,7 @@ export default function LogMeal() {
               onDishRemoved={(di, removed) => onDishRemoved(photo.id, di, removed)}
               onIngGrams={(di, ingId, g) => onIngGrams(photo.id, di, ingId, g)}
               onIngRemoved={(di, ingId, removed) => onIngRemoved(photo.id, di, ingId, removed)}
+              onScaleIngredients={(di, gramsById) => onScaleIngredients(photo.id, di, gramsById)}
               onAddIngredient={(di, ingredient) => onAddIngredient(photo.id, di, ingredient)}
               onRemove={!isAnalyzing ? () => removePhoto(photo.id) : undefined}
               onRetry={() => retryPhoto(photo.id)}
@@ -439,7 +478,7 @@ function AddPhotoButton({ onClick }) {
   );
 }
 
-function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onAddIngredient, onRemove, onRetry }) {
+function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onScaleIngredients, onAddIngredient, onRemove, onRetry }) {
   // Live (portion-edited) totals when present, else the original analysis values.
   const macros = photo.liveMacros || photo.analysis?.macros;
   const micros = photo.liveMicros || photo.analysis?.micros;
@@ -558,8 +597,9 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
                 </span>
                 <p className="text-[11px] text-gray-400 mb-2">
                   Green = found in the food database. A matched dish is counted whole (edit its
-                  portion); an unmatched dish is counted from its ingredients (edit each one).
-                  Add or remove items and nutrition updates automatically.
+                  portion); an unmatched dish is counted from its ingredients — edit each one, or
+                  set the dish total to scale them all by their share (%). Add or remove items and
+                  nutrition updates automatically.
                 </p>
                 <div className="space-y-2.5">
                   {photo.draft.map((dish, i) => (
@@ -570,6 +610,7 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
                       onDishRemoved={(r) => onDishRemoved(i, r)}
                       onIngGrams={(ingId, g) => onIngGrams(i, ingId, g)}
                       onIngRemoved={(ingId, r) => onIngRemoved(i, ingId, r)}
+                      onScaleIngredients={(gramsById) => onScaleIngredients(i, gramsById)}
                       onAddIngredient={(ingredient) => onAddIngredient(i, ingredient)}
                     />
                   ))}
@@ -616,19 +657,43 @@ const ING_STYLE = {
   skipped: "bg-gray-200 text-gray-500 line-through",
 };
 
-function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onAddIngredient }) {
+function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onScaleIngredients, onAddIngredient }) {
   const removed = dish.removed;
   const decomposed = !dish.matched;
-  // Matched dishes scale by an editable dish portion; decomposed dishes derive their grams
-  // from the (live) sum of their non-removed ingredients, so the field is read-only there.
+  // A matched dish scales by its editable portion; a decomposed dish's grams is the (live) sum
+  // of its non-removed ingredients — which is also editable: typing a total re-portions the
+  // ingredients proportionally (see onDishTotal).
   const liveGrams = decomposed
     ? Math.round(
         dish.ingredients.reduce((s, ing) => (ing.removed ? s : s + (ing.grams || 0)), 0)
       )
     : dish.grams;
-  // No baseline weight on a matched dish → nothing to scale from, so lock the field.
+  // A matched dish with no baseline weight has nothing to scale from, so lock it; a decomposed
+  // dish is editable unless removed.
   const dishLocked = removed || (!decomposed && !(dish.baseGrams > 0));
   const factor = !decomposed && dish.baseGrams > 0 ? (dish.grams || 0) / dish.baseGrams : 1;
+
+  // Composition snapshot ({id: weight}) for proportional dish-level scaling. Captured when the
+  // dish-grams field gains focus so that clearing it to 0 and typing a new total back up can't
+  // collapse the ingredient ratios (intermediate integer rounding would otherwise lose them).
+  // Only the *weights* are snapshotted; *membership* is always read live below, so adding or
+  // removing an ingredient mid-edit is honored. Every non-removed ingredient shares the scale —
+  // including nutrient-less ones — so the true composition split is preserved.
+  const ratiosRef = useRef(null);
+  const snapshotRatios = () => {
+    ratiosRef.current = Object.fromEntries(
+      dish.ingredients.filter((ing) => !ing.removed).map((ing) => [ing.id, ing.grams || 0])
+    );
+  };
+  const onDishTotal = (total) => {
+    const snap = ratiosRef.current;
+    // Membership from the current ingredient set; weight from the focus snapshot (falling back to
+    // live grams for an ingredient added after focus).
+    const parts = dish.ingredients
+      .filter((ing) => !ing.removed)
+      .map((ing) => ({ id: ing.id, weight: snap?.[ing.id] ?? (ing.grams || 0) }));
+    onScaleIngredients(distributeGrams(total, parts));
+  };
 
   // For a matched dish the detected ingredients were never looked up → read-only chips that
   // scale with the dish portion. Custom adds are always editable rows.
@@ -666,9 +731,15 @@ function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, o
             min="0"
             inputMode="numeric"
             value={Number.isFinite(liveGrams) ? liveGrams : 0}
-            onChange={(e) => onDishGrams(e.target.value === "" ? 0 : Math.max(0, Number(e.target.value)))}
-            disabled={dishLocked || decomposed}
-            title={decomposed ? "Total of the ingredient portions below" : undefined}
+            onFocus={decomposed ? snapshotRatios : undefined}
+            onBlur={decomposed ? () => { ratiosRef.current = null; } : undefined}
+            onChange={(e) => {
+              const v = e.target.value === "" ? 0 : Math.max(0, Number(e.target.value));
+              if (decomposed) onDishTotal(v);
+              else onDishGrams(v);
+            }}
+            disabled={dishLocked}
+            title={decomposed ? "Edit to scale all ingredients proportionally" : undefined}
             className="w-14 border border-gray-200 rounded-lg px-1.5 py-0.5 text-xs text-right focus:outline-none focus:border-green-400 disabled:bg-gray-100 disabled:text-gray-400"
           />
           <span className="text-[11px] text-gray-400">g</span>
@@ -718,6 +789,12 @@ function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, o
               key={ing.id}
               ing={ing}
               locked={removed || !ingHasNutrients(ing)}
+              // Composition share — only meaningful for a decomposed dish (matched dishes have no
+              // editable per-ingredient grams), for a non-removed ingredient, when the dish total
+              // is known (> 0). Otherwise null = no badge.
+              pct={decomposed && !ing.removed && liveGrams > 0
+                ? Math.round(((ing.grams || 0) / liveGrams) * 100)
+                : null}
               onGrams={(g) => onIngGrams(ing.id, g)}
               onRemove={() => onIngRemoved(ing.id, true)}
               onUndo={() => onIngRemoved(ing.id, false)}
@@ -732,7 +809,7 @@ function DishRow({ dish, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, o
   );
 }
 
-function IngredientRow({ ing, locked, onGrams, onRemove, onUndo }) {
+function IngredientRow({ ing, locked, pct, onGrams, onRemove, onUndo }) {
   const removed = ing.removed;
   return (
     <div className={`grid grid-cols-[1fr_auto_auto] items-center gap-2 ${removed ? "opacity-60" : ""}`}>
@@ -744,6 +821,8 @@ function IngredientRow({ ing, locked, onGrams, onRemove, onUndo }) {
         >
           {ing.food}
         </span>
+        {/* Share of the dish's total grams — a quick read on the composition split. */}
+        {pct != null && <span className="text-[10px] text-gray-400 shrink-0">{pct}%</span>}
         {!removed && ing.custom && <span className="text-[10px] text-green-600 shrink-0">added</span>}
         {!removed && !ing.custom && ing.status === "unmatched" && (
           <span className="text-[10px] text-yellow-600 shrink-0">not found</span>
