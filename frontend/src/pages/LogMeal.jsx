@@ -7,7 +7,7 @@ import Spinner from "../components/shared/Spinner";
 import Toast from "../components/shared/Toast";
 import MicroGrid from "../components/meal/MicroGrid";
 import MacroHighlights from "../components/meal/MacroHighlights";
-import FatBreakdown from "../components/meal/FatBreakdown";
+import FatBreakdown, { hasFatBreakdown, FatCell } from "../components/meal/FatBreakdown";
 import { uid } from "../utils/uid";
 
 // Cap a single meal log at 4 photos — keeps the multi-photo analyze burst within free-tier
@@ -486,6 +486,7 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
   // Live (portion-edited) totals when present, else the original analysis values.
   const macros = photo.liveMacros || photo.analysis?.macros;
   const micros = photo.liveMicros || photo.analysis?.micros;
+  const [fatOpen, setFatOpen] = useState(false);
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
       <div className="relative">
@@ -582,14 +583,17 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
                   <p className="font-bold text-orange-400">{Math.round(macros.carbs_g)}g</p>
                   <p className="text-gray-400">Carbs</p>
                 </div>
-                <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-purple-500">{Math.round(macros.fat_g)}g</p>
-                  <p className="text-gray-400">Fat</p>
-                </div>
+                <FatCell
+                  value={macros.fat_g}
+                  expandable={hasFatBreakdown(micros)}
+                  open={fatOpen}
+                  onToggle={() => setFatOpen((o) => !o)}
+                  className="bg-white rounded-lg p-1.5 w-full"
+                  valueClass="font-bold text-purple-500"
+                  labelClass="text-gray-400"
+                />
               </div>
-              <div className="mt-2">
-                <FatBreakdown micros={micros} />
-              </div>
+              <FatBreakdown micros={micros} open={fatOpen} />
               <div className="flex justify-around mt-2 text-xs text-gray-400">
                 <span>Fiber {Math.round(macros.fiber_g)}g</span>
                 <span>Sugar {Math.round(macros.sugar_g)}g</span>

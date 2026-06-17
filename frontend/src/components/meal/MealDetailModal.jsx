@@ -2,12 +2,14 @@ import { useState } from "react";
 import client from "../../api/client";
 import MicroGrid from "./MicroGrid";
 import MacroHighlights from "./MacroHighlights";
-import FatBreakdown from "./FatBreakdown";
+import FatBreakdown, { hasFatBreakdown, FatCell } from "./FatBreakdown";
 import ConfirmModal from "../shared/ConfirmModal";
 import { MEAL_TYPE_COLORS } from "../../constants";
 import { formatDateTime } from "../../utils/format";
 
 function MacroRow({ macros, micros }) {
+  const [fatOpen, setFatOpen] = useState(false);
+  const fatExpandable = hasFatBreakdown(micros);
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
@@ -24,12 +26,16 @@ function MacroRow({ macros, micros }) {
           <p className="font-bold text-orange-500">{Math.round(macros.carbs_g)}g</p>
           <p className="text-xs text-gray-500">Carbs</p>
         </div>
-        <div className="bg-purple-50 rounded-xl p-2.5">
-          <p className="font-bold text-purple-600">{Math.round(macros.fat_g)}g</p>
-          <p className="text-xs text-gray-500">Fat</p>
-        </div>
+        <FatCell
+          value={macros.fat_g}
+          expandable={fatExpandable}
+          open={fatOpen}
+          onToggle={() => setFatOpen((o) => !o)}
+          className="bg-purple-50 rounded-xl p-2.5 w-full"
+          valueClass="font-bold text-purple-600"
+        />
       </div>
-      <FatBreakdown micros={micros} />
+      <FatBreakdown micros={micros} open={fatOpen} />
       <div className="flex justify-around pt-1 text-xs text-gray-500 border-t border-gray-100">
         <div className="text-center">
           <p className="font-semibold text-gray-700">{Math.round(macros.fiber_g)}g</p>
