@@ -16,7 +16,6 @@ import threading
 import time
 
 import google.generativeai as genai
-import requests
 
 from core import config
 from core.config import DEFAULT_MODEL, DEFAULT_PROVIDER
@@ -34,11 +33,12 @@ logger = logging.getLogger("nutriai.vision")
 # resources, the registry is populated in the app lifespan (core.lifespan calls
 # reload_clients at startup) and rebuilt only when a key/provider/model changes in
 # config (routers.config calls reload_clients after PUT /api/config). The lock serializes
-# those rare rebuilds; the request hot path (_groq_analyze / _gemini_analyze) just reads
-# the global, which is atomic under the GIL — no per-call lock or key comparison.
+# those rare rebuilds; the request hot path (_groq_analyze / _gemini_analyze / _ollama_analyze)
+# just reads the global, which is atomic under the GIL — no per-call lock or key comparison.
 _lock = threading.Lock()
 _groq_client = None  # built from groq_api_key
 _gemini_model = None  # built from (gemini_api_key, vision_model)
+_ollama_client = None  # official ollama.Client (local daemon, no key)
 
 
 def _build_groq(api_key: str):
@@ -55,22 +55,33 @@ def _build_gemini(api_key: str, model: str):
     )
 
 
+def _build_ollama():
+    from ollama import Client  # lazy: mirror the other builders
+
+    # Pooled httpx client to the local daemon; no API key. The long timeout covers the
+    # one-time cold model load into VRAM on the first /analyze after startup.
+    return Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
+
+
 def reload_clients(db):
     """(Re)build the vision provider clients from current config. Called once at startup
-    (core.lifespan) and again after every PUT /api/config. A client is built for each
-    provider that has a key, so switching provider in Settings is ready immediately. The
-    lock serializes rebuilds; dispatch reads the resulting globals without locking."""
+    (core.lifespan) and again after every PUT /api/config. A keyed client is built for each
+    provider that has a key; the keyless Ollama client is always built (it's just a local
+    HTTP endpoint), so switching provider in Settings is ready immediately. The lock
+    serializes rebuilds; dispatch reads the resulting globals without locking."""
     _, model = config.get_vision_config(db)
     groq_key = config.get_value(db, "groq_api_key")
     gemini_key = config.get_value(db, "gemini_api_key")
     with _lock:
-        global _groq_client, _gemini_model
+        global _groq_client, _gemini_model, _ollama_client
         _groq_client = _build_groq(groq_key) if groq_key else None
         _gemini_model = _build_gemini(gemini_key, model) if gemini_key else None
+        _ollama_client = _build_ollama()
     logger.info(
-        "vision clients reloaded (groq=%s, gemini=%s, model=%s)",
+        "vision clients reloaded (groq=%s, gemini=%s, ollama=%s, model=%s)",
         _groq_client is not None,
         _gemini_model is not None,
+        _ollama_client is not None,
         model,
     )
 
@@ -95,45 +106,6 @@ OLLAMA_TIMEOUT = 120
 # the KV reservation and pushes more model layers onto the CPU (slower) on a small GPU.
 # Override via env only if a very high-res photo ever truncates.
 OLLAMA_NUM_CTX = int(os.environ.get("OLLAMA_NUM_CTX", "4096"))
-
-# Ollama structured-output schema for the response. The cloud models (Llama 4 Scout /
-# Gemini) follow the prompt's shape from `format: "json"` alone, but a local 4B collapses
-# a single-dish photo to a bare {name,total_grams,components} object and drops the
-# {meal_name,type,confidence,dishes:[...]} wrapper — so _parse_compact finds no `dishes`
-# array and returns zero dishes. Passing the schema constrains decoding to the exact
-# wrapper; the model only fills the values.
-_OLLAMA_FORMAT = {
-    "type": "object",
-    "properties": {
-        "meal_name": {"type": "string"},
-        "type": {"type": "string"},
-        "confidence": {"type": "string"},
-        "dishes": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string"},
-                    "total_grams": {"type": "number"},
-                    "components": {
-                        "type": "array",
-                        "items": {
-                            "type": "object",
-                            "properties": {
-                                "item": {"type": "string"},
-                                "usda_name": {"type": "string"},
-                                "grams": {"type": "number"},
-                            },
-                            "required": ["item", "usda_name", "grams"],
-                        },
-                    },
-                },
-                "required": ["name", "total_grams", "components"],
-            },
-        },
-    },
-    "required": ["meal_name", "type", "confidence", "dishes"],
-}
 
 # Mock vision output: the dish list (macros/micros come from the lookup stage, which
 # short-circuits to canned values under MOCK_GEMINI — see usda_service).
@@ -315,25 +287,22 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, st
 
 
 def _ollama_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
-    """Local vision via the Ollama daemon (no API key, no client to pre-build — it's a
-    stateless HTTP endpoint on the machine). Mirrors _groq_analyze's shape: image goes in
-    as base64, `format` carries the response JSON schema so decoding is constrained to our
-    {meal_name,type,confidence,dishes:[...]} shape (a 4B drops the wrapper otherwise),
-    temperature 0 for determinism."""
-    b64 = base64.b64encode(image_bytes).decode()
-    response = requests.post(
-        f"{OLLAMA_HOST}/api/chat",
-        json={
-            "model": model,
-            "stream": False,
-            "format": _OLLAMA_FORMAT,
-            "options": {"temperature": 0, "num_ctx": OLLAMA_NUM_CTX},
-            "messages": [{"role": "user", "content": prompt, "images": [b64]}],
-        },
-        timeout=OLLAMA_TIMEOUT,
+    """Local vision via the official Ollama client (no API key). Mirrors _groq_analyze:
+    the image is passed as raw bytes (the client base64-encodes it), `format="json"` is
+    plain JSON mode like Groq's response_format — the current qwen3-vl models keep our
+    {meal_name,type,confidence,dishes:[...]} shape from the prompt alone (verified on the
+    4B and 8B), so no explicit JSON schema is needed; temperature 0 for determinism."""
+    client = _ollama_client
+    if client is None:
+        raise RuntimeError("Ollama client not initialized.")
+    response = client.chat(
+        model=model,
+        messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
+        format="json",
+        options={"temperature": 0, "num_ctx": OLLAMA_NUM_CTX},
+        stream=False,
     )
-    response.raise_for_status()
-    raw = response.json().get("message", {}).get("content") or ""
+    raw = response.message.content or ""
     return _parse_compact(raw), raw
 
 

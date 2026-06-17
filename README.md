@@ -164,8 +164,10 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   stay authoritative). `vision_service._parse_compact` remaps this to the internal shape
   (`meal_type`/`dishes:[{name, grams, items:[{food, grams, usda_name}]}]`), defaulting `usda_name`
   to `food` when the model omits it, and coerces `type`/`confidence` to the known vocabularies
-  before the strict `AnalyzeResponse`. For local Ollama the same schema is passed as `format` so a
-  small model can't drop the wrapper.
+  before the strict `AnalyzeResponse`. All three providers reach the model through their official
+  client (Groq / Gemini / **`ollama`**) in **plain JSON mode** (`format="json"` / `response_format`)
+  — the prompt alone carries the shape, and the current `qwen3-vl` models keep the wrapper without a
+  hard JSON schema (verified on the 4B and 8B).
 - **Stage 2 — nutrient lookup** (`usda_service`) is **dish-first**: it looks the whole dish up in
   USDA's **FNDDS** database (which carries composite dishes, including Indian ones like
   idli/dosa/sambar — and sweets such as ladoo/barfi natively, or via a close proxy where FNDDS

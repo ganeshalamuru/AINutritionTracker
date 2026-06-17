@@ -132,12 +132,15 @@ class ReloadClientsTest(unittest.TestCase):
                 "get_value",
                 side_effect=lambda db, key, default="": values.get(key, default),
             ),
+            # The keyless Ollama client is always built; stub it so the test stays hermetic.
+            patch.object(gs, "_build_ollama", return_value=object()),
         ):
             gs.reload_clients(db=None)
 
     def tearDown(self):
         gs._groq_client = None
         gs._gemini_model = None
+        gs._ollama_client = None
 
     def test_groq_client_built_when_key_present(self):
         self._reload(groq_key="test-key")
@@ -149,24 +152,34 @@ class ReloadClientsTest(unittest.TestCase):
 
 
 class OllamaAnalyzeTest(unittest.TestCase):
-    """_ollama_analyze posts to the local Ollama daemon and parses message.content via
-    _parse_compact. No network: requests.post is stubbed."""
+    """_ollama_analyze calls the official ollama client's chat() and parses
+    message.content via _parse_compact. No network: the client is a fake."""
 
-    def test_posts_image_and_parses_dish_list(self):
+    def tearDown(self):
+        gs._ollama_client = None
+
+    def test_calls_client_and_parses_dish_list(self):
         content = (
             '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":['
             '{"name":"dosa","total_grams":120,"components":[{"item":"rice","grams":80}]}]}'
         )
 
         class FakeResponse:
-            def raise_for_status(self):
+            class message:  # noqa: N801 — mirrors ollama's response.message.content
                 pass
 
-            def json(self):
-                return {"message": {"content": content}}
+        class FakeClient:
+            def __init__(self):
+                self.calls = []
 
-        with patch.object(gs.requests, "post", return_value=FakeResponse()) as post:
-            result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
+            def chat(self, **kwargs):
+                self.calls.append(kwargs)
+                resp = FakeResponse()
+                resp.message.content = content
+                return resp
+
+        gs._ollama_client = FakeClient()
+        result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
 
         self.assertEqual(raw, content)
         self.assertEqual(
@@ -179,20 +192,17 @@ class OllamaAnalyzeTest(unittest.TestCase):
                 }
             ],
         )
-        # Sent to the chat endpoint with the model, JSON format, and a base64 image.
-        url = post.call_args.args[0]
-        payload = post.call_args.kwargs["json"]
-        self.assertTrue(url.endswith("/api/chat"))
-        self.assertEqual(payload["model"], "qwen3-vl:8b-instruct")
-        # format carries the response JSON schema (constrained decoding), not just "json".
-        self.assertEqual(payload["format"], gs._OLLAMA_FORMAT)
-        self.assertIn("dishes", payload["format"]["required"])
-        self.assertFalse(payload["stream"])
+        # Called with the model, plain JSON mode (like Groq — no explicit schema), the raw
+        # image bytes (the client base64-encodes them), and the capped num_ctx.
+        kwargs = gs._ollama_client.calls[0]
+        self.assertEqual(kwargs["model"], "qwen3-vl:8b-instruct")
+        self.assertEqual(kwargs["format"], "json")
+        self.assertFalse(kwargs["stream"])
         # num_ctx is capped so Ollama doesn't reserve VRAM for the model's 262k context
         # and offload layers to CPU.
-        self.assertEqual(payload["options"]["num_ctx"], gs.OLLAMA_NUM_CTX)
-        self.assertEqual(payload["messages"][0]["content"], "PROMPT")
-        self.assertEqual(len(payload["messages"][0]["images"]), 1)
+        self.assertEqual(kwargs["options"]["num_ctx"], gs.OLLAMA_NUM_CTX)
+        self.assertEqual(kwargs["messages"][0]["content"], "PROMPT")
+        self.assertEqual(kwargs["messages"][0]["images"], [b"\xff\xd8jpegbytes"])
 
 
 class MockResponseTest(unittest.TestCase):
