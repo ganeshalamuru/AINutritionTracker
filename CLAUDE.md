@@ -5,6 +5,7 @@ Guidance for Claude Code when working in this repository.
 ## Permissions / Boundaries
 
 - Never run external probes, USDA API calls, or expensive network operations without explicit user permission first.
+- Don't run expensive *local* operations (e.g. Ollama inference — especially the 8B model, which offloads to CPU and takes ~40s/photo) without first calling out the scope and cost. Even with general permission to "test locally", state exactly what will run (which models, how many calls, rough time) and let the user confirm before launching — don't quietly include the heavy 8B when the user expected only the 4B.
 
 ## Testing / Commit Workflow
 
