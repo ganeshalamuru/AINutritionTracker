@@ -48,14 +48,13 @@ def food(data_type, desc, fdc_id, nutrients=None, score=0):
 
 def structure(dishes):
     """A breakdown's structural fields only — drops the per-dish AND per-ingredient
-    macros/micros subtotals (added for client-side portion rescaling) so tests can assert
+    `nutrients` subtotals (added for client-side portion rescaling) so tests can assert
     dish/ingredient shape."""
     out = []
     for d in dishes:
-        dd = {k: v for k, v in d.items() if k not in ("macros", "micros")}
+        dd = {k: v for k, v in d.items() if k != "nutrients"}
         dd["ingredients"] = [
-            {k: v for k, v in ing.items() if k not in ("macros", "micros")}
-            for ing in dd.get("ingredients", [])
+            {k: v for k, v in ing.items() if k != "nutrients"} for ing in dd.get("ingredients", [])
         ]
         out.append(dd)
     return out
@@ -413,24 +412,24 @@ class NutritionDbTest(unittest.TestCase):
             }
         ]
         with patch.object(nd._client.session, "post", side_effect=post):
-            macros, _micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
         self.assertEqual(unmatched, ["mystery sauce"])
         self.assertEqual(skipped, [])
         dish = dishes_out[0]
         self.assertFalse(dish["matched"])
         ings = {ing["food"]: ing for ing in dish["ingredients"]}
-        self.assertAlmostEqual(ings["white rice, cooked"]["macros"]["calories"], 200.0)
-        self.assertAlmostEqual(ings["white rice, cooked"]["micros"]["iron_mg"], 2.0)
-        self.assertAlmostEqual(ings["bhindi"]["macros"]["calories"], 50.0)
-        self.assertAlmostEqual(ings["mystery sauce"]["macros"]["calories"], 0.0)
+        self.assertAlmostEqual(ings["white rice, cooked"]["nutrients"]["calories"], 200.0)
+        self.assertAlmostEqual(ings["white rice, cooked"]["nutrients"]["iron_mg"], 2.0)
+        self.assertAlmostEqual(ings["bhindi"]["nutrients"]["calories"], 50.0)
+        self.assertAlmostEqual(ings["mystery sauce"]["nutrients"]["calories"], 0.0)
         # Invariant: per-ingredient subtotals sum to the dish subtotal and the meal total.
         self.assertAlmostEqual(
-            sum(ing["macros"]["calories"] for ing in dish["ingredients"]),
-            dish["macros"]["calories"],
+            sum(ing["nutrients"]["calories"] for ing in dish["ingredients"]),
+            dish["nutrients"]["calories"],
         )
-        self.assertAlmostEqual(dish["macros"]["calories"], 250.0)
-        self.assertAlmostEqual(macros["calories"], 250.0)
+        self.assertAlmostEqual(dish["nutrients"]["calories"], 250.0)
+        self.assertAlmostEqual(nutrients["calories"], 250.0)
 
     def test_matched_dish_ingredients_have_zero_subtotals(self):
         # A whole-dish match counts the dish as one unit; its ingredients aren't looked up,
@@ -442,11 +441,11 @@ class NutritionDbTest(unittest.TestCase):
 
         dishes = [{"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]}]
         with patch.object(nd._client.session, "post", side_effect=post):
-            _macros, _micros, _unmatched, _skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            _nutrients, _unmatched, _skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
         ing = dishes_out[0]["ingredients"][0]
         self.assertEqual(ing["status"], "not_looked_up")
-        self.assertAlmostEqual(ing["macros"]["calories"], 0.0)
+        self.assertAlmostEqual(ing["nutrients"]["calories"], 0.0)
 
     # --- dish-first behaviour ---
 
@@ -473,9 +472,9 @@ class NutritionDbTest(unittest.TestCase):
             }
         ]
         with patch.object(nd._client.session, "post", side_effect=post):
-            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
-        self.assertAlmostEqual(macros["calories"], 240.0)  # 150 * 160/100, NOT rice+urad
+        self.assertAlmostEqual(nutrients["calories"], 240.0)  # 150 * 160/100, NOT rice+urad
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
         # matched dish -> name highlighted, ingredients carried but not looked up
@@ -494,7 +493,7 @@ class NutritionDbTest(unittest.TestCase):
             ],
         )
         # matched dish's per-dish subtotal = dish per-100g * grams/100
-        self.assertAlmostEqual(dishes_out[0]["macros"]["calories"], 240.0)
+        self.assertAlmostEqual(dishes_out[0]["nutrients"]["calories"], 240.0)
         self.assertEqual(ingredient_queries, [])  # fallback never ran
 
     def test_curated_dish_miss_falls_back_to_ingredients(self):
@@ -521,10 +520,10 @@ class NutritionDbTest(unittest.TestCase):
             }
         ]
         with patch.object(nd._client.session, "post", side_effect=post):
-            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
         self.assertEqual(dish_searched, ["dal"])  # curated -> dish lookup attempted
-        self.assertAlmostEqual(macros["calories"], 260.0)  # rice 130 * 200/100
+        self.assertAlmostEqual(nutrients["calories"], 260.0)  # rice 130 * 200/100
         self.assertEqual(unmatched, ["secret spice"])
         self.assertEqual(skipped, [])
         # dish missed -> not matched, each ingredient carries its own USDA outcome
@@ -543,7 +542,7 @@ class NutritionDbTest(unittest.TestCase):
             ],
         )
         # decomposed dish's per-dish subtotal = sum of matched ingredient contributions
-        self.assertAlmostEqual(dishes_out[0]["macros"]["calories"], 260.0)
+        self.assertAlmostEqual(dishes_out[0]["nutrients"]["calories"], 260.0)
 
     def test_uncurated_dish_skips_dish_lookup(self):
         # A dish name not in DISH_ALIASES gets NO speculative whole-dish lookup; it
@@ -567,10 +566,10 @@ class NutritionDbTest(unittest.TestCase):
             }
         ]
         with patch.object(nd._client.session, "post", side_effect=post):
-            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
         self.assertEqual(dish_searches, [])  # no dish-level lookup attempted
-        self.assertAlmostEqual(macros["calories"], 260.0)  # decomposed: rice 130 * 200/100
+        self.assertAlmostEqual(nutrients["calories"], 260.0)  # decomposed: rice 130 * 200/100
         self.assertEqual(unmatched, ["secret spice"])
         self.assertEqual(dishes_out[0]["matched"], False)
 
@@ -598,27 +597,27 @@ class NutritionDbTest(unittest.TestCase):
             {"name": "rice bowl", "grams": 200, "items": [{"food": "rice", "grams": 200}]},
         ]
         with patch.object(nd._client.session, "post", side_effect=post):
-            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
 
         idli_d = next(d for d in dishes_out if d["name"] == "idli")
         bowl_d = next(d for d in dishes_out if d["name"] == "rice bowl")
         # matched dish: dish per-100g 100 cal * 160/100 = 160
         self.assertTrue(idli_d["matched"])
-        self.assertAlmostEqual(idli_d["macros"]["calories"], 160.0)
-        self.assertAlmostEqual(idli_d["macros"]["protein_g"], 8.0)  # 5 * 1.6
+        self.assertAlmostEqual(idli_d["nutrients"]["calories"], 160.0)
+        self.assertAlmostEqual(idli_d["nutrients"]["protein_g"], 8.0)  # 5 * 1.6
         # decomposed dish: rice 130 cal * 200/100 = 260
         self.assertFalse(bowl_d["matched"])
-        self.assertAlmostEqual(bowl_d["macros"]["calories"], 260.0)
-        self.assertAlmostEqual(bowl_d["macros"]["protein_g"], 4.0)  # 2 * 2.0
+        self.assertAlmostEqual(bowl_d["nutrients"]["calories"], 260.0)
+        self.assertAlmostEqual(bowl_d["nutrients"]["protein_g"], 4.0)  # 2 * 2.0
         # per-dish subtotals sum to the meal totals (within rounding)
         self.assertAlmostEqual(
-            idli_d["macros"]["calories"] + bowl_d["macros"]["calories"],
-            macros["calories"],
+            idli_d["nutrients"]["calories"] + bowl_d["nutrients"]["calories"],
+            nutrients["calories"],
             places=2,
         )
         self.assertAlmostEqual(
-            idli_d["macros"]["protein_g"] + bowl_d["macros"]["protein_g"],
-            macros["protein_g"],
+            idli_d["nutrients"]["protein_g"] + bowl_d["nutrients"]["protein_g"],
+            nutrients["protein_g"],
             places=2,
         )
 
@@ -670,10 +669,10 @@ class NutritionDbTest(unittest.TestCase):
         try:
             # requests.post is NOT patched — a network call here would error/hang.
             dishes = [{"name": "idli", "grams": 160, "items": [{"food": "rice", "grams": 90}]}]
-            macros, micros, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
+            nutrients, unmatched, skipped, dishes_out = nd.nutrients_for_meal(dishes)
         finally:
             os.environ.pop("MOCK_GEMINI", None)
-        self.assertEqual(macros["calories"], nd.MOCK_MACROS["calories"])
+        self.assertEqual(nutrients["calories"], nd.MOCK_NUTRIENTS["calories"])
         self.assertEqual(unmatched, [])
         self.assertEqual(skipped, [])
         self.assertEqual(
@@ -688,7 +687,9 @@ class NutritionDbTest(unittest.TestCase):
             ],
         )
         # single dish gets the full canned total as its per-dish subtotal
-        self.assertEqual(dishes_out[0]["macros"]["calories"], round(nd.MOCK_MACROS["calories"], 2))
+        self.assertEqual(
+            dishes_out[0]["nutrients"]["calories"], round(nd.MOCK_NUTRIENTS["calories"], 4)
+        )
 
     # --- spices: model wording -> USDA wording ---
 

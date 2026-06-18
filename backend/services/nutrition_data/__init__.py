@@ -35,8 +35,7 @@ from services.nutrition_data.config import (
     USDA_TRANSIENT_STATUS,
 )
 from services.nutrition_data.mock import (
-    MOCK_MACROS,
-    MOCK_MICROS,
+    MOCK_NUTRIENTS,
 )
 from services.nutrition_data.nutrient_map import (
     ENERGY_FALLBACK_IDS,
@@ -65,6 +64,5 @@ __all__ = [
     "FDC_NUTRIENT_MAP",
     "ENERGY_FALLBACK_IDS",
     "OMEGA3_IDS",
-    "MOCK_MACROS",
-    "MOCK_MICROS",
+    "MOCK_NUTRIENTS",
 ]

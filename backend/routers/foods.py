@@ -1,14 +1,14 @@
 """Public read-only API over the offline USDA search index (backend/usda_local.db).
 
 Always mounted (USDA data isn't sensitive). Thin wrappers over services.usda_local_search:
-full-text search and fetch-by-id, with nutrients mapped into the app's macro/micro schema by
+full-text search and fetch-by-id, with nutrients mapped into the app's flat nutrient schema by
 reusing usda_service._extract_per_100g — the same extractor Stage 2 uses, so numbers match the
 analyzer. Returns 503 when the index hasn't been built (run `python build_usda_db.py`)."""
 
 from fastapi import APIRouter, HTTPException, Query
 
-from core.nutrients import MACRO_KEYS, MICRO_KEYS
-from schemas import FoodDetail, FoodSummary, MacrosData, MicrosData
+from core.nutrients import NUTRIENT_KEYS
+from schemas import FoodDetail, FoodSummary, NutrientsData
 from services import usda_local_search
 from services.usda_service import _extract_per_100g
 
@@ -62,6 +62,5 @@ def get_food(fdc_id: int):
         fdc_id=food["fdcId"],
         description=food["description"],
         data_type=food["dataType"],
-        macros=MacrosData(**{k: per_100g[k] for k in MACRO_KEYS}),
-        micros=MicrosData(**{k: per_100g[k] for k in MICRO_KEYS}),
+        nutrients=NutrientsData(**{k: per_100g[k] for k in NUTRIENT_KEYS}),
     )

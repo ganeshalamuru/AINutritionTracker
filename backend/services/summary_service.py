@@ -7,40 +7,37 @@ from datetime import UTC, datetime
 from sqlalchemy import extract
 from sqlalchemy.orm import Session
 
-from core.nutrients import MACRO_KEYS, MICRO_KEYS, to_macros_data
+from core.nutrients import NUTRIENT_KEYS, to_nutrients_data
 from models import Meal
 from schemas import DailyBreakdown, DailySummary, MealSummary, MonthlySummary
 
-_ALL_FIELDS = MACRO_KEYS + MICRO_KEYS
+_ALL_FIELDS = NUTRIENT_KEYS
 
 
 def _meal_to_summary(m: Meal) -> MealSummary:
-    md = to_macros_data(m.macros)
+    nd = to_nutrients_data(m.nutrients)
     return MealSummary(
         id=m.id,
         meal_name=m.meal_name,
         meal_type=m.meal_type,
         logged_at=m.logged_at,
-        calories=md.calories,
-        protein_g=md.protein_g,
-        carbs_g=md.carbs_g,
-        fat_g=md.fat_g,
-        fiber_g=md.fiber_g,
-        sugar_g=md.sugar_g,
-        sodium_mg=md.sodium_mg,
+        calories=nd.calories,
+        protein_g=nd.protein_g,
+        carbs_g=nd.carbs_g,
+        fat_g=nd.fat_g,
+        fiber_g=nd.fiber_g,
+        sugar_g=nd.sugar_g,
+        sodium_mg=nd.sodium_mg,
         has_image=m.image_path is not None,
         group_id=m.group_id,
     )
 
 
 def _accumulate(target: dict, m: Meal):
-    """Add a meal's macro + micro values into a running totals dict."""
-    if m.macros:
-        for f in MACRO_KEYS:
-            target[f] += getattr(m.macros, f) or 0
-    if m.micros:
-        for f in MICRO_KEYS:
-            target[f] += getattr(m.micros, f) or 0
+    """Add a meal's nutrient values into a running totals dict."""
+    if m.nutrients:
+        for f in NUTRIENT_KEYS:
+            target[f] += getattr(m.nutrients, f) or 0
 
 
 def daily_summary(

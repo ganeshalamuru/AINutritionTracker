@@ -8,7 +8,7 @@ export default function GroupedMealCard({ group, onOpenDetail, onDelete }) {
   const [deleting, setDeleting] = useState(false);
   const [confirming, setConfirming] = useState(false);
   const time = formatTime(group.logged_at);
-  const t = group.total_macros;
+  const t = group.total_nutrients;
 
   const mealTypes = [...new Set(group.sub_meals.map((s) => s.meal_type))];
 

@@ -45,8 +45,8 @@ class FoodsApiTest(unittest.TestCase):
     def test_get_food_returns_detail_with_nutrients(self):
         detail = foods.get_food(1)  # Rice, white, cooked, regular
         self.assertEqual(detail.fdc_id, 1)
-        self.assertEqual(detail.macros.calories, 130)
-        self.assertEqual(detail.macros.carbs_g, 28)
+        self.assertEqual(detail.nutrients.calories, 130)
+        self.assertEqual(detail.nutrients.carbs_g, 28)
         self.assertEqual(detail.data_type, "SR Legacy")
 
     def test_get_food_unknown_id_404(self):

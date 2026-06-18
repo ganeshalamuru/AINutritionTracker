@@ -7,27 +7,27 @@ import ConfirmModal from "../shared/ConfirmModal";
 import { MEAL_TYPE_COLORS } from "../../constants";
 import { formatDateTime } from "../../utils/format";
 
-function MacroRow({ macros, micros }) {
+function MacroRow({ nutrients }) {
   const [fatOpen, setFatOpen] = useState(false);
-  const fatExpandable = hasFatBreakdown(micros);
+  const fatExpandable = hasFatBreakdown(nutrients);
   return (
     <div className="space-y-3">
       <div className="flex items-center justify-between">
         <span className="text-sm font-medium text-gray-600">Calories</span>
-        <span className="font-bold text-gray-900 text-lg">{Math.round(macros.calories)} kcal</span>
+        <span className="font-bold text-gray-900 text-lg">{Math.round(nutrients.calories)} kcal</span>
       </div>
-      <MacroHighlights macros={macros} />
+      <MacroHighlights nutrients={nutrients} />
       <div className="grid grid-cols-3 gap-2 text-center text-sm">
         <div className="bg-blue-50 rounded-xl p-2.5">
-          <p className="font-bold text-blue-600">{Math.round(macros.protein_g)}g</p>
+          <p className="font-bold text-blue-600">{Math.round(nutrients.protein_g)}g</p>
           <p className="text-xs text-gray-500">Protein</p>
         </div>
         <div className="bg-orange-50 rounded-xl p-2.5">
-          <p className="font-bold text-orange-500">{Math.round(macros.carbs_g)}g</p>
+          <p className="font-bold text-orange-500">{Math.round(nutrients.carbs_g)}g</p>
           <p className="text-xs text-gray-500">Carbs</p>
         </div>
         <FatCell
-          value={macros.fat_g}
+          value={nutrients.fat_g}
           expandable={fatExpandable}
           open={fatOpen}
           onToggle={() => setFatOpen((o) => !o)}
@@ -35,18 +35,18 @@ function MacroRow({ macros, micros }) {
           valueClass="font-bold text-purple-600"
         />
       </div>
-      <FatBreakdown micros={micros} open={fatOpen} />
+      <FatBreakdown nutrients={nutrients} open={fatOpen} />
       <div className="flex justify-around pt-1 text-xs text-gray-500 border-t border-gray-100">
         <div className="text-center">
-          <p className="font-semibold text-gray-700">{Math.round(macros.fiber_g)}g</p>
+          <p className="font-semibold text-gray-700">{Math.round(nutrients.fiber_g)}g</p>
           <p>Fiber</p>
         </div>
         <div className="text-center">
-          <p className="font-semibold text-gray-700">{Math.round(macros.sugar_g)}g</p>
+          <p className="font-semibold text-gray-700">{Math.round(nutrients.sugar_g)}g</p>
           <p>Sugar</p>
         </div>
         <div className="text-center">
-          <p className="font-semibold text-gray-700">{Math.round(macros.sodium_mg)}mg</p>
+          <p className="font-semibold text-gray-700">{Math.round(nutrients.sodium_mg)}mg</p>
           <p>Sodium</p>
         </div>
       </div>
@@ -86,12 +86,12 @@ function SingleMealView({ meal, onDelete }) {
       </div>
 
       <div className="bg-gray-50 rounded-2xl p-4">
-        <MacroRow macros={meal.macros} micros={meal.micros} />
+        <MacroRow nutrients={meal.nutrients} />
       </div>
 
-      {meal.micros && (
+      {meal.nutrients && (
         <div className="bg-gray-50 rounded-2xl p-4">
-          <MicroGrid micros={meal.micros} />
+          <MicroGrid nutrients={meal.nutrients} />
         </div>
       )}
 
@@ -121,17 +121,17 @@ function SingleMealView({ meal, onDelete }) {
 
 function SubMealCard({ sub, isDeleting, onDelete }) {
   const [expanded, setExpanded] = useState(false);
-  const [micros, setMicros] = useState(null);
+  const [detailNutrients, setDetailNutrients] = useState(null);
   const [loadingMicros, setLoadingMicros] = useState(false);
 
   const handleToggle = async () => {
     if (expanded) { setExpanded(false); return; }
     setExpanded(true);
-    if (micros) return;
+    if (detailNutrients) return;
     setLoadingMicros(true);
     try {
       const { data } = await client.get(`/meals/${sub.id}`);
-      setMicros(data.micros);
+      setDetailNutrients(data.nutrients);
     } catch {}
     setLoadingMicros(false);
   };
@@ -154,10 +154,10 @@ function SubMealCard({ sub, isDeleting, onDelete }) {
         </button>
       </div>
       <div className="flex flex-wrap gap-3 text-xs text-gray-600">
-        <span className="font-semibold text-gray-800">{Math.round(sub.macros.calories)} kcal</span>
-        <span><span className="text-blue-500 font-semibold">{Math.round(sub.macros.protein_g)}g</span> protein</span>
-        <span><span className="text-orange-400 font-semibold">{Math.round(sub.macros.carbs_g)}g</span> carbs</span>
-        <span><span className="text-purple-500 font-semibold">{Math.round(sub.macros.fat_g)}g</span> fat</span>
+        <span className="font-semibold text-gray-800">{Math.round(sub.nutrients.calories)} kcal</span>
+        <span><span className="text-blue-500 font-semibold">{Math.round(sub.nutrients.protein_g)}g</span> protein</span>
+        <span><span className="text-orange-400 font-semibold">{Math.round(sub.nutrients.carbs_g)}g</span> carbs</span>
+        <span><span className="text-purple-500 font-semibold">{Math.round(sub.nutrients.fat_g)}g</span> fat</span>
       </div>
       <button
         onClick={handleToggle}
@@ -168,7 +168,7 @@ function SubMealCard({ sub, isDeleting, onDelete }) {
       {expanded && (
         loadingMicros
           ? <p className="text-xs text-gray-400 py-1">Loading...</p>
-          : micros && <MicroGrid micros={micros} alwaysOpen />
+          : detailNutrients && <MicroGrid nutrients={detailNutrients} alwaysOpen />
       )}
     </div>
   );
@@ -256,11 +256,11 @@ function GroupMealView({ group, onDelete, onClose }) {
       {activeTab === "totals" && (
         <>
           <div className="bg-gray-50 rounded-2xl p-4">
-            <MacroRow macros={group.total_macros} micros={group.total_micros} />
+            <MacroRow nutrients={group.total_nutrients} />
           </div>
-          {group.total_micros && (
+          {group.total_nutrients && (
             <div className="bg-gray-50 rounded-2xl p-4">
-              <MicroGrid micros={group.total_micros} />
+              <MicroGrid nutrients={group.total_nutrients} />
             </div>
           )}
         </>

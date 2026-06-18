@@ -64,10 +64,15 @@ class PinVerify(BaseModel):
     pin: str = PinField
 
 
-# --- Macros ---
+# --- Nutrients ---
 
 
-class MacrosData(BaseModel):
+class NutrientsData(BaseModel):
+    """The flat "standard nutrients" set — all 33 nutrients in one object. The backend
+    makes no macro/micro distinction; the frontend groups these for display (the headline
+    macros in the ring, vitamins/minerals in MicroGrid, the fat breakdown under Fat)."""
+
+    # Headline macros.
     calories: float = Field(default=0, ge=0)
     protein_g: float = Field(default=0, ge=0)
     carbs_g: float = Field(default=0, ge=0)
@@ -75,12 +80,7 @@ class MacrosData(BaseModel):
     fiber_g: float = Field(default=0, ge=0)
     sugar_g: float = Field(default=0, ge=0)
     sodium_mg: float = Field(default=0, ge=0)
-
-
-# --- Micros ---
-
-
-class MicrosData(BaseModel):
+    # Vitamins / minerals / other.
     vitamin_a_mcg: float = Field(default=0, ge=0)
     vitamin_d_mcg: float = Field(default=0, ge=0)
     vitamin_e_mg: float = Field(default=0, ge=0)
@@ -102,6 +102,7 @@ class MicrosData(BaseModel):
     copper_mg: float = Field(default=0, ge=0)
     choline_mg: float = Field(default=0, ge=0)
     caffeine_mg: float = Field(default=0, ge=0)
+    # Fat breakdown (shown grouped under Fat in the UI).
     saturated_fat_g: float = Field(default=0, ge=0)
     mono_fat_g: float = Field(default=0, ge=0)
     poly_fat_g: float = Field(default=0, ge=0)
@@ -122,8 +123,7 @@ class IngredientBreakdown(BaseModel):
     # ingredient of a *decomposed* dish; 0 for not_looked_up (matched dish), unmatched, and
     # skipped. Lets the client rescale or remove a single ingredient without re-querying USDA.
     # Across a decomposed dish, Σ ingredients == the dish subtotal (an invariant).
-    macros: MacrosData = Field(default_factory=MacrosData)
-    micros: MicrosData = Field(default_factory=MicrosData)
+    nutrients: NutrientsData = Field(default_factory=NutrientsData)
 
 
 class DishBreakdown(BaseModel):
@@ -132,8 +132,7 @@ class DishBreakdown(BaseModel):
     matched: bool = False  # the whole dish matched in USDA (ingredients not looked up)
     # This dish's own nutrient subtotal; summed across dishes it equals the meal totals.
     # Lets the client rescale a dish by its edited portion without re-querying USDA.
-    macros: MacrosData = Field(default_factory=MacrosData)
-    micros: MicrosData = Field(default_factory=MicrosData)
+    nutrients: NutrientsData = Field(default_factory=NutrientsData)
     ingredients: list[IngredientBreakdown] = Field(default_factory=list)
 
 
@@ -144,8 +143,7 @@ class AnalyzeResponse(BaseModel):
     meal_type: MealType
     confidence: Confidence
     estimated_serving: str | None = None
-    macros: MacrosData
-    micros: MicrosData
+    nutrients: NutrientsData
     dishes: list[DishBreakdown] = Field(default_factory=list)
     unmatched: list[str] = Field(default_factory=list)
     skipped: list[str] = Field(default_factory=list)
@@ -160,8 +158,7 @@ class MealLogRequest(BaseModel):
     notes: str | None = None
     keep_image: bool = False
     temp_image_token: str | None = None
-    macros: MacrosData
-    micros: MicrosData
+    nutrients: NutrientsData
 
 
 class LogGroupRequest(BaseModel):
@@ -209,7 +206,7 @@ class MealSubSummary(BaseModel):
     meal_name: str
     meal_type: str
     logged_at: datetime
-    macros: MacrosData
+    nutrients: NutrientsData
 
 
 class MealGroupSummary(BaseModel):
@@ -217,8 +214,7 @@ class MealGroupSummary(BaseModel):
     group_id: str
     logged_at: datetime
     sub_meals: list[MealSubSummary]
-    total_macros: MacrosData
-    total_micros: MicrosData = Field(default_factory=MicrosData)
+    total_nutrients: NutrientsData = Field(default_factory=NutrientsData)
 
 
 TimelineItem = Annotated[MealGroupSummary | MealSummary, Field(discriminator="item_type")]
@@ -231,8 +227,7 @@ class MealDetail(BaseModel):
     logged_at: datetime
     notes: str | None
     has_image: bool
-    macros: MacrosData
-    micros: MicrosData
+    nutrients: NutrientsData
 
     model_config = {"from_attributes": True}
 
@@ -305,13 +300,12 @@ class FoodSummary(BaseModel):
 
 
 class FoodDetail(BaseModel):
-    """A single USDA food with its per-100g macro/micro profile."""
+    """A single USDA food with its per-100g nutrient profile."""
 
     fdc_id: int
     description: str
     data_type: str
-    macros: MacrosData
-    micros: MicrosData
+    nutrients: NutrientsData
 
 
 class FoodCacheEntry(BaseModel):
@@ -331,8 +325,7 @@ class AdminMeal(BaseModel):
     meal_name: str
     meal_type: str
     logged_at: datetime
-    macros: MacrosData
-    micros: MicrosData
+    nutrients: NutrientsData
 
 
 class AdminConfigEntry(BaseModel):

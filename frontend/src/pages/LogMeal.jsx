@@ -39,8 +39,7 @@ function buildDraft(data) {
       matched: dish.matched,
       baseGrams,
       grams: baseGrams, // editable for matched dishes; derived for decomposed
-      macros: dish.macros || {},
-      micros: dish.micros || {},
+      nutrients: dish.nutrients || {},
       removed: false,
       ingredients: (dish.ingredients || []).map((ing) => ({
         id: uid(),
@@ -48,8 +47,7 @@ function buildDraft(data) {
         status: ing.status,
         baseGrams: ing.grams || 0,
         grams: ing.grams || 0,
-        macros: ing.macros || {},
-        micros: ing.micros || {},
+        nutrients: ing.nutrients || {},
         removed: false,
         custom: false,
       })),
@@ -68,9 +66,9 @@ const ingHasNutrients = (ing) => ing.custom || ing.status === "matched";
 // Detected ingredients of a matched dish are already inside the dish subtotal, so they're skipped
 // here. Removed dishes/ingredients contribute nothing. Linear in grams, so identical to re-running
 // the USDA lookup — no network call. Seeded with the full zeroed key set from `seed` (the analysis
-// macros/micros) so every field is always present — totals stay a complete object (all zeros) even
+// nutrients) so every field is always present — totals stay a complete object (all zeros) even
 // when the user removes everything, instead of a sparse object that would render NaN.
-function draftTotals(draft, field, seed) {
+function draftTotals(draft, seed) {
   const total = {};
   for (const k in seed || {}) total[k] = 0;
   const add = (vals, f) => {
@@ -80,13 +78,13 @@ function draftTotals(draft, field, seed) {
     if (dish.removed) return;
     if (dish.matched) {
       const f = dish.baseGrams > 0 ? (dish.grams || 0) / dish.baseGrams : 1;
-      add(dish[field] || {}, f);
+      add(dish.nutrients || {}, f);
     }
     dish.ingredients.forEach((ing) => {
       if (ing.removed) return;
       if (dish.matched && !ing.custom) return; // already counted inside the dish subtotal
       const f = ing.baseGrams > 0 ? (ing.grams || 0) / ing.baseGrams : 1;
-      add(ing[field] || {}, f);
+      add(ing.nutrients || {}, f);
     });
   });
   return total;
@@ -210,8 +208,7 @@ export default function LogMeal() {
               mealName: data.meal_name, mealType: data.meal_type,
               // Editable review state + live (edited) totals derived from it.
               draft,
-              liveMacros: draftTotals(draft, "macros", data.macros),
-              liveMicros: draftTotals(draft, "micros", data.micros),
+              liveNutrients: draftTotals(draft, data.nutrients),
             }
           : p
       ));
@@ -244,8 +241,7 @@ export default function LogMeal() {
       return {
         ...p,
         draft,
-        liveMacros: draftTotals(draft, "macros", p.analysis.macros),
-        liveMicros: draftTotals(draft, "micros", p.analysis.micros),
+        liveNutrients: draftTotals(draft, p.analysis.nutrients),
       };
     }));
 
@@ -302,8 +298,7 @@ export default function LogMeal() {
           notes: p.notes,
           keep_image: false,
           temp_image_token: p.analysis.temp_image_token,
-          macros: p.liveMacros || p.analysis.macros,
-          micros: p.liveMicros || p.analysis.micros,
+          nutrients: p.liveNutrients || p.analysis.nutrients,
         });
       } else {
         const groupId = uid();
@@ -316,8 +311,7 @@ export default function LogMeal() {
             notes: p.notes,
             keep_image: false,
             temp_image_token: p.analysis.temp_image_token,
-            macros: p.liveMacros || p.analysis.macros,
-            micros: p.liveMicros || p.analysis.micros,
+            nutrients: p.liveNutrients || p.analysis.nutrients,
           })),
         });
       }
@@ -484,8 +478,7 @@ function AddPhotoButton({ onClick }) {
 
 function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, onIngRemoved, onScaleIngredients, onAddIngredient, onRemove, onRetry }) {
   // Live (portion-edited) totals when present, else the original analysis values.
-  const macros = photo.liveMacros || photo.analysis?.macros;
-  const micros = photo.liveMicros || photo.analysis?.micros;
+  const nutrients = photo.liveNutrients || photo.analysis?.nutrients;
   const [fatOpen, setFatOpen] = useState(false);
   return (
     <div className="bg-white rounded-2xl border border-gray-100 shadow-sm overflow-hidden">
@@ -571,21 +564,21 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
             <div className="bg-gray-50 rounded-xl p-3">
               <div className="flex justify-between items-center mb-2">
                 <span className="text-xs font-semibold text-gray-700">Macros</span>
-                <span className="font-bold text-gray-900">{Math.round(macros.calories)} kcal</span>
+                <span className="font-bold text-gray-900">{Math.round(nutrients.calories)} kcal</span>
               </div>
-              <MacroHighlights macros={macros} />
+              <MacroHighlights nutrients={nutrients} />
               <div className="grid grid-cols-3 gap-1.5 text-center text-xs">
                 <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-blue-500">{Math.round(macros.protein_g)}g</p>
+                  <p className="font-bold text-blue-500">{Math.round(nutrients.protein_g)}g</p>
                   <p className="text-gray-400">Protein</p>
                 </div>
                 <div className="bg-white rounded-lg p-1.5">
-                  <p className="font-bold text-orange-400">{Math.round(macros.carbs_g)}g</p>
+                  <p className="font-bold text-orange-400">{Math.round(nutrients.carbs_g)}g</p>
                   <p className="text-gray-400">Carbs</p>
                 </div>
                 <FatCell
-                  value={macros.fat_g}
-                  expandable={hasFatBreakdown(micros)}
+                  value={nutrients.fat_g}
+                  expandable={hasFatBreakdown(nutrients)}
                   open={fatOpen}
                   onToggle={() => setFatOpen((o) => !o)}
                   className="bg-white rounded-lg p-1.5 w-full"
@@ -593,11 +586,11 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
                   labelClass="text-gray-400"
                 />
               </div>
-              <FatBreakdown micros={micros} open={fatOpen} />
+              <FatBreakdown nutrients={nutrients} open={fatOpen} />
               <div className="flex justify-around mt-2 text-xs text-gray-400">
-                <span>Fiber {Math.round(macros.fiber_g)}g</span>
-                <span>Sugar {Math.round(macros.sugar_g)}g</span>
-                <span>Sodium {Math.round(macros.sodium_mg)}mg</span>
+                <span>Fiber {Math.round(nutrients.fiber_g)}g</span>
+                <span>Sugar {Math.round(nutrients.sugar_g)}g</span>
+                <span>Sodium {Math.round(nutrients.sodium_mg)}mg</span>
               </div>
             </div>
 
@@ -643,7 +636,7 @@ function PhotoCard({ photo, onUpdate, onDishGrams, onDishRemoved, onIngGrams, on
               </div>
             )}
 
-            <MicroGrid micros={micros} />
+            <MicroGrid nutrients={nutrients} />
 
             <div>
               <label className="text-xs text-gray-500 mb-1 block">Notes (optional)</label>
@@ -948,18 +941,15 @@ function AddIngredient({ onAdd }) {
       const { data } = await client.get(`/foods/${selected.fdc_id}`);
       const g = Math.max(0, Number(grams) || 0);
       const scale = g / 100;
-      const macros = {};
-      for (const k in data.macros) macros[k] = data.macros[k] * scale;
-      const micros = {};
-      for (const k in data.micros) micros[k] = data.micros[k] * scale;
+      const nutrients = {};
+      for (const k in data.nutrients) nutrients[k] = data.nutrients[k] * scale;
       onAdd({
         id: uid(),
         food: data.description,
         status: "matched",
         baseGrams: g,
         grams: g,
-        macros,
-        micros,
+        nutrients,
         removed: false,
         custom: true,
       });

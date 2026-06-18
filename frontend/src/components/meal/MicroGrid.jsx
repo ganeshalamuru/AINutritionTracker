@@ -103,13 +103,13 @@ function RichIn({ items }) {
   );
 }
 
-export default function MicroGrid({ micros, alwaysOpen = false }) {
+export default function MicroGrid({ nutrients, alwaysOpen = false }) {
   const [open, setOpen] = useState(false);
   const isOpen = alwaysOpen || open;
 
-  const vitamins = presentItems(VITAMINS, micros);
-  const minerals = presentItems(MINERALS, micros);
-  const other = presentItems(OTHER, micros);
+  const vitamins = presentItems(VITAMINS, nutrients);
+  const minerals = presentItems(MINERALS, nutrients);
+  const other = presentItems(OTHER, nutrients);
   const hasAny = vitamins.length > 0 || minerals.length > 0 || other.length > 0;
   // Rich-in spans the DV-bearing groups, still ordered richest first (caffeine has no
   // DV so it never qualifies as "rich in" anyway).
