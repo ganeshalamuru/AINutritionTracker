@@ -184,10 +184,12 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   `food_cache` (offline keys namespaced `local::` so the two backends never collide) — is shared
   unchanged. Switch backends in Settings; no restart.
 
-Per-100g nutrients are scaled by `grams/100` and summed into a **7-macro + 26-micro** schema
-(the 26 micros include vitamins/minerals plus a fat breakdown — saturated/mono/poly fat,
-cholesterol, omega-3 EPA+DHA — stored as micros but shown grouped under Fat in the UI).
-Each dish also carries its own nutrient subtotal (Σ per-dish = meal totals), and each **decomposed**
+Per-100g nutrients are scaled by `grams/100` and summed into a single flat **33-nutrient**
+"standard nutrients" schema. The backend draws **no macro/micro line** — it stores and transports
+one nutrient bag (`core.nutrients.NUTRIENT_KEYS`); the macro / micro / fat-breakdown grouping is a
+**display-only** concern made in the frontend (the headline macros in the ring, vitamins/minerals
+in `MicroGrid`, and the fat breakdown — saturated/mono/poly fat, cholesterol, omega-3 EPA+DHA —
+picked out under Fat). Each dish also carries its own nutrient subtotal (Σ per-dish = meal totals), and each **decomposed**
 dish's ingredients carry their *own* subtotals too (Σ per-ingredient = that dish's subtotal), so the
 LogMeal review step can rescale a dish — or an individual ingredient — by an edited portion
 **client-side** (linear in grams) without re-querying USDA.
@@ -211,10 +213,10 @@ backend/
 │   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named, request-correlated formatter (app + uvicorn); LOG_LEVEL env
 │   ├── request_context.py   #   per-request trace id + profile id (contextvars) + log-record factory that stamps them onto every line
 │   ├── config.py            #   app_config table access + vision/nutrition_source defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
-│   ├── nutrients.py         #   SINGLE SOURCE for the 7-macro/26-micro schema + to_*_data / sum_* helpers
+│   ├── nutrients.py         #   SINGLE SOURCE for the flat 33-nutrient schema + to_nutrients_data / sum_nutrients helpers
 │   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision + USDA clients
 │
-├── models.py                # SQLAlchemy ORM: Profile, Meal (with group_id), Macros, Micros, AppConfig
+├── models.py                # SQLAlchemy ORM: Profile, Meal (with group_id), Nutrients (flat 33-field), AppConfig
 ├── schemas.py               # Pydantic request/response models (leaf): AnalyzeResponse, DishBreakdown, IngredientBreakdown, ...
 │
 ├── routers/                 # thin HTTP layer — parse request, call a service, return result
@@ -243,8 +245,9 @@ backend/
 
 - **`core/`** — infrastructure only: DB session, logging, the nutrient schema, config-table
   access, the FastAPI lifespan. No request handling, no domain rules.
-  - `core/nutrients.py` is the **single source of truth** for `MACRO_KEYS` / `MICRO_KEYS` and the
-    `to_macros_data` / `to_micros_data` / `sum_macros` / `sum_micros` helpers.
+  - `core/nutrients.py` is the **single source of truth** for the flat `NUTRIENT_KEYS` list and the
+    `to_nutrients_data` / `sum_nutrients` helpers. There is no macro/micro split in the backend —
+    that distinction is made only in the frontend display components.
   - `core/config.py` is the **single home for `app_config` access** (`get_value`, `set_value`,
     `get_api_key`, `get_vision_config`, `get_usda_key`, `seed_defaults`), plus the vision defaults
     (`DEFAULT_PROVIDER`/`DEFAULT_MODEL`) and path constants (`UPLOADS_DIR`, `DIST_DIR`, `BACKEND_DIR`).
@@ -266,7 +269,7 @@ components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
             summary/  (MacroProgressBar)   profile/(PinPad)
             settings/ (ApiKeyCard, SettingsSection)   shared/ (Spinner, Toast, EmptyState, ConfirmModal)
 hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & Timeline)
-utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros) · uid
+utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros, addNutrients) · uid
 ```
 
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call, **up to 4 photos**) → a **per-photo**
@@ -337,12 +340,12 @@ In the **Home** and **Timeline** feeds a grouped multi-photo session renders wit
    (`USDA_MAX_LOOKUPS`) bounds API usage. Positive matches **and definitive misses** are cached
    (negative caching); transient timeouts are retried, not cached.
 4. The `AnalyzeResponse` is a **dish-grouped breakdown**:
-   `dishes: [{name, grams, matched, macros, micros, ingredients:[{food, grams, status}]}]` where
+   `dishes: [{name, grams, matched, nutrients, ingredients:[{food, grams, status, nutrients}]}]` where
    `status ∈ matched | unmatched | skipped | not_looked_up`, plus aggregate `unmatched`/`skipped`
    name lists. No DB write yet — the user reviews, optionally edits portions, then logs.
 
-**`POST /api/meals/log` and `/log-group`** — `meal_service` writes the `Meal` (+ `Macros`,
-`Micros`) rows; grouped multi-photo sessions share a `group_id`. Temp images are kept or purged
+**`POST /api/meals/log` and `/log-group`** — `meal_service` writes the `Meal` (+ its 1:1
+`Nutrients` row); grouped multi-photo sessions share a `group_id`. Temp images are kept or purged
 per request.
 
 **`GET /api/meals/timeline`** — `meal_service.build_timeline` pages the meals and collapses rows
@@ -359,13 +362,14 @@ date range / month into totals + (monthly) per-day breakdown and averages.
 ## Data model
 
 ```
-Profile 1──* Meal 1──1 Macros          AppConfig(key, value)   # API keys, vision provider/model
-                  └──1 Micros           food_cache(query, ...)  # USDA per-100g cache (per CACHE_VERSION)
+Profile 1──* Meal 1──1 Nutrients       AppConfig(key, value)   # API keys, vision provider/model
+                                        food_cache(query, ...)  # USDA per-100g cache (per CACHE_VERSION)
 ```
 
 - `Meal` carries an optional `group_id` (multi-photo sessions) and `image_path`.
-- `Macros` (7 fields) and `Micros` (26 fields) are 1:1 with a meal; their columns mirror
-  `core.nutrients.MACRO_KEYS` / `MICRO_KEYS` exactly.
+- `Nutrients` (33 fields, one flat row) is 1:1 with a meal; its columns mirror
+  `core.nutrients.NUTRIENT_KEYS` exactly. (It replaces the former split `Macros`/`Micros` tables;
+  the lifespan migrates existing rows into it on startup, leaving the old tables untouched.)
 - `app_config` is a key/value table; all access goes through `core.config`.
 - `food_cache` holds per-100g profiles **and** miss sentinels (negative caching); the lifespan
   purges it when `CACHE_VERSION` (in `core/config.py`) changes, so improved matching/aliases
@@ -527,7 +531,7 @@ POST   /api/meals/analyze         Image → AI analysis (no DB write); returns d
 POST   /api/meals/log             Save a single analyzed meal
 POST   /api/meals/log-group       Save {group_id, meals:[...]} as a grouped session
 GET    /api/meals/timeline        ?profile_id&page&limit — paginated, grouped by group_id
-GET    /api/meals/group/{id}      Full MealGroupSummary (total_macros + total_micros)
+GET    /api/meals/group/{id}      Full MealGroupSummary (total_nutrients)
 DELETE /api/meals/group/{id}      Delete all meals in a group
 GET    /api/meals/{id}            Full meal detail (macros + micros)
 PATCH  /api/meals/{id}            Update a meal

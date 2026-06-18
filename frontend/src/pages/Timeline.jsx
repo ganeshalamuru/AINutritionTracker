@@ -7,7 +7,7 @@ import MealDetailModal from "../components/meal/MealDetailModal";
 import Spinner from "../components/shared/Spinner";
 import EmptyState from "../components/shared/EmptyState";
 import { useMealModal } from "../hooks/useMealModal";
-import { emptyMacros, addMacros } from "../utils/macros";
+import { emptyMacros, addNutrients } from "../utils/macros";
 import { formatDateHeading } from "../utils/format";
 
 function groupByDate(items) {
@@ -63,8 +63,8 @@ export default function Timeline() {
           if (item.item_type !== "group" || item.group_id !== groupId) return item;
           const newSubs = item.sub_meals.filter((s) => s.id !== mealId);
           if (!newSubs.length) return null;
-          const total = newSubs.reduce((acc, s) => addMacros(acc, s.macros), emptyMacros());
-          return { ...item, sub_meals: newSubs, total_macros: total };
+          const total = newSubs.reduce((acc, s) => addNutrients(acc, s.nutrients), emptyMacros());
+          return { ...item, sub_meals: newSubs, total_nutrients: total };
         })
         .filter(Boolean);
     });

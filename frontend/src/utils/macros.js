@@ -12,3 +12,11 @@ export const addMacros = (acc, m) => {
   for (const k of MACRO_KEYS) acc[k] += m[k] || 0;
   return acc;
 };
+
+// Add one meal's full flat nutrient object into an accumulator in place, summing every
+// key present (macros + micros + fat breakdown) — the backend ships one "standard
+// nutrients" bag, so client-side group recompute covers all of it, not just macros.
+export const addNutrients = (acc, n) => {
+  for (const k in n || {}) acc[k] = (acc[k] || 0) + (Number(n[k]) || 0);
+  return acc;
+};

@@ -23,9 +23,9 @@ const HIGH = 30; // % of daily limit -> amber "High in" (above 20% so a normal
 
 const pct = (value, goal) => (goal ? (Number(value) / goal) * 100 : 0);
 
-function qualifying(items, macros, goals, threshold) {
+function qualifying(items, nutrients, goals, threshold) {
   return items
-    .map((m) => ({ ...m, pct: pct(macros[m.key], goals[m.goalKey]) }))
+    .map((m) => ({ ...m, pct: pct(nutrients[m.key], goals[m.goalKey]) }))
     .filter((m) => m.pct >= threshold)
     .sort((a, b) => b.pct - a.pct);
 }
@@ -44,12 +44,12 @@ function ChipRow({ icon, title, items, labelClass, chipClass }) {
   );
 }
 
-export default function MacroHighlights({ macros }) {
+export default function MacroHighlights({ nutrients }) {
   const { profile } = useProfile();
-  if (!macros) return null;
+  if (!nutrients) return null;
   const goals = computeGoals(profile?.calorie_goal);
-  const rich = qualifying(GOOD, macros, goals, RICH);
-  const high = qualifying(CAUTION, macros, goals, HIGH);
+  const rich = qualifying(GOOD, nutrients, goals, RICH);
+  const high = qualifying(CAUTION, nutrients, goals, HIGH);
   if (!rich.length && !high.length) return null;
   return (
     <div className="space-y-1.5">

@@ -14,6 +14,7 @@ from sqlalchemy import text
 from core import config
 from core.config import CACHE_VERSION, UPLOADS_DIR
 from core.database import Base, SessionLocal, engine
+from core.nutrients import NUTRIENT_KEYS
 
 logger = logging.getLogger("nutriai")
 
@@ -72,6 +73,7 @@ def _migrate_and_prepare_cache():
                 conn.commit()
             except Exception:
                 pass  # column already exists
+        _migrate_split_to_nutrients(conn)
         # Cache of USDA food-name -> per-100g nutrient lookups (see usda_service.py).
         conn.execute(
             text(
@@ -96,6 +98,42 @@ def _migrate_and_prepare_cache():
             )
             conn.commit()
             logger.info("food_cache purged (version -> %s)", CACHE_VERSION)
+
+
+def _migrate_split_to_nutrients(conn):
+    """One-time copy of the legacy split macros+micros rows into the merged `nutrients`
+    table (created by Base.metadata.create_all). Idempotent — only copies meals not yet
+    present in `nutrients`, so it's a no-op on every run after the first and on fresh DBs
+    (no `macros` table). The old `macros`/`micros` tables are left untouched so the
+    migration stays fully reversible; the ORM simply no longer maps them.
+
+    The 7 headline-macro keys come from the old `macros` table, the remaining 24 from
+    `micros`; values are COALESCEd to 0 to match the missing->0 coercion in core.nutrients."""
+    # Fresh DB (or already-migrated DB whose legacy tables were never created): nothing to do.
+    # We check for the table rather than swallowing all errors, so a *genuine* migration failure
+    # surfaces loudly instead of silently leaving real logged meals stranded in the old tables.
+    has_macros = conn.execute(
+        text("SELECT 1 FROM sqlite_master WHERE type='table' AND name='macros'")
+    ).first()
+    if not has_macros:
+        return
+
+    macro_keys = NUTRIENT_KEYS[:7]  # calories..sodium_mg lived in `macros`
+    micro_keys = NUTRIENT_KEYS[7:]  # everything else lived in `micros`
+    cols = ", ".join(NUTRIENT_KEYS)
+    selects = ", ".join([f"COALESCE(ma.{k}, 0)" for k in macro_keys])
+    selects += ", " + ", ".join([f"COALESCE(mi.{k}, 0)" for k in micro_keys])
+    result = conn.execute(
+        text(
+            f"INSERT INTO nutrients (meal_id, {cols}) "
+            f"SELECT ma.meal_id, {selects} "
+            "FROM macros ma LEFT JOIN micros mi ON ma.meal_id = mi.meal_id "
+            "WHERE ma.meal_id NOT IN (SELECT meal_id FROM nutrients)"
+        )
+    )
+    conn.commit()
+    if result.rowcount:
+        logger.info("migrated %d meal(s) from split macros/micros -> nutrients", result.rowcount)
 
 
 def _purge_old_uploads():

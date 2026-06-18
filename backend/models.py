@@ -33,19 +33,22 @@ class Meal(Base):
     notes = Column(Text, nullable=True)
 
     profile = relationship("Profile", back_populates="meals")
-    macros = relationship(
-        "Macros", back_populates="meal", uselist=False, cascade="all, delete-orphan"
-    )
-    micros = relationship(
-        "Micros", back_populates="meal", uselist=False, cascade="all, delete-orphan"
+    nutrients = relationship(
+        "Nutrients", back_populates="meal", uselist=False, cascade="all, delete-orphan"
     )
 
 
-class Macros(Base):
-    __tablename__ = "macros"
+class Nutrients(Base):
+    """Flat "standard nutrients" row, 1:1 with a meal. All 33 nutrients live together —
+    the backend draws no macro/micro line (that's a display-only grouping in the frontend).
+    Columns mirror core.nutrients.NUTRIENT_KEYS exactly. Replaces the former split
+    Macros/Micros tables; existing rows are migrated in core.lifespan."""
+
+    __tablename__ = "nutrients"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     meal_id = Column(Integer, ForeignKey("meals.id"), nullable=False, unique=True)
+    # Headline macros.
     calories = Column(Float, default=0)
     protein_g = Column(Float, default=0)
     carbs_g = Column(Float, default=0)
@@ -53,15 +56,7 @@ class Macros(Base):
     fiber_g = Column(Float, default=0)
     sugar_g = Column(Float, default=0)
     sodium_mg = Column(Float, default=0)
-
-    meal = relationship("Meal", back_populates="macros")
-
-
-class Micros(Base):
-    __tablename__ = "micros"
-
-    id = Column(Integer, primary_key=True, autoincrement=True)
-    meal_id = Column(Integer, ForeignKey("meals.id"), nullable=False, unique=True)
+    # Vitamins / minerals / other.
     vitamin_a_mcg = Column(Float, default=0)
     vitamin_d_mcg = Column(Float, default=0)
     vitamin_e_mg = Column(Float, default=0)
@@ -83,13 +78,14 @@ class Micros(Base):
     copper_mg = Column(Float, default=0)
     choline_mg = Column(Float, default=0)
     caffeine_mg = Column(Float, default=0)
+    # Fat breakdown (shown grouped under Fat in the UI).
     saturated_fat_g = Column(Float, default=0)
     mono_fat_g = Column(Float, default=0)
     poly_fat_g = Column(Float, default=0)
     cholesterol_mg = Column(Float, default=0)
     omega3_g = Column(Float, default=0)
 
-    meal = relationship("Meal", back_populates="micros")
+    meal = relationship("Meal", back_populates="nutrients")
 
 
 class AppConfig(Base):

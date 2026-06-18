@@ -14,8 +14,8 @@ from sqlalchemy.orm import Session
 
 from core.config import BACKEND_DIR
 from core.database import get_db
-from core.nutrients import to_macros_data, to_micros_data
-from models import AppConfig, Macros, Meal, Micros
+from core.nutrients import to_nutrients_data
+from models import AppConfig, Meal, Nutrients
 from schemas import (
     AdminConfigEntry,
     AdminMeal,
@@ -111,8 +111,7 @@ def list_meals(
     meals = q.order_by(Meal.logged_at.desc()).limit(limit).offset(offset).all()
     out = []
     for m in meals:
-        macros = db.query(Macros).filter(Macros.meal_id == m.id).first()
-        micros = db.query(Micros).filter(Micros.meal_id == m.id).first()
+        nutrients = db.query(Nutrients).filter(Nutrients.meal_id == m.id).first()
         out.append(
             AdminMeal(
                 id=m.id,
@@ -120,8 +119,7 @@ def list_meals(
                 meal_name=m.meal_name,
                 meal_type=m.meal_type,
                 logged_at=m.logged_at,
-                macros=to_macros_data(macros),
-                micros=to_micros_data(micros),
+                nutrients=to_nutrients_data(nutrients),
             )
         )
     return out

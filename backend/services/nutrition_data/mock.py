@@ -1,6 +1,9 @@
-"""Canned per-meal totals returned in mock mode so the pipeline runs fully offline."""
+"""Canned per-meal totals returned in mock mode so the pipeline runs fully offline.
 
-MOCK_MACROS = {
+One flat nutrient dict (the backend draws no macro/micro line); keys omitted here default
+to 0 via the missing->0 coercion in core.nutrients."""
+
+MOCK_NUTRIENTS = {
     "calories": 520,
     "protein_g": 42,
     "carbs_g": 55,
@@ -8,8 +11,6 @@ MOCK_MACROS = {
     "fiber_g": 6,
     "sugar_g": 4,
     "sodium_mg": 480,
-}
-MOCK_MICROS = {
     "vitamin_c_mg": 18,
     "vitamin_d_mcg": 1.2,
     "vitamin_b12_mcg": 0.9,

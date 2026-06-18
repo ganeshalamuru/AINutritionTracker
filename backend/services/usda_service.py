@@ -24,7 +24,7 @@ from sqlalchemy import text
 
 from core.database import engine
 from core.logging_config import configure_logging
-from core.nutrients import MACRO_KEYS, MICRO_KEYS
+from core.nutrients import NUTRIENT_KEYS
 from core.request_context import profile_id_var, request_id_var
 from services import usda_local_search
 
@@ -39,8 +39,7 @@ from services.nutrition_data import (
     FDC_NUTRIENT_MAP,
     FOOD_ALIASES,
     GENERIC_WORDS,
-    MOCK_MACROS,
-    MOCK_MICROS,
+    MOCK_NUTRIENTS,
     OMEGA3_IDS,
     SIMPLIFY_STRIP_WORDS,
     USDA_CONNECT_TIMEOUT,
@@ -187,7 +186,7 @@ def _extract_per_100g(food: dict) -> dict:
         if nid is not None and _is_number(val):
             raw[nid] = val
 
-    per_100g = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+    per_100g = {k: 0.0 for k in NUTRIENT_KEYS}
     for nid, key in FDC_NUTRIENT_MAP.items():
         if nid in raw:
             per_100g[key] = float(raw[nid])
@@ -551,7 +550,7 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
     and lines is one {food, grams, source:"ingredient"} entry per valid ingredient (for
     the UI breakdown). Raises UsdaRateLimitError on throttle.
     """
-    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+    totals = {k: 0.0 for k in NUTRIENT_KEYS}
     lines: list = []
     unmatched: list = []
 
@@ -616,7 +615,7 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
     return totals, unmatched, skipped, lines
 
 
-def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list]:
+def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, list, list, list]:
     """Sum nutrients across a meal's dishes, dish-first.
 
     For each dish we try a whole-dish USDA lookup (lookup_dish); a dish that matches
@@ -624,25 +623,24 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
     has no dish-level match for (or with no portion weight) fall back to summing their
     base-ingredient breakdown — so coverage is never worse than pure decomposition.
 
-    Returns (macros, micros, unmatched, skipped, breakdown):
-      - macros/micros: full schema dicts (default 0)
+    Returns (nutrients, unmatched, skipped, breakdown):
+      - nutrients: the flat full-schema nutrient totals dict (default 0)
       - unmatched: base ingredients USDA couldn't resolve (from the fallback path)
       - skipped: ingredients not looked up because the meal exceeded the per-meal
         uncached-lookup budget (USDA_MAX_LOOKUPS), largest portions kept
       - breakdown: the dish-grouped resolution for the UI — one entry per dish:
-        {name, grams, matched, macros, micros, ingredients:[{food, grams, status}]} where
+        {name, grams, matched, nutrients, ingredients:[{food, grams, status}]} where
         `matched` is True if the whole dish resolved in USDA (its ingredients then carry
         status "not_looked_up"), and each fallback ingredient's status is
-        "matched" | "unmatched" | "skipped". `macros`/`micros` are the dish's own nutrient
-        subtotal (full schema dicts); summed across dishes they equal the meal totals, so
-        the client can rescale a dish by its edited portion without re-querying USDA.
+        "matched" | "unmatched" | "skipped". `nutrients` is the dish's own subtotal (flat
+        full-schema dict); summed across dishes it equals the meal totals, so the client
+        can rescale a dish by its edited portion without re-querying USDA.
     In mock mode returns canned totals + one matched entry per dish, no API call. Raises
     UsdaRateLimitError if USDA throttles the key.
     """
     if _is_mock():
         logger.info("mock mode -> canned nutrient totals (no USDA call)")
-        macros = {k: MOCK_MACROS.get(k, 0) for k in MACRO_KEYS}
-        micros = {k: MOCK_MICROS.get(k, 0) for k in MICRO_KEYS}
+        nutrients = {k: MOCK_NUTRIENTS.get(k, 0) for k in NUTRIENT_KEYS}
         mock_dishes = [d for d in (dishes or []) if (d.get("name") or "").strip()]
         # Split the canned totals across dishes proportionally by grams (equal split if
         # no dish carries a weight) so each dish has a per-dish subtotal for the editing UI.
@@ -657,8 +655,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                     "name": d["name"].strip(),
                     "grams": d.get("grams") or 0,
                     "matched": True,
-                    "macros": {k: round(macros[k] * share, 2) for k in MACRO_KEYS},
-                    "micros": {k: round(micros[k] * share, 4) for k in MICRO_KEYS},
+                    "nutrients": {k: round(nutrients[k] * share, 4) for k in NUTRIENT_KEYS},
                     "ingredients": [
                         {
                             "food": (it.get("food") or "").strip(),
@@ -670,9 +667,9 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                     ],
                 }
             )
-        return macros, micros, [], [], breakdown
+        return nutrients, [], [], breakdown
 
-    totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+    totals = {k: 0.0 for k in NUTRIENT_KEYS}
     budget = USDA_MAX_LOOKUPS
 
     valid_dishes = [d for d in (dishes or []) if (d.get("name") or "").strip()]
@@ -740,7 +737,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
     for d in valid_dishes:
         matched = id(d) in matched_ids
         ingredients = []
-        dish_totals = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+        dish_totals = {k: 0.0 for k in NUTRIENT_KEYS}
         if matched:
             per_100g = dish_profile.get(id(d)) or {}
             factor = (d.get("grams") or 0) / 100.0
@@ -753,7 +750,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
             # Per-ingredient subtotal: non-zero only for a resolved ingredient of a
             # decomposed dish, so the client can rescale/remove it independently. Stays 0
             # for not_looked_up/unmatched/skipped. Summed, these equal the dish subtotal.
-            ing_sub = {k: 0.0 for k in MACRO_KEYS + MICRO_KEYS}
+            ing_sub = {k: 0.0 for k in NUTRIENT_KEYS}
             if matched:
                 status = "not_looked_up"
             elif food in skipped_set:
@@ -774,8 +771,7 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                     "food": food,
                     "grams": it.get("grams") or 0,
                     "status": status,
-                    "macros": {k: round(ing_sub[k], 2) for k in MACRO_KEYS},
-                    "micros": {k: round(ing_sub[k], 4) for k in MICRO_KEYS},
+                    "nutrients": {k: round(ing_sub[k], 4) for k in NUTRIENT_KEYS},
                 }
             )
         breakdown.append(
@@ -783,12 +779,10 @@ def nutrients_for_meal(dishes: list[dict]) -> tuple[dict, dict, list, list, list
                 "name": d["name"].strip(),
                 "grams": d.get("grams") or 0,
                 "matched": matched,
-                "macros": {k: round(dish_totals[k], 2) for k in MACRO_KEYS},
-                "micros": {k: round(dish_totals[k], 4) for k in MICRO_KEYS},
+                "nutrients": {k: round(dish_totals[k], 4) for k in NUTRIENT_KEYS},
                 "ingredients": ingredients,
             }
         )
 
-    macros = {k: round(totals[k], 2) for k in MACRO_KEYS}
-    micros = {k: round(totals[k], 4) for k in MICRO_KEYS}
-    return macros, micros, unmatched, skipped, breakdown
+    nutrients = {k: round(totals[k], 4) for k in NUTRIENT_KEYS}
+    return nutrients, unmatched, skipped, breakdown

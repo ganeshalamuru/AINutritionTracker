@@ -12,14 +12,13 @@ from sqlalchemy.orm import Session
 
 from core import config
 from core.config import BACKEND_DIR, UPLOADS_DIR
-from core.nutrients import sum_macros, sum_micros, to_macros_data, to_micros_data
-from models import Macros, Meal, Micros
+from core.nutrients import sum_nutrients, to_nutrients_data
+from models import Meal, Nutrients
 from schemas import (
     AnalyzeResponse,
     DishBreakdown,
     IngredientBreakdown,
     LogGroupRequest,
-    MacrosData,
     MealDetail,
     MealGroupSummary,
     MealLogRequest,
@@ -27,7 +26,7 @@ from schemas import (
     MealPatch,
     MealSubSummary,
     MealSummary,
-    MicrosData,
+    NutrientsData,
     TimelineResponse,
 )
 from services.usda_service import UsdaRateLimitError, nutrients_for_meal
@@ -98,7 +97,7 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
     # (dish-first, decomposing into base ingredients only when a dish has no match).
     dishes = result.get("dishes", [])
     try:
-        macros_d, micros_d, unmatched, skipped, breakdown = await asyncio.to_thread(
+        nutrients_d, unmatched, skipped, breakdown = await asyncio.to_thread(
             nutrients_for_meal, dishes
         )
     except UsdaRateLimitError as e:
@@ -114,15 +113,13 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
         meal_type=result.get("meal_type", "snack"),
         confidence=result.get("confidence", "medium"),
         estimated_serving=result.get("estimated_serving"),
-        macros=MacrosData(**macros_d),
-        micros=MicrosData(**micros_d),
+        nutrients=NutrientsData(**nutrients_d),
         dishes=[
             DishBreakdown(
                 name=d.get("name", ""),
                 grams=d.get("grams") or 0,
                 matched=d.get("matched", False),
-                macros=MacrosData(**d.get("macros", {})),
-                micros=MicrosData(**d.get("micros", {})),
+                nutrients=NutrientsData(**d.get("nutrients", {})),
                 ingredients=[IngredientBreakdown(**i) for i in d.get("ingredients", [])],
             )
             for d in breakdown
@@ -155,8 +152,7 @@ def _create_meal_record(db: Session, data: MealLogRequest, group_id: str | None 
     db.add(meal)
     db.flush()
 
-    db.add(Macros(meal_id=meal.id, **data.macros.model_dump()))
-    db.add(Micros(meal_id=meal.id, **data.micros.model_dump()))
+    db.add(Nutrients(meal_id=meal.id, **data.nutrients.model_dump()))
     return meal
 
 
@@ -212,8 +208,7 @@ def build_timeline(
     group_index: dict[str, int] = {}
 
     for m in meals:
-        md = to_macros_data(m.macros)
-        mic = to_micros_data(m.micros)
+        nd = to_nutrients_data(m.nutrients)
 
         if m.group_id:
             if m.group_id in group_index:
@@ -224,11 +219,10 @@ def build_timeline(
                         meal_name=m.meal_name,
                         meal_type=m.meal_type,
                         logged_at=m.logged_at,
-                        macros=md,
+                        nutrients=nd,
                     )
                 )
-                group.total_macros = sum_macros(group.total_macros, md)
-                group.total_micros = sum_micros(group.total_micros, mic)
+                group.total_nutrients = sum_nutrients(group.total_nutrients, nd)
             else:
                 group_index[m.group_id] = len(items)
                 items.append(
@@ -241,11 +235,10 @@ def build_timeline(
                                 meal_name=m.meal_name,
                                 meal_type=m.meal_type,
                                 logged_at=m.logged_at,
-                                macros=md,
+                                nutrients=nd,
                             )
                         ],
-                        total_macros=md,
-                        total_micros=mic,
+                        total_nutrients=nd,
                     )
                 )
         else:
@@ -255,13 +248,13 @@ def build_timeline(
                     meal_name=m.meal_name,
                     meal_type=m.meal_type,
                     logged_at=m.logged_at,
-                    calories=md.calories,
-                    protein_g=md.protein_g,
-                    carbs_g=md.carbs_g,
-                    fat_g=md.fat_g,
-                    fiber_g=md.fiber_g,
-                    sugar_g=md.sugar_g,
-                    sodium_mg=md.sodium_mg,
+                    calories=nd.calories,
+                    protein_g=nd.protein_g,
+                    carbs_g=nd.carbs_g,
+                    fat_g=nd.fat_g,
+                    fiber_g=nd.fiber_g,
+                    sugar_g=nd.sugar_g,
+                    sodium_mg=nd.sodium_mg,
                     has_image=m.image_path is not None,
                     group_id=None,
                 )
@@ -275,28 +268,24 @@ def get_group(db: Session, group_id: str) -> MealGroupSummary:
     if not meals:
         raise HTTPException(status_code=404, detail="Group not found")
     sub_meals = []
-    total_macros = MacrosData()
-    total_micros = MicrosData()
+    total_nutrients = NutrientsData()
     for m in meals:
-        md = to_macros_data(m.macros)
-        mic = to_micros_data(m.micros)
+        nd = to_nutrients_data(m.nutrients)
         sub_meals.append(
             MealSubSummary(
                 id=m.id,
                 meal_name=m.meal_name,
                 meal_type=m.meal_type,
                 logged_at=m.logged_at,
-                macros=md,
+                nutrients=nd,
             )
         )
-        total_macros = sum_macros(total_macros, md)
-        total_micros = sum_micros(total_micros, mic)
+        total_nutrients = sum_nutrients(total_nutrients, nd)
     return MealGroupSummary(
         group_id=group_id,
         logged_at=meals[0].logged_at,
         sub_meals=sub_meals,
-        total_macros=total_macros,
-        total_micros=total_micros,
+        total_nutrients=total_nutrients,
     )
 
 
@@ -322,8 +311,7 @@ def get_meal(db: Session, meal_id: int) -> MealDetail:
         logged_at=meal.logged_at,
         notes=meal.notes,
         has_image=meal.image_path is not None,
-        macros=to_macros_data(meal.macros),
-        micros=to_micros_data(meal.micros),
+        nutrients=to_nutrients_data(meal.nutrients),
     )
 
 

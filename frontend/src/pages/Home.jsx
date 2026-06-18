@@ -19,8 +19,10 @@ function buildDisplayItems(meals) {
   const groupMap = {};
 
   for (const meal of meals) {
-    // Timeline rows carry macros as flat columns; reshape into a macros object.
-    const mealMacros = {
+    // Daily-summary rows carry the headline macros as flat columns; reshape into a
+    // nutrients object (micros aren't in this lightweight row — the modal fetches full
+    // detail on open, and the group card only shows macros).
+    const mealNutrients = {
       calories: meal.calories, protein_g: meal.protein_g, carbs_g: meal.carbs_g,
       fat_g: meal.fat_g, fiber_g: meal.fiber_g, sugar_g: meal.sugar_g, sodium_mg: meal.sodium_mg,
     };
@@ -31,7 +33,7 @@ function buildDisplayItems(meals) {
           group_id: meal.group_id,
           logged_at: meal.logged_at,
           sub_meals: [],
-          total_macros: emptyMacros(),
+          total_nutrients: emptyMacros(),
         };
         groupMap[meal.group_id] = group;
         items.push(group);
@@ -42,9 +44,9 @@ function buildDisplayItems(meals) {
         meal_name: meal.meal_name,
         meal_type: meal.meal_type,
         logged_at: meal.logged_at,
-        macros: mealMacros,
+        nutrients: mealNutrients,
       });
-      addMacros(g.total_macros, mealMacros);
+      addMacros(g.total_nutrients, mealNutrients);
     } else {
       items.push({ item_type: "meal", ...meal });
     }

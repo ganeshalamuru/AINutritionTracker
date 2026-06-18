@@ -1,12 +1,13 @@
 // Label-style breakdown of the meal's total fat — the nutrition-label convention of
 // "Total Fat -> of which saturated / mono / poly", plus omega-3 and cholesterol.
-// These are stored as micros (display-only) but shown here under Fat rather than in
-// MicroGrid. Saturated fat and cholesterol carry FDA Daily Values (so they get a %DV
-// bar like MicroGrid); mono/poly/omega-3 have no official DV and show value-only.
-// Omega-3 is stored in grams (EPA+DHA) but shown in mg, the readable unit at meal scale.
+// These keys live in the flat nutrients bag (the backend draws no macro/micro line);
+// this is where they're picked out and grouped under Fat rather than shown in MicroGrid.
+// Saturated fat and cholesterol carry FDA Daily Values (so they get a %DV bar like
+// MicroGrid); mono/poly/omega-3 have no official DV and show value-only. Omega-3 is
+// stored in grams (EPA+DHA) but shown in mg, the readable unit at meal scale.
 //
 // This renders only the breakdown panel; the expand/collapse toggle lives on the Fat
-// macro cell in the parent. Use hasFatBreakdown(micros) to decide whether that cell
+// macro cell in the parent. Use hasFatBreakdown(nutrients) to decide whether that cell
 // should be tappable.
 const ITEMS = [
   { key: "saturated_fat_g", label: "Saturated", unit: "g", dv: 20 },
@@ -26,18 +27,18 @@ function dvColor(pct) {
   return "#d1d5db"; // gray-300
 }
 
-// Items present (value > 0) for the given micros, with display value and %DV computed.
-function presentItems(micros) {
-  if (!micros) return [];
+// Items present (value > 0) for the given nutrients, with display value and %DV computed.
+function presentItems(nutrients) {
+  if (!nutrients) return [];
   return ITEMS.map((item) => {
-    const raw = Number(micros[item.key]) || 0;
+    const raw = Number(nutrients[item.key]) || 0;
     return { ...item, value: raw * (item.scale || 1), pct: pctDv(raw, item.dv && item.dv) };
   }).filter((i) => i.value > 0);
 }
 
 // Whether there's any fat breakdown to show — drives the tappable Fat cell in parents.
-export function hasFatBreakdown(micros) {
-  return presentItems(micros).length > 0;
+export function hasFatBreakdown(nutrients) {
+  return presentItems(nutrients).length > 0;
 }
 
 // The Fat macro cell. When expandable it's a button that toggles the breakdown panel,
@@ -65,9 +66,9 @@ export function FatCell({ value, expandable, open, onToggle, className, valueCla
   );
 }
 
-export default function FatBreakdown({ micros, open }) {
+export default function FatBreakdown({ nutrients, open }) {
   if (!open) return null;
-  const present = presentItems(micros);
+  const present = presentItems(nutrients);
   if (!present.length) return null;
 
   return (
