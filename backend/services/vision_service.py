@@ -348,7 +348,11 @@ def analyze_meal_image(
                 provider,
                 model,
                 elapsed,
-                (raw or "").strip(),
+                # Flatten any pretty-printed/multi-line model JSON onto one physical line so
+                # the whole response stays on a single prefixed log record. Without this, only
+                # the first line carries the timestamp/req prefix and line-oriented log tooling
+                # silently drops the bare continuation lines (looks like missing ingredients).
+                " ".join((raw or "").split()),
             )
             return result
         except Exception as e:
