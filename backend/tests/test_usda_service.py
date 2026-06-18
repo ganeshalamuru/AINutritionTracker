@@ -158,6 +158,11 @@ class NutritionDbTest(unittest.TestCase):
         self.assertEqual(nd._aliased("carrot"), "carrots raw")
         self.assertEqual(nd._aliased("apple"), "apples raw")
         self.assertEqual(nd._aliased("banana"), "bananas raw")
+        # A decomposed pizza's crust has no standalone USDA entry; it falls back to a
+        # bread proxy. The model's texture descriptors ("crusty"/"crispy") are stripped so
+        # the verbose name still reduces to the aliased "pizza crust".
+        self.assertEqual(nd._aliased("pizza crust"), "italian bread")
+        self.assertEqual(nd._aliased("crusty pizza crust"), "italian bread")
 
     def test_prefers_candidate_with_energy(self):
         # A 0-calorie record (missing energy data) loses to a populated one even

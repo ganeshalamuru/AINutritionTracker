@@ -32,6 +32,10 @@ SIMPLIFY_STRIP_WORDS = COOKING_ADJECTIVES | {
     "sliced",
     "chopped",
     "dried",
+    # Texture descriptors the vision model tacks onto a crust ("crusty/crispy pizza
+    # crust"); stripping them lets _aliased reduce the name to the aliased "pizza crust".
+    "crusty",
+    "crispy",
 }
 
 # Non-distinctive words: ignored when deriving the "food noun" a match must contain,
@@ -201,6 +205,16 @@ FOOD_ALIASES = {
     "mutton": "lamb cooked",
     "goat": "lamb cooked",
     "goat meat": "lamb cooked",
+    # Pizza crust has no standalone USDA entry — every "crust"/"pizza crust" match is a
+    # WHOLE pizza (toppings included), which would double-count against the other pizza
+    # components on the decomposition path. Italian bread (~259 cal/100g, carb-heavy, low
+    # fat) is the honest baked-dough proxy, so a decomposed pizza's crust contributes a
+    # sane number instead of resolving to 0 (un-aliased miss) or a 506-cal pastry pie crust.
+    # This is only the decomposition fallback; a whole pizza is better matched dish-first.
+    "crust": "italian bread",
+    "pizza crust": "italian bread",
+    "pizza base": "italian bread",
+    "pizza dough": "italian bread",
     # Spices — the model emits "<spice> powder/stick"; USDA files them under
     # "Spices, <spice>, ground/seed", so strict search on the model's phrasing
     # misses. Map to the USDA wording. (Verify with check_aliases.py after edits.)
