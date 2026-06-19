@@ -3,8 +3,8 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import client from "../api/client";
 
-// Used in two ways: forced when the account has must_change_password (migrated PIN accounts,
-// or an admin-reset password), and voluntarily from Settings. On success the backend revokes
+// Used in two ways: forced when the account has must_change_password (an admin-reset
+// password), and voluntarily from Settings. On success the backend revokes
 // all refresh tokens, so we immediately re-authenticate with the new password to get a fresh
 // session rather than bouncing the user to the login screen.
 export default function ChangePassword() {

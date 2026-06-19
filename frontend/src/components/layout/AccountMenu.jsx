@@ -3,9 +3,9 @@ import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
 
 // Avatar button in the TopBar. Opens a dropdown showing the signed-in account with links to
-// change the password or log out. (Multi-profile switching was replaced by real accounts —
-// switching accounts now means logging out and signing in as someone else.)
-export default function ProfileMenu() {
+// change the password or log out. Switching accounts means logging out and signing in as
+// someone else.
+export default function AccountMenu() {
   const { user, logout } = useAuth();
   const navigate = useNavigate();
   const [open, setOpen] = useState(false);

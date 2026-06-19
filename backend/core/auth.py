@@ -2,7 +2,7 @@
 bearer token into the authenticated `User` and enforces roles.
 
 Endpoints depend on `get_current_user` (any logged-in user) or `get_current_admin` (admins
-only) instead of trusting a client-supplied profile/user id, so ownership can't be forgotten
+only) instead of trusting a client-supplied user id, so ownership can't be forgotten
 on one route. Decoding/secret handling lives in core.security; this layer only resolves the
 token to a live, active user and maps failures to 401/403.
 """

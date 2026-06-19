@@ -51,7 +51,7 @@ def daily_summary(
     meals = (
         db.query(Meal)
         .filter(
-            Meal.profile_id == user_id,
+            Meal.user_id == user_id,
             Meal.logged_at >= date_from,
             Meal.logged_at < date_to,
         )
@@ -75,7 +75,7 @@ def monthly_summary(db: Session, user_id: int, year: int, month: int) -> Monthly
     meals = (
         db.query(Meal)
         .filter(
-            Meal.profile_id == user_id,
+            Meal.user_id == user_id,
             extract("year", Meal.logged_at) == year,
             extract("month", Meal.logged_at) == month,
         )

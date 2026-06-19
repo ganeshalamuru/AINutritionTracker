@@ -1,7 +1,7 @@
 """Tests for the guarded read-only SQL service (services/admin_query.py).
 
 No HTTP: validates the SQL guard, the read-only execution (incl. that a write is blocked at the
-driver level even if validation were bypassed), row capping, and secret/PIN redaction. Each test
+driver level even if validation were bypassed), row capping, and secret redaction. Each test
 uses a throwaway SQLite file.
 """
 
@@ -97,13 +97,12 @@ class RedactRowsTest(unittest.TestCase):
         self.assertEqual(out, [["groq_api_key", aq.REDACTED], ["nutrition_source", "offline"]])
 
     def test_masks_credential_columns_regardless_of_value(self):
-        # Both the password hash and a legacy pin column are blanked wholesale.
-        cols = ["id", "password_hash", "pin", "name"]
-        rows = [[1, "$2b$abc", "1234", "Ann"], [2, "$2b$def", "0000", "Bob"]]
+        # The password hash column is blanked wholesale, whatever the value.
+        cols = ["id", "password_hash", "name"]
+        rows = [[1, "$2b$abc", "Ann"], [2, "$2b$def", "Bob"]]
         out = aq.redact_rows(cols, rows, set())
         self.assertEqual([r[1] for r in out], [aq.REDACTED, aq.REDACTED])  # password_hash
-        self.assertEqual([r[2] for r in out], [aq.REDACTED, aq.REDACTED])  # pin
-        self.assertEqual([r[3] for r in out], ["Ann", "Bob"])  # other columns untouched
+        self.assertEqual([r[2] for r in out], ["Ann", "Bob"])  # other columns untouched
 
     def test_empty_secret_set_is_noop_on_values(self):
         cols = ["value"]

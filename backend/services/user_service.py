@@ -1,4 +1,4 @@
-"""Account-level business logic: the signed-in user's own profile updates (calorie goal) and
+"""Account-level business logic: the signed-in user's own account updates (calorie goal) and
 admin-only user management (list, change role/active, reset password). Auth flows (login,
 tokens, password change for self) live in services.auth_service.
 """
@@ -8,10 +8,10 @@ from sqlalchemy.orm import Session
 
 from core.security import hash_password
 from models import RefreshToken, User
-from schemas import AdminUserUpdate, ProfileGoalUpdate
+from schemas import AdminUserUpdate, GoalUpdate
 
 
-def update_goal(db: Session, *, user: User, data: ProfileGoalUpdate) -> User:
+def update_goal(db: Session, *, user: User, data: GoalUpdate) -> User:
     """Update the signed-in user's own calorie goal."""
     user.calorie_goal = data.calorie_goal
     db.commit()

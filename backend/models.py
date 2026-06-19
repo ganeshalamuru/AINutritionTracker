@@ -7,27 +7,24 @@ from core.database import Base
 
 
 class User(Base):
-    """A user account. The table is named `profiles` (and the Meal FK column stays
-    `profile_id`) for historical reasons — this row was the device-local "profile" before
-    real authentication; the class is `User` to read cleanly as the account it now is.
-    Login is by unique `username` + bcrypt `password_hash`; `role` is 'user' or 'admin'."""
+    """A user account. Login is by unique `username` + bcrypt `password_hash`;
+    `role` is 'user' or 'admin'."""
 
-    __tablename__ = "profiles"
+    __tablename__ = "users"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     username = Column(String, nullable=False, unique=True, index=True)
     name = Column(String, nullable=False)  # display name (defaults to username on signup)
     password_hash = Column(String, nullable=False)
     role = Column(String, nullable=False, default="user")  # 'user' | 'admin'
-    # Set on profiles migrated from the legacy PIN (their PIN became the temp password);
-    # the UI forces a password change while this is true.
+    # Set when an admin resets a user's password; the UI forces a password change while true.
     must_change_password = Column(Boolean, nullable=False, default=False)
     avatar_color = Column(String, default="#22c55e")
     calorie_goal = Column(Integer, default=2000, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     is_active = Column(Boolean, default=True)
 
-    meals = relationship("Meal", back_populates="profile", cascade="all, delete-orphan")
+    meals = relationship("Meal", back_populates="user", cascade="all, delete-orphan")
     refresh_tokens = relationship(
         "RefreshToken", back_populates="user", cascade="all, delete-orphan"
     )
@@ -43,7 +40,7 @@ class RefreshToken(Base):
 
     id = Column(Integer, primary_key=True, autoincrement=True)
     jti = Column(String, nullable=False, unique=True, index=True)
-    user_id = Column(Integer, ForeignKey("profiles.id"), nullable=False, index=True)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False, index=True)
     expires_at = Column(Integer, nullable=False)  # epoch seconds
     revoked = Column(Boolean, nullable=False, default=False)
     created_at = Column(Integer, nullable=False)  # epoch seconds
@@ -55,7 +52,7 @@ class Meal(Base):
     __tablename__ = "meals"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    profile_id = Column(Integer, ForeignKey("profiles.id"), nullable=False)
+    user_id = Column(Integer, ForeignKey("users.id"), nullable=False)
     meal_name = Column(String, nullable=False)
     meal_type = Column(String, default="snack")
     image_path = Column(String, nullable=True)
@@ -63,7 +60,7 @@ class Meal(Base):
     logged_at = Column(DateTime, default=lambda: datetime.now(UTC))
     notes = Column(Text, nullable=True)
 
-    profile = relationship("User", back_populates="meals")
+    user = relationship("User", back_populates="meals")
     nutrients = relationship(
         "Nutrients", back_populates="meal", uselist=False, cascade="all, delete-orphan"
     )

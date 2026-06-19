@@ -9,8 +9,8 @@ The danger lives here, isolated and unit-testable. Two independent guarantees ke
      statement is allowed; DML/DDL, PRAGMA, and ATTACH/DETACH are rejected before execution.
 
 Secrets never leave: redact_rows() masks any cell equal to a known secret value (the configured
-API keys) and blanks any credential column (`password_hash`, or a legacy `pin`), so even
-`SELECT * FROM app_config` / `SELECT password_hash FROM profiles` come back scrubbed.
+API keys / JWT secret) and blanks the `password_hash` credential column, so even
+`SELECT * FROM app_config` / `SELECT password_hash FROM users` come back scrubbed.
 """
 
 import re
@@ -71,14 +71,13 @@ def run_query(db_path: str, sql: str, max_rows: int = MAX_ROWS):
         conn.close()
 
 
-# Credential columns blanked wholesale in any result (the password hash, and a legacy PIN
-# column on DBs migrated from the old profile model).
-_CREDENTIAL_COLUMNS = {"password_hash", "pin"}
+# Credential columns blanked wholesale in any result (the password hash).
+_CREDENTIAL_COLUMNS = {"password_hash"}
 
 
 def redact_rows(columns: list[str], rows: list[list], secret_values: set[str]) -> list[list]:
     """Mask secrets in a result: any cell whose string equals a configured secret value becomes
-    REDACTED, and every cell of a credential column (password_hash / legacy pin) is blanked.
+    REDACTED, and every cell of a credential column (password_hash) is blanked.
     Mutates and returns `rows`."""
     secret_values = {s for s in secret_values if s}
     cred_idxs = {i for i, c in enumerate(columns) if (c or "").lower() in _CREDENTIAL_COLUMNS}

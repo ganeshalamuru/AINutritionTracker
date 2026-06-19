@@ -25,7 +25,7 @@ from sqlalchemy import text
 from core.database import engine
 from core.logging_config import configure_logging
 from core.nutrients import NUTRIENT_KEYS
-from core.request_context import profile_id_var, request_id_var
+from core.request_context import request_id_var, user_id_var
 from services import usda_local_search
 
 # Reference data (lookup tables, config constants) lives in services/nutrition_data/.
@@ -63,15 +63,15 @@ def _bind_log_context():
 
     The shared ThreadPoolExecutor's worker threads don't inherit the request's contextvars
     (unlike asyncio.to_thread), so without this their `usda-lookup_*` log lines would lose
-    the request_id/profile_id. We capture the ids here (on the calling thread, which is
+    the request_id/user_id. We capture the ids here (on the calling thread, which is
     inside the request context) and return a wrapper that sets them before running each
     pooled task. Pool threads are reused, so every task re-sets them — no reset needed."""
     rid = request_id_var.get()
-    pid = profile_id_var.get()
+    uid = user_id_var.get()
 
     def run(fn):
         request_id_var.set(rid)
-        profile_id_var.set(pid)
+        user_id_var.set(uid)
         return fn()
 
     return run
@@ -587,7 +587,7 @@ def _sum_ingredients(items: list[dict], budget: int) -> tuple[dict, list, list, 
 
     # Deduped lookups run in parallel on the shared pool to cut latency.
     # (UsdaRateLimitError raised by a worker propagates when we iterate the results.)
-    # _bind_log_context() carries the request_id/profile_id into the pool workers' logs.
+    # _bind_log_context() carries the request_id/user_id into the pool workers' logs.
     run_in_ctx = _bind_log_context()
     results = list(
         _client.pool.map(lambda q: run_in_ctx(lambda: (q, lookup_nutrients(q))), to_lookup)

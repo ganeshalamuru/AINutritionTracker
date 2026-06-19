@@ -24,7 +24,7 @@ from sqlalchemy import text
 from core.config import DIST_DIR
 from core.database import engine
 from core.lifespan import lifespan
-from core.request_context import new_request_id, profile_id_var, request_id_var
+from core.request_context import new_request_id, request_id_var, user_id_var
 from routers import admin, auth, config, foods, meals, nutrition, users
 
 logger = logging.getLogger("nutriai")
@@ -97,16 +97,16 @@ if _cors_origins:
 
 @app.middleware("http")
 async def request_context_middleware(request: Request, call_next):
-    """Bind a request id (trace id) and the caller's profile id for the duration of the
+    """Bind a request id (trace id) and the caller's user id for the duration of the
     request so every downstream log line is correlated, then emit one access-log line with
     method/path/status/duration. The request id is taken from an inbound X-Request-ID
     (lets a proxy/client supply its own trace) or generated, and echoed back on the
-    response. The profile id comes from the X-Profile-Id header the frontend sends on every
+    response. The user id comes from the X-User-Id header the frontend sends on every
     call. Both are reset in `finally` so values never bleed across requests."""
     req_id = request.headers.get("x-request-id") or new_request_id()
-    profile_id = request.headers.get("x-profile-id", "-")
+    user_id = request.headers.get("x-user-id", "-")
     req_token = request_id_var.set(req_id)
-    prof_token = profile_id_var.set(profile_id)
+    user_token = user_id_var.set(user_id)
     start = time.perf_counter()
     response = None
     try:
@@ -117,7 +117,7 @@ async def request_context_middleware(request: Request, call_next):
         # Emit one correlated access line in `finally` so requests that raise are logged too
         # (a raise becomes a 500 via the exception handler). uvicorn's own access log is
         # disabled in core.logging_config. Include the query string + client IP so nothing
-        # uvicorn logged is lost. Query strings here carry no secrets (profile_id/dates/paging
+        # uvicorn logged is lost. Query strings here carry no secrets (user_id/dates/paging
         # only; keys travel in the body/headers). In dev the client IP is the Vite proxy.
         path = request.url.path + (f"?{request.url.query}" if request.url.query else "")
         client_host = request.client.host if request.client else "-"
@@ -130,7 +130,7 @@ async def request_context_middleware(request: Request, call_next):
             client_host,
         )
         request_id_var.reset(req_token)
-        profile_id_var.reset(prof_token)
+        user_id_var.reset(user_token)
 
 
 @app.exception_handler(Exception)

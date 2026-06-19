@@ -1,5 +1,5 @@
 """Nutrition summary routes — thin wrappers over services.summary_service. Scoped to the
-authenticated user (core.auth.get_current_user); no client-supplied profile id."""
+authenticated user (core.auth.get_current_user); no client-supplied user id."""
 
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session

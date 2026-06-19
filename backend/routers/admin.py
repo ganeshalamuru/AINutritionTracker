@@ -2,8 +2,9 @@
 gate that controls /docs). Lets you browse both SQLite DBs — the app DB (nutrition.db) and the
 offline USDA index (usda_local.db) — with structured views plus a guarded read-only SQL console.
 
-Secrets never leak: app_config `*_api_key` values and profile PINs are redacted in every response
-(including the raw SQL console — see services.admin_query.redact_rows)."""
+Secrets never leak: app_config `*_api_key` values and the JWT signing secret (`jwt_secret`) are
+redacted, and the `password_hash` credential column is blanked, in every response (including the
+raw SQL console — see services.admin_query.redact_rows)."""
 
 import json
 import os
@@ -106,14 +107,14 @@ def food_cache(
 
 @router.get("/meals", response_model=list[AdminMeal], summary="Browse logged meals")
 def list_meals(
-    profile_id: int | None = Query(default=None),
+    user_id: int | None = Query(default=None),
     limit: int = Query(default=50, ge=1, le=500),
     offset: int = Query(default=0, ge=0),
     db: Session = Depends(get_db),
 ):
     q = db.query(Meal)
-    if profile_id is not None:
-        q = q.filter(Meal.profile_id == profile_id)
+    if user_id is not None:
+        q = q.filter(Meal.user_id == user_id)
     meals = q.order_by(Meal.logged_at.desc()).limit(limit).offset(offset).all()
     out = []
     for m in meals:
@@ -121,7 +122,7 @@ def list_meals(
         out.append(
             AdminMeal(
                 id=m.id,
-                profile_id=m.profile_id,
+                user_id=m.user_id,
                 meal_name=m.meal_name,
                 meal_type=m.meal_type,
                 logged_at=m.logged_at,
@@ -147,7 +148,7 @@ def list_config(db: Session = Depends(get_db)):
 @router.post("/query/{which}", response_model=SqlQueryResult, summary="Run a read-only SQL query")
 def run_sql(which: str, body: SqlQueryRequest, db: Session = Depends(get_db)):
     """Execute one read-only SELECT against `app` (nutrition.db) or `local` (usda_local.db).
-    Non-SELECT statements are rejected; app results have secrets/PINs redacted."""
+    Non-SELECT statements are rejected; app results have secrets redacted."""
     if which == "app":
         db_path = APP_DB_PATH
     elif which == "local":

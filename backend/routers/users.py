@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 from core.auth import get_current_admin, get_current_user
 from core.database import get_db
 from models import User
-from schemas import AdminPasswordReset, AdminUserUpdate, ProfileGoalUpdate, UserOut
+from schemas import AdminPasswordReset, AdminUserUpdate, GoalUpdate, UserOut
 from services import user_service
 
 router = APIRouter(prefix="/users", tags=["users"])
@@ -17,7 +17,7 @@ router = APIRouter(prefix="/users", tags=["users"])
 
 @router.patch("/me", response_model=UserOut, summary="Update own calorie goal")
 def update_me(
-    data: ProfileGoalUpdate,
+    data: GoalUpdate,
     user: User = Depends(get_current_user),
     db: Session = Depends(get_db),
 ):

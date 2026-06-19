@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { useAuth } from "../../context/AuthContext";
-import ProfileMenu from "./ProfileMenu";
+import AccountMenu from "./AccountMenu";
 
 export default function TopBar() {
   const { user } = useAuth();
@@ -27,7 +27,7 @@ export default function TopBar() {
               <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
             </svg>
           </button>
-          <ProfileMenu />
+          <AccountMenu />
         </div>
       </div>
     </div>

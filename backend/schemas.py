@@ -94,7 +94,7 @@ class AuthResponse(BaseModel):
     tokens: TokenPair
 
 
-class ProfileGoalUpdate(BaseModel):
+class GoalUpdate(BaseModel):
     calorie_goal: int = Field(ge=500, le=10000)
 
 
@@ -200,7 +200,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class MealLogRequest(BaseModel):
-    # No profile_id: the owner is the authenticated user (from the JWT), never client-supplied.
+    # No user_id: the owner is the authenticated user (from the JWT), never client-supplied.
     meal_name: str = Field(min_length=1)
     meal_type: MealType = MealType.snack
     notes: str | None = None
@@ -366,10 +366,10 @@ class FoodCacheEntry(BaseModel):
 
 
 class AdminMeal(BaseModel):
-    """Flat admin view of a logged meal with its nutrient subtotals (no profile PIN)."""
+    """Flat admin view of a logged meal with its nutrient subtotals."""
 
     id: int
-    profile_id: int
+    user_id: int
     meal_name: str
     meal_type: str
     logged_at: datetime

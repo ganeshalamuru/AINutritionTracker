@@ -145,7 +145,7 @@ def _create_meal_record(
 
     # The owner is always the authenticated user — never a client-supplied id.
     meal = Meal(
-        profile_id=user_id,
+        user_id=user_id,
         meal_name=data.meal_name,
         meal_type=data.meal_type,
         image_path=image_path,
@@ -193,7 +193,7 @@ def log_group(db: Session, data: LogGroupRequest, user_id: int) -> dict:
 def build_timeline(
     db: Session, user_id: int, page: int, limit: int, date_from: str | None, date_to: str | None
 ) -> TimelineResponse:
-    query = db.query(Meal).filter(Meal.profile_id == user_id).order_by(Meal.logged_at.desc())
+    query = db.query(Meal).filter(Meal.user_id == user_id).order_by(Meal.logged_at.desc())
     if date_from:
         query = query.filter(Meal.logged_at >= date_from)
     if date_to:
@@ -264,7 +264,7 @@ def build_timeline(
 def get_group(db: Session, group_id: str, user_id: int) -> MealGroupSummary:
     meals = (
         db.query(Meal)
-        .filter(Meal.group_id == group_id, Meal.profile_id == user_id)
+        .filter(Meal.group_id == group_id, Meal.user_id == user_id)
         .order_by(Meal.logged_at)
         .all()
     )
@@ -293,7 +293,7 @@ def get_group(db: Session, group_id: str, user_id: int) -> MealGroupSummary:
 
 
 def delete_group(db: Session, group_id: str, user_id: int) -> dict:
-    meals = db.query(Meal).filter(Meal.group_id == group_id, Meal.profile_id == user_id).all()
+    meals = db.query(Meal).filter(Meal.group_id == group_id, Meal.user_id == user_id).all()
     if not meals:
         raise HTTPException(status_code=404, detail="Group not found")
     for meal in meals:
@@ -340,7 +340,7 @@ def _owned_meal(db: Session, meal_id: int, user_id: int) -> Meal:
     """Fetch a meal that belongs to `user_id`, or 404. Filtering on the owner (rather than
     fetching then comparing) means another user's meal id is indistinguishable from a
     nonexistent one — no existence leak across accounts."""
-    meal = db.query(Meal).filter(Meal.id == meal_id, Meal.profile_id == user_id).first()
+    meal = db.query(Meal).filter(Meal.id == meal_id, Meal.user_id == user_id).first()
     if not meal:
         raise HTTPException(status_code=404, detail="Meal not found")
     return meal

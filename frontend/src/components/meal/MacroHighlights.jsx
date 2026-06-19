@@ -4,7 +4,7 @@ import { computeGoals } from "../../utils/goals";
 // Macro headline: what a meal is a high source of, by % of daily goal/limit.
 // Mirrors MicroGrid's "Rich in" idea, but splits the framing: protein/carbs/fat/
 // fiber are good to hit (green "Rich in"), sugar/sodium are limits to watch
-// (amber "High in"). Display-only — goals come from the active profile's calorie
+// (amber "High in"). Display-only — goals come from the user's calorie
 // goal (energy-linked goals scale; the sodium limit is fixed). See utils/goals.js.
 const GOOD = [
   { key: "protein_g", label: "Protein", goalKey: "protein_g" },

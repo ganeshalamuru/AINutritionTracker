@@ -1,8 +1,8 @@
-"""Per-request log correlation: a request id (trace id) and the calling profile id,
+"""Per-request log correlation: a request id (trace id) and the calling user id,
 carried in contextvars and stamped onto every log record.
 
 The HTTP middleware (main.py) binds these per request; a log-record factory copies
-them onto each LogRecord so the formatter's %(request_id)s / %(profile_id)s fields are
+them onto each LogRecord so the formatter's %(request_id)s / %(user_id)s fields are
 always present — even for startup, uvicorn, and third-party logs emitted with no request
 in flight (those render the "-" default). contextvars (not thread-locals) so the values
 survive across asyncio.to_thread, and copy_context() can carry them into the USDA
@@ -14,7 +14,7 @@ import uuid
 
 # "-" reads cleanly in the log when no request is in flight (startup, uvicorn).
 request_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("request_id", default="-")
-profile_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("profile_id", default="-")
+user_id_var: contextvars.ContextVar[str] = contextvars.ContextVar("user_id", default="-")
 
 
 def new_request_id() -> str:
@@ -26,7 +26,7 @@ _factory_installed = False
 
 
 def install_log_record_factory() -> None:
-    """Wrap the active LogRecord factory so every record carries request_id/profile_id.
+    """Wrap the active LogRecord factory so every record carries request_id/user_id.
 
     Idempotent: configure_logging() may run more than once, but we only wrap once so the
     chain doesn't grow."""
@@ -38,7 +38,7 @@ def install_log_record_factory() -> None:
     def factory(*args, **kwargs):
         record = base_factory(*args, **kwargs)
         record.request_id = request_id_var.get()
-        record.profile_id = profile_id_var.get()
+        record.user_id = user_id_var.get()
         return record
 
     logging.setLogRecordFactory(factory)

@@ -211,14 +211,14 @@ backend/
 ├── core/                    # infrastructure & cross-cutting concerns (no business logic)
 │   ├── database.py          #   SQLAlchemy engine (pool_pre_ping + SQLite WAL/busy_timeout pragmas), SessionLocal, Base, get_db
 │   ├── logging_config.py    #   configure_logging(): one timestamped, thread-named, request-correlated formatter (app + uvicorn); LOG_LEVEL env
-│   ├── request_context.py   #   per-request trace id + profile id (contextvars) + log-record factory that stamps them onto every line
+│   ├── request_context.py   #   per-request trace id + user id (contextvars) + log-record factory that stamps them onto every line
 │   ├── config.py            #   app_config table access + vision/nutrition_source defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the flat 33-nutrient schema + to_nutrients_data / sum_nutrients helpers
 │   ├── security.py          #   bcrypt password hash/verify + PyJWT access/refresh mint/decode + JWT_SECRET handling
 │   ├── auth.py              #   FastAPI authz dependencies: get_current_user / get_current_admin (the single authz chokepoint)
-│   └── lifespan.py          #   startup/shutdown: create tables, migrate (incl. PIN profiles -> users), prep cache, seed config, build vision + USDA clients
+│   └── lifespan.py          #   startup/shutdown: rename legacy schema (profiles->users) + create tables, migrate, prep cache, seed config, build vision + USDA clients
 │
-├── models.py                # SQLAlchemy ORM: User (table "profiles"), RefreshToken, Meal (with group_id), Nutrients (flat 33-field), AppConfig
+├── models.py                # SQLAlchemy ORM: User (table "users"), RefreshToken, Meal (with group_id), Nutrients (flat 33-field), AppConfig
 ├── schemas.py               # Pydantic request/response models (leaf): AnalyzeResponse, DishBreakdown, IngredientBreakdown, ...
 │
 ├── routers/                 # thin HTTP layer — parse request, call a service, return result
@@ -269,7 +269,7 @@ backend/
 App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/AuthContext.jsx · context/LogDraftContext.jsx
 api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama; attaches Bearer access token + transparent refresh-on-401)
 pages/      Login · Register · ChangePassword · Home · LogMeal · Timeline · Monthly · Settings
-components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
+components/  layout/   (Layout, TopBar, BottomNav, AccountMenu)
             meal/     (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MacroHighlights, MicroGrid, FatBreakdown)
             summary/  (MacroProgressBar)
             settings/ (ApiKeyCard, SettingsSection)   shared/ (Spinner, Toast, EmptyState, ConfirmModal)
@@ -284,7 +284,7 @@ its manual edits). More photos can also be staged **after** analysis (an "Add an
 on the review/log step, up to the 4-photo cap) — only the new photo is analyzed, the already-analyzed
 ones are left untouched. The in-progress log (staged photos + drafts + hints) lives in `LogDraftContext`
 above the router, so it **survives switching tabs and returning** — it's in-memory only (cleared on a
-successful log or a profile switch/logout, lost on a full page refresh). On analyze it builds an
+successful log or logout, lost on a full page refresh). On analyze it builds an
 editable **draft** from the immutable analysis and re-sums the
 meal from it client-side (`draftTotals`), so repeated edits scale from the original baseline and
 never compound rounding. Editing granularity follows a deliberate **clean split** by dish type:
@@ -317,8 +317,8 @@ tokens. The **access token lives in memory** (inside `api/client.js`) and the **
 reloads the user, so a reload keeps the session without re-login. `client.js` attaches the
 `Authorization: Bearer` header and, on a 401, transparently refreshes once (single-flight) and
 retries — dropping to the login screen only if the refresh itself fails. `ProtectedRoute` gates
-the app on a valid session and funnels accounts flagged `must_change_password` (migrated PIN
-accounts / admin-resets) to `ChangePassword`. The TopBar avatar opens **`ProfileMenu`** — an
+the app on a valid session and funnels accounts flagged `must_change_password` (admin-resets)
+to `ChangePassword`. The TopBar avatar opens **`AccountMenu`** — an
 account dropdown (username, **Change password**, **Log out**). API-key/provider settings appear
 only for **admin** accounts (the `/api/config` endpoint is admin-only).
 
@@ -367,7 +367,7 @@ rows become `MealSummary`. A discriminated union (`item_type`) tells the fronten
 render. **Route order matters:** `/timeline` and `/group/{id}` are declared before `/{meal_id}` so
 the catch-all doesn't swallow them.
 
-**`GET /api/nutrition/daily | /monthly`** — `summary_service` aggregates a profile's meals over a
+**`GET /api/nutrition/daily | /monthly`** — `summary_service` aggregates a user's meals over a
 date range / month into totals + (monthly) per-day breakdown and averages.
 
 ---
@@ -381,18 +381,17 @@ User 1──* RefreshToken                  food_cache(query, ...)  # USDA per-1
 
 - **`User`** is a user account: `username` (unique login), `name` (display), `password_hash`
   (bcrypt), `role` (`user`|`admin`), `must_change_password`, `avatar_color`, `calorie_goal`,
-  `is_active`. For historical reasons the **table is still named `profiles`** and the `Meal`
-  FK column is still `profile_id` (this row used to be the device-local "profile"); the ORM
-  class is `User`. Login is username + password; the **first registered account is the admin**.
+  `is_active`. The table is `users` and the `Meal` FK column is `user_id`. Login is
+  username + password; the **first registered account is the admin**.
 - **`RefreshToken`** tracks issued JWT refresh tokens by `jti` so they can be **rotated and
   revoked** server-side (rotation on every `/auth/refresh`; reuse of a rotated token revokes
   the whole chain). Access tokens are short-lived and stateless (never stored).
 - **Auth model.** Endpoints derive the caller from the `Authorization: Bearer <access>` token
   via the `core.auth` dependencies (`get_current_user` / `get_current_admin`) — never from a
   client-supplied id — so meal/nutrition data is owner-scoped and `/api/config` + `/api/admin`
-  are admin-only. The legacy PIN profiles are migrated on startup to user accounts (username
-  derived from the name, the old PIN becomes a temporary bcrypt password with
-  `must_change_password=1`, oldest profile → admin; the legacy `pin` column is dropped).
+  are admin-only. A legacy DB whose account table was named `profiles` (with a `meals.profile_id`
+  FK) is renamed in place to `users` / `user_id` on startup (idempotent, data-preserving — see
+  `core.lifespan._migrate_legacy_schema`).
 - `Meal` carries an optional `group_id` (multi-photo sessions) and `image_path`.
 - `Nutrients` (33 fields, one flat row) is 1:1 with a meal; its columns mirror
   `core.nutrients.NUTRIENT_KEYS` exactly. (It replaces the former split `Macros`/`Micros` tables;
@@ -452,13 +451,13 @@ midnight land on the right day regardless of timezone.
 - **`MOCK_GEMINI=1`** short-circuits *both* stages (canned dish list + canned totals, no network).
   The name is historical — it is provider-agnostic, not Gemini-only.
 - **Logging** is timestamped, thread-named, and **request-correlated** (`core.logging_config`).
-  Every line carries `[req:<id> p:<profile_id>]` — a per-request trace id and the calling
-  profile — so concurrent requests/profiles are distinguishable. The ids live in
+  Every line carries `[req:<id> u:<user_id>]` — a per-request trace id and the calling
+  user — so concurrent requests/users are distinguishable. The ids live in
   `contextvars` (`core.request_context`) and are injected onto every record by a
-  log-record factory (so startup/uvicorn/library logs render `req:- p:-` rather than
+  log-record factory (so startup/uvicorn/library logs render `req:- u:-` rather than
   erroring). An `@app.middleware("http")` in `main.py` binds them per request: the trace id
   comes from an inbound `X-Request-ID` (else generated) and is **echoed back** on the
-  response; the profile id comes from the `X-Profile-Id` header the frontend sends on every
+  response; the user id comes from the `X-User-Id` header the frontend sends on every
   call (`api/client.js`). The middleware also emits the single **access-log line** per
   request (`METHOD /path?query -> status (N ms) from <client-ip>`); uvicorn's own
   `uvicorn.access` logger is disabled in `core.logging_config` because it logs after the
@@ -568,7 +567,7 @@ POST   /api/users/{id}/reset-password  (admin) {new_password} → must_change_pa
 GET    /api/health                {status:"ok"} — liveness check
 GET    /api/health/ready          {status:"ready"} or 503 — readiness (DB SELECT 1)
 GET    /metrics                   Prometheus metrics (text; METRICS_ENABLED=0 to disable)
-# Meals/nutrition are scoped to the authenticated user (from the token) — no client-supplied profile_id.
+# Meals/nutrition are scoped to the authenticated user (from the token) — no client-supplied user_id.
 POST   /api/meals/analyze         Image → AI analysis (no DB write); returns dishes[] breakdown
 POST   /api/meals/log             Save a single analyzed meal (owner = caller)
 POST   /api/meals/log-group       Save {group_id, meals:[...]} as a grouped session
@@ -593,7 +592,7 @@ GET    /api/foods/{fdc_id}        FoodDetail — description + per-100g macros &
 # Admin — DEV-ONLY (mounted only when APP_ENV != production) AND admin-only (Bearer admin token); secrets always redacted
 GET    /api/admin/tables          ?db=app|local — table + row counts
 GET    /api/admin/food-cache      ?query&limit&offset — browse the USDA lookup cache
-GET    /api/admin/meals           ?profile_id&limit&offset — flat logged-meal view (+ macros/micros)
+GET    /api/admin/meals           ?user_id&limit&offset — flat logged-meal view (+ macros/micros)
 GET    /api/admin/config          app_config rows; *_api_key values redacted
 POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mode=ro; SELECT-only; app secrets/password hashes redacted)
 ```
@@ -603,14 +602,14 @@ POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mo
 `/api/admin/*` routes.
 The read-only SQL console (`POST /api/admin/query/{which}`) only accepts a single `SELECT`/`WITH`
 statement and runs it on a `mode=ro` connection, so writes are impossible; on the app DB, API-key
-values and password hashes (the `password_hash` / legacy `pin` columns) are redacted from results.
+values, the JWT secret, and the `password_hash` column are redacted from results.
 **Group routes are declared before `/{meal_id}`**
 to avoid FastAPI routing conflicts.
 
 ### Daily reference targets (UI progress bars)
 
-The **calorie goal is per-profile and editable** (Settings → *Daily Calorie Goal*, stored on
-`profiles.calorie_goal`, default 2000). The baseline below is a coherent 20% protein / 50% carbs /
+The **calorie goal is per-user and editable** (Settings → *Daily Calorie Goal*, stored on
+`users.calorie_goal`, default 2000). The baseline below is a coherent 20% protein / 50% carbs /
 30% fat split (sums to exactly 2000 kcal). Energy-linked goals **scale with the calorie goal**
 (factor `calorie_goal / 2000`); the sodium limit and the `MicroGrid` vitamin/mineral DVs are
 **fixed** (set by body needs, not energy). The single source of truth is `frontend/src/utils/goals.js`.

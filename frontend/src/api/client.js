@@ -33,9 +33,9 @@ const bare = axios.create({ baseURL: "/api", timeout: 45000 });
 
 client.interceptors.request.use((config) => {
   if (accessToken) config.headers["Authorization"] = `Bearer ${accessToken}`;
-  // X-Profile-Id is used only for backend log correlation (not trust); send the user id when known.
+  // X-User-Id is used only for backend log correlation (not trust); send the user id when known.
   const uid = localStorage.getItem("nutriai_uid");
-  if (uid) config.headers["X-Profile-Id"] = uid;
+  if (uid) config.headers["X-User-Id"] = uid;
   return config;
 });
 
