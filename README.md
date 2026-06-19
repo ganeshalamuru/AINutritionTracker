@@ -605,10 +605,17 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
 
 ## Utility scripts
 
-- `backend/check_aliases.py` — audits every `FOOD_ALIASES`/`DISH_ALIASES` entry against the **real**
-  USDA API through the production matching path (read-only, bypasses cache), printing each chosen
-  match or `UNMATCHED`. Run from `backend/`: `python check_aliases.py <usda_key>` (or `USDA_API_KEY`
-  env / `backend/.env`). Use it after editing aliases.
+- `backend/check_alias.py` — validates a **single** food/dish name against the **offline** local
+  index (`usda_local.db`) through the same production matching path, printing what the app would
+  pick (description + cal/100g) plus the top candidates, for both the dish and ingredient paths.
+  Read-only, **no network / key / permission** — the quick "what resolves for this name?" check to
+  run **before** adding or changing an alias. From `backend/`: `python check_alias.py "<name>"`
+  (`--dish` / `--food` to limit to one path). The `validate-food` skill drives this loop.
+- `backend/check_aliases.py` — audits **every** `FOOD_ALIASES`/`DISH_ALIASES` entry against the
+  **real USDA API** through the production matching path (read-only, bypasses cache), printing each
+  chosen match or `UNMATCHED`. Run from `backend/`: `python check_aliases.py <usda_key>` (or
+  `USDA_API_KEY` env / `backend/.env`). Use it **after** editing aliases (makes API calls — ask
+  before running per `CLAUDE.md`).
 - `backend/list_misses.py` — prints the names USDA matching couldn't resolve (the negative-cached
   misses in `food_cache`, deduped + split offline/online), as the alias-curation worklist. Run
   from `backend/`: `python list_misses.py`. Read-only.
