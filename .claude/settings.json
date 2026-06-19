@@ -1,0 +1,21 @@
+{
+  "hooks": {
+    "PostToolUse": [
+      {
+        "matcher": "Edit|Write",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "f=$(grep -m1 -oP '\"file_path\"\\s*:\\s*\"\\K[^\"]*'); case \"$f\" in *.py) cd \"$CLAUDE_PROJECT_DIR/backend\" && uv run ruff check >&2 ;; esac",
+            "statusMessage": "ruff check (backend)"
+          }
+        ]
+      }
+    ]
+  },
+  "enabledPlugins": {
+    "code-review@claude-plugins-official": true,
+    "skill-creator@claude-plugins-official": true,
+    "feature-dev@claude-plugins-official": true
+  }
+}

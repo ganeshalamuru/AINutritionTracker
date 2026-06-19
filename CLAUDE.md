@@ -30,3 +30,12 @@ Guidance for Claude Code when working in this repository.
 - Development happens on Windows; the app is pivoting from local-first toward deployment as a Linux container (Docker). Keep changes portable across both: don't hardcode Windows-only paths/commands or assume a local-only runtime.
 - On the Windows dev side: verify CLI tools (e.g. uv) are installed as PATH executables and watch for em-dash/mojibake encoding issues.
 - Prefer epoch-integer timestamps to avoid SQLite timezone bugs (matters on both Windows dev and the Linux deploy target).
+
+## Shell / Command Execution
+
+These are the patterns behind most of the recurring "command failed" noise — avoid them.
+
+- The Bash tool's working directory does **not** persist between calls; every call starts back at the project root. `cd backend && pytest` fails with `cd: backend: No such file or directory` whenever you assume a prior `cd` stuck. Use **absolute paths** (or a single compound command) instead of relying on a standing cwd.
+- Don't mix shells. PowerShell cmdlets (`Remove-Item`, `Get-ChildItem`) fail with `command not found` in the Bash tool, and `&&` / `||` / `2>/dev/null` fail in Windows PowerShell 5.1. Pick one shell per task and use its syntax.
+- venv tools are **not** on PATH in a fresh shell. Bare `ruff` / `pytest` give `command not found`; invoke them via `uv run`, or by full path (`backend/.venv/Scripts/ruff.exe`).
+- `ruff check` / format-check exit non-zero **by design** when they find issues (`Would reformat: ...`). That's the check working, not a broken command — read the output before treating it as a failure.
