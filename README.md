@@ -137,7 +137,7 @@ ollama serve                           # serves on http://localhost:11434
 The core design splits **perception** (LLM) from **facts** (USDA):
 
 ```
- photo ─> [Stage 1: vision_service] ─dishes(+ingredient fallback)─> [Stage 2: usda_service] ─> macros+micros ─> DB
+ photo ─> [Stage 1: vision_service] ─dishes(+ingredient fallback)─> [Stage 2: usda_service] ─> nutrients ─> DB
            (Groq / Gemini / Ollama)                                   dish-first, else decompose
                                                           (USDA FNDDS via offline FTS5 or online API + cache)
 ```
@@ -274,7 +274,7 @@ components/  layout/   (Layout, TopBar, BottomNav, AccountMenu)
             summary/  (MacroProgressBar)
             settings/ (ApiKeyCard, SettingsSection)   shared/ (Spinner, Toast, EmptyState, ConfirmModal)
 hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & Timeline)
-utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros, addNutrients) · uid
+utils/      format (logged_at → local time helpers) · nutrients (MACRO_KEYS, emptyNutrients, addNutrients) · uid
 ```
 
 `LogMeal.jsx` is the heart: multi-photo upload (staged, no call, **up to 4 photos**) → a **per-photo**
@@ -325,7 +325,7 @@ only for **admin** accounts (the `/api/config` endpoint is admin-only).
 **Shared frontend layer (single sources of truth, mirroring the backend convention).** Cross-cutting
 pieces live in one place rather than copy-pasted across files: meal-type badge colors in
 `constants.js`; date/time formatting in `utils/format.js` (all parse the backend's naive-UTC
-`logged_at` via `parseUTC`); macro-total shape + summation in `utils/macros.js`; `uid()` (Math.random,
+`logged_at` via `parseUTC`); nutrient-total shape + summation in `utils/nutrients.js`; `uid()` (Math.random,
 **not** `crypto.randomUUID` — browser compatibility) in `utils/uid.js`. The reusable `ApiKeyCard`
 backs the three Settings key cards (Groq/Gemini/USDA), and `useMealModal` holds the meal-detail
 modal state + cache shared by Home and Timeline (group-modal fetching stays per-page, since Home

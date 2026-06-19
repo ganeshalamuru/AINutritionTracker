@@ -1,4 +1,4 @@
-// Single source of truth for daily nutrition goals (mirrors utils/macros.js).
+// Single source of truth for daily nutrition goals (mirrors utils/nutrients.js).
 // Calories are a per-user editable goal. Energy-linked goals (protein, carbs,
 // fat, fiber, added sugar) scale linearly with the calorie goal; the sodium limit
 // and the vitamin/mineral Daily Values (in MicroGrid) are fixed by body needs, not

@@ -11,7 +11,7 @@ import MealCard from "../components/meal/MealCard";
 import GroupedMealCard from "../components/meal/GroupedMealCard";
 import MealDetailModal from "../components/meal/MealDetailModal";
 import { useMealModal } from "../hooks/useMealModal";
-import { emptyMacros, addMacros } from "../utils/macros";
+import { emptyNutrients, addNutrients } from "../utils/nutrients";
 import { computeGoals } from "../utils/goals";
 
 function buildDisplayItems(meals) {
@@ -33,7 +33,7 @@ function buildDisplayItems(meals) {
           group_id: meal.group_id,
           logged_at: meal.logged_at,
           sub_meals: [],
-          total_nutrients: emptyMacros(),
+          total_nutrients: emptyNutrients(),
         };
         groupMap[meal.group_id] = group;
         items.push(group);
@@ -46,7 +46,7 @@ function buildDisplayItems(meals) {
         logged_at: meal.logged_at,
         nutrients: mealNutrients,
       });
-      addMacros(g.total_nutrients, mealNutrients);
+      addNutrients(g.total_nutrients, mealNutrients);
     } else {
       items.push({ item_type: "meal", ...meal });
     }
