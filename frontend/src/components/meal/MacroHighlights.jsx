@@ -1,4 +1,4 @@
-import { useProfile } from "../../context/ProfileContext";
+import { useAuth } from "../../context/AuthContext";
 import { computeGoals } from "../../utils/goals";
 
 // Macro headline: what a meal is a high source of, by % of daily goal/limit.
@@ -45,9 +45,9 @@ function ChipRow({ icon, title, items, labelClass, chipClass }) {
 }
 
 export default function MacroHighlights({ nutrients }) {
-  const { profile } = useProfile();
+  const { user } = useAuth();
   if (!nutrients) return null;
-  const goals = computeGoals(profile?.calorie_goal);
+  const goals = computeGoals(user?.calorie_goal);
   const rich = qualifying(GOOD, nutrients, goals, RICH);
   const high = qualifying(CAUTION, nutrients, goals, HIGH);
   if (!rich.length && !high.length) return null;

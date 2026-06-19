@@ -33,35 +33,83 @@ class VisionProvider(StrEnum):
     ollama = "ollama"
 
 
-# Reusable PIN field: exactly 4 digits.
-PinField = Field(pattern=r"^\d{4}$", description="4-digit PIN")
+# Reusable credential fields. Usernames are case-insensitive identifiers (stored lowercased
+# in the service); passwords have a floor on length but no composition rules (length is the
+# strongest single signal). Keep these constraints in one place so register/login/change agree.
+UsernameField = Field(
+    min_length=3,
+    max_length=32,
+    pattern=r"^[a-zA-Z0-9_.-]+$",
+    description="3-32 chars: letters/digits/._-",
+)
+PasswordField = Field(min_length=8, max_length=128, description="At least 8 characters")
 
 
-# --- Profiles ---
+# --- Users / Auth ---
 
 
-class ProfileCreate(BaseModel):
-    name: str = Field(min_length=1, max_length=60)
-    pin: str = PinField
+class UserRegister(BaseModel):
+    username: str = UsernameField
+    password: str = PasswordField
+    name: str | None = Field(default=None, min_length=1, max_length=60)
     avatar_color: str | None = "#22c55e"
 
 
-class ProfileOut(BaseModel):
+class UserLogin(BaseModel):
+    username: str = Field(min_length=1, max_length=32)
+    password: str = Field(min_length=1, max_length=128)
+
+
+class ChangePassword(BaseModel):
+    current_password: str = Field(min_length=1, max_length=128)
+    new_password: str = PasswordField
+
+
+class RefreshRequest(BaseModel):
+    refresh_token: str = Field(min_length=1)
+
+
+class TokenPair(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+
+
+class UserOut(BaseModel):
     id: int
+    username: str
     name: str
     avatar_color: str
     calorie_goal: int = 2000
+    role: str = "user"
+    must_change_password: bool = False
 
     model_config = {"from_attributes": True}
+
+
+class AuthResponse(BaseModel):
+    """Returned by register/login: the user record plus a fresh token pair."""
+
+    user: UserOut
+    tokens: TokenPair
 
 
 class ProfileGoalUpdate(BaseModel):
     calorie_goal: int = Field(ge=500, le=10000)
 
 
-class PinVerify(BaseModel):
-    profile_id: int
-    pin: str = PinField
+# --- Admin user management ---
+
+
+class AdminUserUpdate(BaseModel):
+    """Admin-editable user fields. Omitted fields are left unchanged."""
+
+    role: Literal["user", "admin"] | None = None
+    is_active: bool | None = None
+
+
+class AdminPasswordReset(BaseModel):
+    new_password: str = PasswordField
 
 
 # --- Nutrients ---
@@ -152,7 +200,7 @@ class AnalyzeResponse(BaseModel):
 
 
 class MealLogRequest(BaseModel):
-    profile_id: int
+    # No profile_id: the owner is the authenticated user (from the JWT), never client-supplied.
     meal_name: str = Field(min_length=1)
     meal_type: MealType = MealType.snack
     notes: str | None = None

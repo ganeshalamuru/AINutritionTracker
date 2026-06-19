@@ -41,7 +41,7 @@ def _accumulate(target: dict, m: Meal):
 
 
 def daily_summary(
-    db: Session, profile_id: int, date_from: str | None, date_to: str | None
+    db: Session, user_id: int, date_from: str | None, date_to: str | None
 ) -> DailySummary:
     if not date_from:
         today = datetime.now(UTC).strftime("%Y-%m-%d")
@@ -51,7 +51,7 @@ def daily_summary(
     meals = (
         db.query(Meal)
         .filter(
-            Meal.profile_id == profile_id,
+            Meal.profile_id == user_id,
             Meal.logged_at >= date_from,
             Meal.logged_at < date_to,
         )
@@ -71,11 +71,11 @@ def daily_summary(
     )
 
 
-def monthly_summary(db: Session, profile_id: int, year: int, month: int) -> MonthlySummary:
+def monthly_summary(db: Session, user_id: int, year: int, month: int) -> MonthlySummary:
     meals = (
         db.query(Meal)
         .filter(
-            Meal.profile_id == profile_id,
+            Meal.profile_id == user_id,
             extract("year", Meal.logged_at) == year,
             extract("month", Meal.logged_at) == month,
         )

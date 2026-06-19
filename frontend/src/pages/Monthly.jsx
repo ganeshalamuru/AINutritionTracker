@@ -1,5 +1,5 @@
 import { useState, useEffect } from "react";
-import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
 import client from "../api/client";
 import { BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid } from "recharts";
 import Spinner from "../components/shared/Spinner";
@@ -8,7 +8,7 @@ import EmptyState from "../components/shared/EmptyState";
 const MONTH_NAMES = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
 export default function Monthly() {
-  const { profile } = useProfile();
+  const { user } = useAuth();
   const now = new Date();
   const [year, setYear] = useState(now.getFullYear());
   const [month, setMonth] = useState(now.getMonth() + 1);
@@ -17,11 +17,11 @@ export default function Monthly() {
 
   useEffect(() => {
     setLoading(true);
-    client.get(`/nutrition/monthly?profile_id=${profile.id}&year=${year}&month=${month}`)
+    client.get(`/nutrition/monthly?year=${year}&month=${month}`)
       .then((r) => setData(r.data))
       .catch(() => setData(null))
       .finally(() => setLoading(false));
-  }, [profile.id, year, month]);
+  }, [user.id, year, month]);
 
   const prevMonth = () => {
     if (month === 1) { setMonth(12); setYear((y) => y - 1); }

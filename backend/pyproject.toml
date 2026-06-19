@@ -21,6 +21,9 @@ dependencies = [
     # SENTRY_DSN is set, see main.py).
     "prometheus-fastapi-instrumentator==7.0.0",
     "sentry-sdk[fastapi]==2.19.2",
+    # Authentication: password hashing (bcrypt) + JWT access/refresh tokens (PyJWT).
+    "bcrypt==5.0.0",
+    "pyjwt==2.13.0",
 ]
 
 # Dev-only tooling (installed by `uv sync`, excluded from `uv sync --no-dev` and the Docker image).

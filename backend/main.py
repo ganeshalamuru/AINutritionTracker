@@ -25,7 +25,7 @@ from core.config import DIST_DIR
 from core.database import engine
 from core.lifespan import lifespan
 from core.request_context import new_request_id, profile_id_var, request_id_var
-from routers import admin, config, foods, meals, nutrition, profiles
+from routers import admin, auth, config, foods, meals, nutrition, users
 
 logger = logging.getLogger("nutriai")
 
@@ -54,7 +54,8 @@ _docs_on = _app_env != "production"
 
 # Per-tag descriptions surfaced in the Swagger UI sidebar.
 _openapi_tags = [
-    {"name": "profiles", "description": "Local profiles (name + 4-digit PIN)."},
+    {"name": "auth", "description": "Register, log in, refresh tokens, change password."},
+    {"name": "users", "description": "Own account settings + admin user management."},
     {"name": "meals", "description": "Analyze a photo, log meals/groups, browse the timeline."},
     {"name": "nutrition", "description": "Daily and monthly nutrition rollups."},
     {"name": "config", "description": "API keys, vision provider/model, and nutrition source."},
@@ -184,7 +185,8 @@ if _docs_on:
         )
 
 
-app.include_router(profiles.router, prefix="/api")
+app.include_router(auth.router, prefix="/api")
+app.include_router(users.router, prefix="/api")
 app.include_router(meals.router, prefix="/api")
 app.include_router(nutrition.router, prefix="/api")
 app.include_router(config.router, prefix="/api")

@@ -134,15 +134,18 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
 # --- logging meals ---
 
 
-def _create_meal_record(db: Session, data: MealLogRequest, group_id: str | None = None) -> Meal:
+def _create_meal_record(
+    db: Session, data: MealLogRequest, user_id: int, group_id: str | None = None
+) -> Meal:
     image_path = None
     if data.temp_image_token and data.keep_image:
         temp_path = os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg")
         if os.path.exists(temp_path):
             image_path = f"uploads/{data.temp_image_token}.jpg"
 
+    # The owner is always the authenticated user — never a client-supplied id.
     meal = Meal(
-        profile_id=data.profile_id,
+        profile_id=user_id,
         meal_name=data.meal_name,
         meal_type=data.meal_type,
         image_path=image_path,
@@ -161,26 +164,21 @@ def _cleanup_temp(data: MealLogRequest):
         _remove_temp(os.path.join(UPLOADS_DIR, f"{data.temp_image_token}.jpg"))
 
 
-def log_meal(db: Session, data: MealLogRequest) -> MealLogResponse:
-    if data.profile_id == 0:
-        raise HTTPException(status_code=400, detail="Guest cannot log meals")
-    meal = _create_meal_record(db, data)
+def log_meal(db: Session, data: MealLogRequest, user_id: int) -> MealLogResponse:
+    meal = _create_meal_record(db, data, user_id)
     db.commit()
     _cleanup_temp(data)
     db.refresh(meal)
     return MealLogResponse(id=meal.id, logged_at=meal.logged_at)
 
 
-def log_group(db: Session, data: LogGroupRequest) -> dict:
+def log_group(db: Session, data: LogGroupRequest, user_id: int) -> dict:
     if not data.meals:
         raise HTTPException(status_code=400, detail="No meals provided")
-    for m in data.meals:
-        if m.profile_id == 0:
-            raise HTTPException(status_code=400, detail="Guest cannot log meals")
 
     meal_ids = []
     for meal_data in data.meals:
-        meal = _create_meal_record(db, meal_data, group_id=data.group_id)
+        meal = _create_meal_record(db, meal_data, user_id, group_id=data.group_id)
         meal_ids.append(meal.id)
     db.commit()
 
@@ -193,9 +191,9 @@ def log_group(db: Session, data: LogGroupRequest) -> dict:
 
 
 def build_timeline(
-    db: Session, profile_id: int, page: int, limit: int, date_from: str | None, date_to: str | None
+    db: Session, user_id: int, page: int, limit: int, date_from: str | None, date_to: str | None
 ) -> TimelineResponse:
-    query = db.query(Meal).filter(Meal.profile_id == profile_id).order_by(Meal.logged_at.desc())
+    query = db.query(Meal).filter(Meal.profile_id == user_id).order_by(Meal.logged_at.desc())
     if date_from:
         query = query.filter(Meal.logged_at >= date_from)
     if date_to:
@@ -263,8 +261,13 @@ def build_timeline(
     return TimelineResponse(items=items, total=total, page=page, limit=limit)
 
 
-def get_group(db: Session, group_id: str) -> MealGroupSummary:
-    meals = db.query(Meal).filter(Meal.group_id == group_id).order_by(Meal.logged_at).all()
+def get_group(db: Session, group_id: str, user_id: int) -> MealGroupSummary:
+    meals = (
+        db.query(Meal)
+        .filter(Meal.group_id == group_id, Meal.profile_id == user_id)
+        .order_by(Meal.logged_at)
+        .all()
+    )
     if not meals:
         raise HTTPException(status_code=404, detail="Group not found")
     sub_meals = []
@@ -289,8 +292,8 @@ def get_group(db: Session, group_id: str) -> MealGroupSummary:
     )
 
 
-def delete_group(db: Session, group_id: str) -> dict:
-    meals = db.query(Meal).filter(Meal.group_id == group_id).all()
+def delete_group(db: Session, group_id: str, user_id: int) -> dict:
+    meals = db.query(Meal).filter(Meal.group_id == group_id, Meal.profile_id == user_id).all()
     if not meals:
         raise HTTPException(status_code=404, detail="Group not found")
     for meal in meals:
@@ -300,10 +303,8 @@ def delete_group(db: Session, group_id: str) -> dict:
     return {"ok": True}
 
 
-def get_meal(db: Session, meal_id: int) -> MealDetail:
-    meal = db.query(Meal).filter(Meal.id == meal_id).first()
-    if not meal:
-        raise HTTPException(status_code=404, detail="Meal not found")
+def get_meal(db: Session, meal_id: int, user_id: int) -> MealDetail:
+    meal = _owned_meal(db, meal_id, user_id)
     return MealDetail(
         id=meal.id,
         meal_name=meal.meal_name,
@@ -315,10 +316,8 @@ def get_meal(db: Session, meal_id: int) -> MealDetail:
     )
 
 
-def patch_meal(db: Session, meal_id: int, data: MealPatch) -> dict:
-    meal = db.query(Meal).filter(Meal.id == meal_id).first()
-    if not meal:
-        raise HTTPException(status_code=404, detail="Meal not found")
+def patch_meal(db: Session, meal_id: int, data: MealPatch, user_id: int) -> dict:
+    meal = _owned_meal(db, meal_id, user_id)
     if data.meal_name is not None:
         meal.meal_name = data.meal_name
     if data.meal_type is not None:
@@ -329,14 +328,22 @@ def patch_meal(db: Session, meal_id: int, data: MealPatch) -> dict:
     return {"ok": True}
 
 
-def delete_meal(db: Session, meal_id: int) -> dict:
-    meal = db.query(Meal).filter(Meal.id == meal_id).first()
-    if not meal:
-        raise HTTPException(status_code=404, detail="Meal not found")
+def delete_meal(db: Session, meal_id: int, user_id: int) -> dict:
+    meal = _owned_meal(db, meal_id, user_id)
     _remove_image_file(meal)
     db.delete(meal)
     db.commit()
     return {"ok": True}
+
+
+def _owned_meal(db: Session, meal_id: int, user_id: int) -> Meal:
+    """Fetch a meal that belongs to `user_id`, or 404. Filtering on the owner (rather than
+    fetching then comparing) means another user's meal id is indistinguishable from a
+    nonexistent one — no existence leak across accounts."""
+    meal = db.query(Meal).filter(Meal.id == meal_id, Meal.profile_id == user_id).first()
+    if not meal:
+        raise HTTPException(status_code=404, detail="Meal not found")
+    return meal
 
 
 def _remove_image_file(meal: Meal):

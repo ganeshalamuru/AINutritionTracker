@@ -9,8 +9,8 @@ The danger lives here, isolated and unit-testable. Two independent guarantees ke
      statement is allowed; DML/DDL, PRAGMA, and ATTACH/DETACH are rejected before execution.
 
 Secrets never leave: redact_rows() masks any cell equal to a known secret value (the configured
-API keys) and blanks any `pin` column, so even `SELECT * FROM app_config` / `SELECT pin FROM
-profiles` come back scrubbed.
+API keys) and blanks any credential column (`password_hash`, or a legacy `pin`), so even
+`SELECT * FROM app_config` / `SELECT password_hash FROM profiles` come back scrubbed.
 """
 
 import re
@@ -71,14 +71,20 @@ def run_query(db_path: str, sql: str, max_rows: int = MAX_ROWS):
         conn.close()
 
 
+# Credential columns blanked wholesale in any result (the password hash, and a legacy PIN
+# column on DBs migrated from the old profile model).
+_CREDENTIAL_COLUMNS = {"password_hash", "pin"}
+
+
 def redact_rows(columns: list[str], rows: list[list], secret_values: set[str]) -> list[list]:
     """Mask secrets in a result: any cell whose string equals a configured secret value becomes
-    REDACTED, and every cell of a column named `pin` is blanked. Mutates and returns `rows`."""
+    REDACTED, and every cell of a credential column (password_hash / legacy pin) is blanked.
+    Mutates and returns `rows`."""
     secret_values = {s for s in secret_values if s}
-    pin_idxs = {i for i, c in enumerate(columns) if (c or "").lower() == "pin"}
+    cred_idxs = {i for i, c in enumerate(columns) if (c or "").lower() in _CREDENTIAL_COLUMNS}
     for row in rows:
         for i, cell in enumerate(row):
-            if i in pin_idxs:
+            if i in cred_idxs:
                 row[i] = REDACTED
             elif isinstance(cell, str) and cell in secret_values:
                 row[i] = REDACTED

@@ -1,6 +1,6 @@
 import { useState, useEffect } from "react";
 import { useNavigate, useLocation } from "react-router-dom";
-import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
 import client from "../api/client";
 import MacroRing from "../components/meal/MacroRing";
 import MacroProgressBar from "../components/summary/MacroProgressBar";
@@ -55,7 +55,7 @@ function buildDisplayItems(meals) {
 }
 
 export default function Home() {
-  const { profile } = useProfile();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const location = useLocation();
   const [summary, setSummary] = useState(null);
@@ -81,7 +81,6 @@ export default function Home() {
       const localNextMidnight = new Date(now.getFullYear(), now.getMonth(), now.getDate() + 1);
       const { data } = await client.get("/nutrition/daily", {
         params: {
-          profile_id: profile.id,
           date_from: localMidnight.toISOString(),
           date_to: localNextMidnight.toISOString(),
         },
@@ -94,7 +93,7 @@ export default function Home() {
     }
   };
 
-  useEffect(() => { load(); }, [profile.id]);
+  useEffect(() => { load(); }, [user.id]);
 
   const openGroupModal = async (group) => {
     const cached = groupDetails[group.group_id];
@@ -126,7 +125,7 @@ export default function Home() {
   if (loading) return <Spinner text="Loading today's summary..." />;
 
   const totals = summary?.totals || {};
-  const goals = computeGoals(profile.calorie_goal);
+  const goals = computeGoals(user.calorie_goal);
   const displayItems = buildDisplayItems(summary?.meals || []);
 
   return (

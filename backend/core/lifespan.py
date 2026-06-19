@@ -74,6 +74,7 @@ def _migrate_and_prepare_cache():
             except Exception:
                 pass  # column already exists
         _migrate_split_to_nutrients(conn)
+        _migrate_profiles_to_users(conn)
         # Cache of USDA food-name -> per-100g nutrient lookups (see usda_service.py).
         conn.execute(
             text(
@@ -98,6 +99,110 @@ def _migrate_and_prepare_cache():
             )
             conn.commit()
             logger.info("food_cache purged (version -> %s)", CACHE_VERSION)
+
+
+def _slugify_username(name: str, taken: set[str]) -> str:
+    """Derive a unique, valid username from a display name: lowercase, keep [a-z0-9_.-],
+    pad to >=3 chars, and suffix with a number on collision. Matches schemas.UsernameField."""
+    import re
+
+    base = re.sub(r"[^a-z0-9_.-]", "", (name or "").lower()) or "user"
+    if len(base) < 3:
+        base = (base + "user")[:3]
+    base = base[:32]
+    candidate = base
+    n = 1
+    while candidate in taken:
+        suffix = str(n)
+        candidate = base[: 32 - len(suffix)] + suffix
+        n += 1
+    taken.add(candidate)
+    return candidate
+
+
+def _migrate_profiles_to_users(conn):
+    """Migrate legacy PIN profiles to user accounts (idempotent).
+
+    Adds the auth columns (username/password_hash/role/must_change_password) to the existing
+    `profiles` table, then for any pre-auth row (carrying the old `pin`, no username yet):
+    derives a username from the name, sets the PIN as the temporary bcrypt password with
+    must_change_password=1, and promotes the oldest profile to admin if none exists. Finally
+    drops the now-unused NOT NULL `pin` column so new ORM inserts (which omit it) don't fail.
+
+    No-op on fresh DBs (Base.metadata.create_all already built the new schema; the ALTERs and
+    the pin DROP are caught) and on already-migrated DBs (every row has a username)."""
+    # core.security imports bcrypt + core.config; import locally so core's module-import graph
+    # stays free of the heavier crypto dep until startup actually needs it.
+    from core.security import hash_password
+
+    for ddl in (
+        "ALTER TABLE profiles ADD COLUMN username TEXT",
+        "ALTER TABLE profiles ADD COLUMN password_hash TEXT",
+        "ALTER TABLE profiles ADD COLUMN role TEXT DEFAULT 'user'",
+        "ALTER TABLE profiles ADD COLUMN must_change_password INTEGER DEFAULT 0",
+    ):
+        try:
+            conn.execute(text(ddl))
+            conn.commit()
+        except Exception:
+            pass  # column already exists
+
+    cols = {row[1] for row in conn.execute(text("PRAGMA table_info(profiles)")).fetchall()}
+    has_pin = "pin" in cols
+
+    # Backfill credentials for rows that predate auth (only possible when the legacy pin exists).
+    if has_pin:
+        rows = conn.execute(
+            text("SELECT id, name, pin FROM profiles WHERE username IS NULL ORDER BY id")
+        ).fetchall()
+        if rows:
+            taken = {
+                r[0]
+                for r in conn.execute(
+                    text("SELECT username FROM profiles WHERE username IS NOT NULL")
+                ).fetchall()
+                if r[0]
+            }
+            for pid, name, pin in rows:
+                username = _slugify_username(name or "", taken)
+                conn.execute(
+                    text(
+                        "UPDATE profiles SET username = :u, password_hash = :ph, "
+                        "must_change_password = 1 WHERE id = :id"
+                    ),
+                    {"u": username, "ph": hash_password(str(pin or "0000")), "id": pid},
+                )
+            conn.commit()
+            logger.info("migrated %d PIN profile(s) -> user accounts", len(rows))
+
+    # Ensure exactly one admin exists if there are any users (the oldest becomes admin).
+    has_admin = conn.execute(text("SELECT 1 FROM profiles WHERE role = 'admin' LIMIT 1")).first()
+    if not has_admin:
+        oldest = conn.execute(text("SELECT id FROM profiles ORDER BY id LIMIT 1")).first()
+        if oldest:
+            conn.execute(
+                text("UPDATE profiles SET role = 'admin' WHERE id = :id"), {"id": oldest[0]}
+            )
+            conn.commit()
+            logger.info("promoted profile id=%s to admin", oldest[0])
+
+    # Enforce username uniqueness (create_all already does this on fresh DBs).
+    try:
+        conn.execute(
+            text("CREATE UNIQUE INDEX IF NOT EXISTS uq_profiles_username ON profiles(username)")
+        )
+        conn.commit()
+    except Exception:
+        logger.exception("could not create unique username index")
+
+    # Drop the legacy NOT NULL `pin` column so new accounts (which don't set it) can insert.
+    if has_pin:
+        try:
+            conn.execute(text("ALTER TABLE profiles DROP COLUMN pin"))
+            conn.commit()
+            logger.info("dropped legacy profiles.pin column")
+        except Exception:
+            logger.exception("could not drop legacy profiles.pin column")
 
 
 def _migrate_split_to_nutrients(conn):

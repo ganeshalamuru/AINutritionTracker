@@ -214,25 +214,30 @@ backend/
 │   ├── request_context.py   #   per-request trace id + profile id (contextvars) + log-record factory that stamps them onto every line
 │   ├── config.py            #   app_config table access + vision/nutrition_source defaults + filesystem paths (UPLOADS_DIR/DIST_DIR/BACKEND_DIR) + CACHE_VERSION
 │   ├── nutrients.py         #   SINGLE SOURCE for the flat 33-nutrient schema + to_nutrients_data / sum_nutrients helpers
-│   └── lifespan.py          #   startup/shutdown: create tables, migrate, prep cache, seed config, build vision + USDA clients
+│   ├── security.py          #   bcrypt password hash/verify + PyJWT access/refresh mint/decode + JWT_SECRET handling
+│   ├── auth.py              #   FastAPI authz dependencies: get_current_user / get_current_admin (the single authz chokepoint)
+│   └── lifespan.py          #   startup/shutdown: create tables, migrate (incl. PIN profiles -> users), prep cache, seed config, build vision + USDA clients
 │
-├── models.py                # SQLAlchemy ORM: Profile, Meal (with group_id), Nutrients (flat 33-field), AppConfig
+├── models.py                # SQLAlchemy ORM: User (table "profiles"), RefreshToken, Meal (with group_id), Nutrients (flat 33-field), AppConfig
 ├── schemas.py               # Pydantic request/response models (leaf): AnalyzeResponse, DishBreakdown, IngredientBreakdown, ...
 │
 ├── routers/                 # thin HTTP layer — parse request, call a service, return result
-│   ├── profiles.py          #   /api/profiles ...
-│   ├── meals.py             #   /api/meals ...   (analyze, log, timeline, group, detail)
-│   ├── nutrition.py         #   /api/nutrition/daily | /monthly
-│   ├── config.py            #   /api/config (GET/PUT keys + vision provider/model + nutrition_source; rebuilds clients on change)
+│   ├── auth.py              #   /api/auth (register, login, refresh, logout, me, change-password)
+│   ├── users.py             #   /api/users (own goal via /me; admin-only list/role/active/reset-password)
+│   ├── meals.py             #   /api/meals ...   (analyze, log, timeline, group, detail) — owner-scoped via the access token
+│   ├── nutrition.py         #   /api/nutrition/daily | /monthly — scoped to the authenticated user
+│   ├── config.py            #   /api/config (admin-only: GET/PUT keys + vision provider/model + nutrition_source; rebuilds clients on change)
 │   ├── foods.py             #   /api/foods (search + get-by-id over usda_local.db; always on; public USDA data)
-│   └── admin.py             #   /api/admin (dev-only data inspection: tables, food-cache, meals, config, read-only SQL console)
+│   └── admin.py             #   /api/admin (dev-only + admin-only data inspection: tables, food-cache, meals, config, read-only SQL console)
 │
 └── services/                # business logic — where the work actually happens
     ├── vision_service.py    #   Stage 1: dispatch photo to a vision provider -> dish list (+fallback ingredients); shared clients
     ├── usda_service.py      #   Stage 2: dish-first lookup, matching, SQLite cache (+ negative caching); routes _search_usda to online API or offline index via reload_client
     ├── usda_local_search.py #   Stage 2 offline backend: FTS5 query over usda_local.db -> USDA-shaped candidates (drop-in for _search_usda); also get_food/table_counts for the foods/admin APIs
-    ├── admin_query.py        #   guarded read-only SQL for /api/admin/query (SELECT-only validation + mode=ro connection + secret/PIN redaction)
-    ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models
+    ├── admin_query.py        #   guarded read-only SQL for /api/admin/query (SELECT-only validation + mode=ro connection + secret/credential redaction)
+    ├── auth_service.py      #   register/login/refresh-rotation/logout/change-password (token + RefreshToken bookkeeping)
+    ├── user_service.py      #   own-goal update + admin user management (list/role/active/reset-password)
+    ├── meal_service.py      #   analyze orchestration + meal CRUD + timeline/group read models (owner-scoped)
     ├── summary_service.py   #   daily/monthly aggregation
     └── nutrition_data/      #   pure reference data (no logic) used by usda_service:
         ├── config.py        #     USDA endpoint + tuning (timeouts/retries) + DISH_DATA_TYPES + USDA_MAX_LOOKUPS
@@ -261,12 +266,12 @@ backend/
 ### Frontend (`frontend/src/`)
 
 ```
-App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/ProfileContext.jsx · context/LogDraftContext.jsx
-api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama)
-pages/      ProfileSelect · Home · LogMeal · Timeline · Monthly · Settings
+App.jsx · main.jsx · constants.js (MEAL_TYPE_COLORS) · context/AuthContext.jsx · context/LogDraftContext.jsx
+api/client.js (45s axios timeout; /analyze overrides to 180s for slow local Ollama; attaches Bearer access token + transparent refresh-on-401)
+pages/      Login · Register · ChangePassword · Home · LogMeal · Timeline · Monthly · Settings
 components/  layout/   (Layout, TopBar, BottomNav, ProfileMenu)
             meal/     (MealCard, GroupedMealCard, MealDetailModal, MacroRing, MacroHighlights, MicroGrid, FatBreakdown)
-            summary/  (MacroProgressBar)   profile/(PinPad)
+            summary/  (MacroProgressBar)
             settings/ (ApiKeyCard, SettingsSection)   shared/ (Spinner, Toast, EmptyState, ConfirmModal)
 hooks/      useMealModal (modal state + per-meal detail cache, shared by Home & Timeline)
 utils/      format (logged_at → local time helpers) · macros (MACRO_KEYS, emptyMacros, addMacros, addNutrients) · uid
@@ -306,8 +311,16 @@ columns. Logging sends the live macros/micros — not the breakdown — so every
 persists with **no backend change to the log path**. All destructive actions on *saved* data use the
 shared `ConfirmModal` — never a browser `confirm()`.
 
-The TopBar avatar opens **`ProfileMenu`** — a dropdown to switch profiles (PIN-verified inline via
-`PinPad` + `POST /profiles/verify`) or log out, rather than logging out on click.
+**Auth (`context/AuthContext.jsx`).** Username + password accounts with JWT access/refresh
+tokens. The **access token lives in memory** (inside `api/client.js`) and the **refresh token in
+`localStorage`**; on boot the app exchanges the refresh token for a fresh access token and
+reloads the user, so a reload keeps the session without re-login. `client.js` attaches the
+`Authorization: Bearer` header and, on a 401, transparently refreshes once (single-flight) and
+retries — dropping to the login screen only if the refresh itself fails. `ProtectedRoute` gates
+the app on a valid session and funnels accounts flagged `must_change_password` (migrated PIN
+accounts / admin-resets) to `ChangePassword`. The TopBar avatar opens **`ProfileMenu`** — an
+account dropdown (username, **Change password**, **Log out**). API-key/provider settings appear
+only for **admin** accounts (the `/api/config` endpoint is admin-only).
 
 **Shared frontend layer (single sources of truth, mirroring the backend convention).** Cross-cutting
 pieces live in one place rather than copy-pasted across files: meal-type badge colors in
@@ -362,10 +375,24 @@ date range / month into totals + (monthly) per-day breakdown and averages.
 ## Data model
 
 ```
-Profile 1──* Meal 1──1 Nutrients       AppConfig(key, value)   # API keys, vision provider/model
-                                        food_cache(query, ...)  # USDA per-100g cache (per CACHE_VERSION)
+User 1──* Meal 1──1 Nutrients          AppConfig(key, value)   # API keys, vision provider/model, jwt_secret
+User 1──* RefreshToken                  food_cache(query, ...)  # USDA per-100g cache (per CACHE_VERSION)
 ```
 
+- **`User`** is a user account: `username` (unique login), `name` (display), `password_hash`
+  (bcrypt), `role` (`user`|`admin`), `must_change_password`, `avatar_color`, `calorie_goal`,
+  `is_active`. For historical reasons the **table is still named `profiles`** and the `Meal`
+  FK column is still `profile_id` (this row used to be the device-local "profile"); the ORM
+  class is `User`. Login is username + password; the **first registered account is the admin**.
+- **`RefreshToken`** tracks issued JWT refresh tokens by `jti` so they can be **rotated and
+  revoked** server-side (rotation on every `/auth/refresh`; reuse of a rotated token revokes
+  the whole chain). Access tokens are short-lived and stateless (never stored).
+- **Auth model.** Endpoints derive the caller from the `Authorization: Bearer <access>` token
+  via the `core.auth` dependencies (`get_current_user` / `get_current_admin`) — never from a
+  client-supplied id — so meal/nutrition data is owner-scoped and `/api/config` + `/api/admin`
+  are admin-only. The legacy PIN profiles are migrated on startup to user accounts (username
+  derived from the name, the old PIN becomes a temporary bcrypt password with
+  `must_change_password=1`, oldest profile → admin; the legacy `pin` column is dropped).
 - `Meal` carries an optional `group_id` (multi-photo sessions) and `image_path`.
 - `Nutrients` (33 fields, one flat row) is 1:1 with a meal; its columns mirror
   `core.nutrients.NUTRIENT_KEYS` exactly. (It replaces the former split `Macros`/`Micros` tables;
@@ -389,8 +416,9 @@ midnight land on the right day regardless of timezone.
 - **Keep routers thin.** New endpoint logic goes in a service; the router just wires it. Routes set
   `response_model` / `status_code` / `summary` explicitly.
 - **Validate at the edge with Pydantic.** Request schemas use `StrEnum`s (`MealType`, `Confidence`,
-  `VisionProvider`, `IngredientStatus`) and `Field` constraints (PIN `^\d{4}$`, `ge=0` on
-  nutrients/grams). LLM-derived `meal_type`/`confidence` are normalized in
+  `VisionProvider`, `IngredientStatus`) and `Field` constraints (username
+  `^[a-zA-Z0-9_.-]{3,32}$`, password `min_length=8`, `ge=0` on nutrients/grams). LLM-derived
+  `meal_type`/`confidence` are normalized in
   `vision_service._parse_compact` **before** the strict `AnalyzeResponse`, so a surprise model
   output can't 500.
 - **DB identifiers use a naming convention.** `Base.metadata` (`core.database`) sets a
@@ -448,7 +476,11 @@ API keys (`groq_api_key`, `gemini_api_key`, `usda_api_key`) and the vision provi
 the `app_config` table, editable via Settings (`PUT /api/config`, which also calls
 `vision_service.reload_clients` and `usda_service.reload_client` so a key change takes effect
 immediately) or seeded from env vars on first launch by `core.config.seed_defaults`.
-`GET /api/config` reports only whether each key is set — never the values. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
+`GET /api/config` reports only whether each key is set — never the values, and it (with
+`PUT /api/config`) is **admin-only**. **Authentication** uses JWT access/refresh tokens signed
+with `JWT_SECRET` (HS256); if `JWT_SECRET` is unset a random secret is generated once and
+persisted in `app_config` (`jwt_secret`) so sessions survive restarts — **set `JWT_SECRET`
+explicitly for a real deployment** so it's rotatable and not DB-bound. CORS is locked down by default (same-origin serving); set `CORS_ORIGINS`
 (comma-separated) only if a separate origin must reach the API. `GET /api/health` returns
 `{"status":"ok"}` (liveness) and `GET /api/health/ready` runs a `SELECT 1` and returns
 `{"status":"ready"}` or 503 (readiness — used by the Docker `HEALTHCHECK`/orchestrator); a global
@@ -486,9 +518,10 @@ docker run -p 8000:8000 -e NUTRITION_SOURCE=online -e USDA_API_KEY=<key> nutriai
 > To run the image fully offline, mount a prebuilt index at `/app/backend/usda_local.db` and set
 > `NUTRITION_SOURCE=offline`.
 
-**Runtime env vars:** `APP_ENV` (`production` disables docs + admin), `NUTRITION_SOURCE`
-(`online`|`offline`), `USDA_API_KEY`, optional `GROQ_API_KEY`/`GEMINI_API_KEY`, `CORS_ORIGINS`,
-`SENTRY_DSN` (+ `SENTRY_TRACES_SAMPLE_RATE`), `METRICS_ENABLED`, `LOG_LEVEL`.
+**Runtime env vars:** `APP_ENV` (`production` disables docs + admin), `JWT_SECRET` (HS256
+signing secret — set this in production), `NUTRITION_SOURCE` (`online`|`offline`),
+`USDA_API_KEY`, optional `GROQ_API_KEY`/`GEMINI_API_KEY`, `CORS_ORIGINS`, `SENTRY_DSN`
+(+ `SENTRY_TRACES_SAMPLE_RATE`), `METRICS_ENABLED`, `LOG_LEVEL`.
 
 ### CI/CD (GitHub Actions)
 
@@ -518,28 +551,38 @@ the env vars above (at minimum `USDA_API_KEY` and a vision key, e.g. `GROQ_API_K
 ## API quick reference
 
 ```
-GET    /api/profiles              List all profiles
-POST   /api/profiles              Create profile {name, pin, avatar_color}
-POST   /api/profiles/verify       Verify {profile_id, pin} → profile or 401 (scoped to profile_id)
-PATCH  /api/profiles/{id}         Update goals {calorie_goal} (500–10000)
-DELETE /api/profiles/{id}         Soft-delete profile
+# Auth — username + password accounts, JWT access/refresh (Authorization: Bearer <access>)
+POST   /api/auth/register         Create account {username, password, name?, avatar_color?} → {user, tokens}; 1st user = admin
+POST   /api/auth/login            {username, password} → {user, tokens} or 401
+POST   /api/auth/refresh          {refresh_token} → new {access,refresh} (rotated; reuse revokes the chain)
+POST   /api/auth/logout           {refresh_token} → revoke it
+GET    /api/auth/me               Current user (from the access token)
+POST   /api/auth/change-password  {current_password, new_password} (revokes the caller's refresh tokens)
+
+# Users — own settings + admin-only management
+PATCH  /api/users/me              Update own goal {calorie_goal} (500–10000)
+GET    /api/users                 (admin) list users
+PATCH  /api/users/{id}            (admin) {role?, is_active?} — guards the last admin
+POST   /api/users/{id}/reset-password  (admin) {new_password} → must_change_password on next login
 
 GET    /api/health                {status:"ok"} — liveness check
 GET    /api/health/ready          {status:"ready"} or 503 — readiness (DB SELECT 1)
 GET    /metrics                   Prometheus metrics (text; METRICS_ENABLED=0 to disable)
+# Meals/nutrition are scoped to the authenticated user (from the token) — no client-supplied profile_id.
 POST   /api/meals/analyze         Image → AI analysis (no DB write); returns dishes[] breakdown
-POST   /api/meals/log             Save a single analyzed meal
+POST   /api/meals/log             Save a single analyzed meal (owner = caller)
 POST   /api/meals/log-group       Save {group_id, meals:[...]} as a grouped session
-GET    /api/meals/timeline        ?profile_id&page&limit — paginated, grouped by group_id
-GET    /api/meals/group/{id}      Full MealGroupSummary (total_nutrients)
-DELETE /api/meals/group/{id}      Delete all meals in a group
-GET    /api/meals/{id}            Full meal detail (macros + micros)
-PATCH  /api/meals/{id}            Update a meal
-DELETE /api/meals/{id}            Delete a meal
+GET    /api/meals/timeline        ?page&limit — paginated, grouped by group_id (caller's meals)
+GET    /api/meals/group/{id}      Full MealGroupSummary (total_nutrients) — owner-scoped (404 otherwise)
+DELETE /api/meals/group/{id}      Delete all meals in a group — owner-scoped
+GET    /api/meals/{id}            Full meal detail — owner-scoped (404 otherwise)
+PATCH  /api/meals/{id}            Update a meal — owner-scoped
+DELETE /api/meals/{id}            Delete a meal — owner-scoped
 
-GET    /api/nutrition/daily       ?profile_id&date_from&date_to — day totals
-GET    /api/nutrition/monthly     ?profile_id&year&month — monthly breakdown + averages
+GET    /api/nutrition/daily       ?date_from&date_to — day totals (caller's meals)
+GET    /api/nutrition/monthly     ?year&month — monthly breakdown + averages (caller's meals)
 
+# Config holds the provider API keys — ADMIN ONLY (403 for non-admins).
 GET    /api/config                {gemini_api_key_set, groq_api_key_set, usda_api_key_set, nutrition_source, vision_provider, vision_model}
 PUT    /api/config                Save any of {gemini_api_key, groq_api_key, usda_api_key, nutrition_source, vision_provider, vision_model}
 
@@ -547,12 +590,12 @@ PUT    /api/config                Save any of {gemini_api_key, groq_api_key, usd
 GET    /api/foods/search          ?q&data_type&require_all&limit — BM25-ranked FoodSummary[]
 GET    /api/foods/{fdc_id}        FoodDetail — description + per-100g macros & micros
 
-# Admin — DEV-ONLY (mounted only when APP_ENV != production, same gate as /docs); secrets always redacted
+# Admin — DEV-ONLY (mounted only when APP_ENV != production) AND admin-only (Bearer admin token); secrets always redacted
 GET    /api/admin/tables          ?db=app|local — table + row counts
 GET    /api/admin/food-cache      ?query&limit&offset — browse the USDA lookup cache
 GET    /api/admin/meals           ?profile_id&limit&offset — flat logged-meal view (+ macros/micros)
 GET    /api/admin/config          app_config rows; *_api_key values redacted
-POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mode=ro; SELECT-only; app secrets/PINs redacted)
+POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mode=ro; SELECT-only; app secrets/password hashes redacted)
 ```
 
 **Interactive docs (Swagger UI): `http://localhost:8000/docs`** (ReDoc at `/redoc`, Scalar at
@@ -560,7 +603,8 @@ POST   /api/admin/query/{which}   {sql} — read-only SELECT on app|local DB (mo
 `/api/admin/*` routes.
 The read-only SQL console (`POST /api/admin/query/{which}`) only accepts a single `SELECT`/`WITH`
 statement and runs it on a `mode=ro` connection, so writes are impossible; on the app DB, API-key
-values and profile PINs are redacted from results. **Group routes are declared before `/{meal_id}`**
+values and password hashes (the `password_hash` / legacy `pin` columns) are redacted from results.
+**Group routes are declared before `/{meal_id}`**
 to avoid FastAPI routing conflicts.
 
 ### Daily reference targets (UI progress bars)
@@ -594,7 +638,10 @@ python -m unittest discover -s tests  # equivalent, no extra deps
 
 `test_vision_service.py` covers Stage-1 dish parsing and `reload_clients`; `test_usda_service.py`
 covers aliasing, matching, the cache (incl. negative caching), the lookup cap, the curated
-dish-lookup gate, transient-timeout retries, and rate-limit propagation.
+dish-lookup gate, transient-timeout retries, and rate-limit propagation. `test_auth.py` covers
+the auth flow end-to-end (register/first-user-admin, login, ownership scoping on meals,
+admin-only gating, refresh-token rotation + reuse detection, change-password) against a temp DB
+with `JWT_SECRET` set.
 
 **Linting:** Ruff is configured in `backend/pyproject.toml` (it now also declares the runtime +
 dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `uv sync`; from
@@ -648,6 +695,19 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
   corpus embedded in `build_usda_db.py`, vectors via `sqlite-vec` or a flat numpy/FAISS file),
   justified by measurement — chiefly the weaker local Ollama 4B, which normalizes regional names
   worse than Groq/Llama-4-Scout.
+- **Email-based auth flows** — password reset and email verification are deferred (no SMTP);
+  accounts are username + password only, and a forgotten password is reset by an admin
+  (`POST /api/users/{id}/reset-password`). The schema leaves room to add email later.
+- **Admin user-management UI** — the admin endpoints (`/api/users…`) exist, but there's no
+  Settings screen for them yet; use `/docs`.
+- **Refresh-token pruning** — `refresh_tokens` rows are revoked/rotated but never deleted, so the
+  table grows over time. A lifespan sweep (or periodic job) deleting rows where
+  `expires_at < now()` (and old revoked ones) would keep it bounded.
+- **Multi-tab refresh grace window** — refresh rotation is strict: if two tabs (sharing the
+  `localStorage` refresh token) refresh concurrently, the second presents an already-rotated
+  token and reuse-detection revokes the whole chain, logging both out. A short reuse grace
+  window (accept the immediately-previous jti for a few seconds) or a per-tab refresh token
+  would smooth this without giving up reuse detection.
 - Manual edit of logged nutrition values.
 - Keep-image toggle in the LogMeal UI (backend already supports `keep_image: true` on `/meals/log`).
 - Data export (CSV / PDF); dark mode; direct camera-open on mobile.

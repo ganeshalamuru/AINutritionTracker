@@ -96,17 +96,33 @@ class RedactRowsTest(unittest.TestCase):
         out = aq.redact_rows(cols, rows, {"gsk_secret", ""})
         self.assertEqual(out, [["groq_api_key", aq.REDACTED], ["nutrition_source", "offline"]])
 
-    def test_masks_pin_column_regardless_of_value(self):
-        cols = ["id", "pin", "name"]
-        rows = [[1, "1234", "Ann"], [2, "0000", "Bob"]]
+    def test_masks_credential_columns_regardless_of_value(self):
+        # Both the password hash and a legacy pin column are blanked wholesale.
+        cols = ["id", "password_hash", "pin", "name"]
+        rows = [[1, "$2b$abc", "1234", "Ann"], [2, "$2b$def", "0000", "Bob"]]
         out = aq.redact_rows(cols, rows, set())
-        self.assertEqual([r[1] for r in out], [aq.REDACTED, aq.REDACTED])
-        self.assertEqual([r[2] for r in out], ["Ann", "Bob"])  # other columns untouched
+        self.assertEqual([r[1] for r in out], [aq.REDACTED, aq.REDACTED])  # password_hash
+        self.assertEqual([r[2] for r in out], [aq.REDACTED, aq.REDACTED])  # pin
+        self.assertEqual([r[3] for r in out], ["Ann", "Bob"])  # other columns untouched
 
     def test_empty_secret_set_is_noop_on_values(self):
         cols = ["value"]
         rows = [["anything"]]
         self.assertEqual(aq.redact_rows(cols, rows, set()), [["anything"]])
+
+
+class AdminSecretKeyTest(unittest.TestCase):
+    """The admin data-inspection views must treat the JWT signing secret as secret (not just
+    the *_api_key values) — exposing jwt_secret would let an admin forge tokens for any user."""
+
+    def test_jwt_secret_and_api_keys_are_secret(self):
+        from routers import admin
+
+        self.assertTrue(admin._is_secret_key("jwt_secret"))
+        self.assertTrue(admin._is_secret_key("groq_api_key"))
+        self.assertTrue(admin._is_secret_key("gemini_api_key"))
+        self.assertFalse(admin._is_secret_key("nutrition_source"))
+        self.assertFalse(admin._is_secret_key("vision_provider"))
 
 
 if __name__ == "__main__":

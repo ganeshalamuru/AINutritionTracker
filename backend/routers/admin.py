@@ -12,6 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from core.auth import get_current_admin
 from core.config import BACKEND_DIR
 from core.database import get_db
 from core.nutrients import to_nutrients_data
@@ -26,22 +27,27 @@ from schemas import (
 )
 from services import admin_query, usda_local_search
 
-router = APIRouter(prefix="/admin", tags=["admin"])
+# Dev-only data inspection (mounted only when APP_ENV != production), and additionally
+# admin-only: every route requires an authenticated admin.
+router = APIRouter(prefix="/admin", tags=["admin"], dependencies=[Depends(get_current_admin)])
 
 APP_DB_PATH = os.path.join(BACKEND_DIR, "nutrition.db")
 
-# app_config keys whose values are secret and must be redacted everywhere.
+# app_config keys whose values are secret and must be redacted everywhere: the provider API
+# keys (any *_api_key) and the JWT signing secret (jwt_secret — exposing it would let anyone
+# forge tokens for any user, so it's masked even from admins' data-inspection views).
 SECRET_SUFFIX = "_api_key"
+SECRET_KEYS = {"jwt_secret"}
 
 
 def _is_secret_key(key: str) -> bool:
-    return key.endswith(SECRET_SUFFIX)
+    return key.endswith(SECRET_SUFFIX) or key in SECRET_KEYS
 
 
 def _secret_values(db: Session) -> set[str]:
-    """The configured API-key values (non-empty), for masking in raw SQL results."""
-    rows = db.query(AppConfig).filter(AppConfig.key.like(f"%{SECRET_SUFFIX}")).all()
-    return {r.value for r in rows if r.value}
+    """The configured secret values (non-empty), for masking in raw SQL results."""
+    rows = db.query(AppConfig).all()
+    return {r.value for r in rows if r.value and _is_secret_key(r.key)}
 
 
 @router.get("/tables", response_model=list[TableInfo], summary="List tables + row counts")

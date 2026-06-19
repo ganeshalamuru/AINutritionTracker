@@ -1,9 +1,8 @@
 import { useState, useEffect } from "react";
 import { useNavigate } from "react-router-dom";
-import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
 import client from "../api/client";
 import Toast from "../components/shared/Toast";
-import ConfirmModal from "../components/shared/ConfirmModal";
 import ApiKeyCard from "../components/settings/ApiKeyCard";
 import SettingsSection from "../components/settings/SettingsSection";
 import { computeGoals, DEFAULT_CALORIE_GOAL } from "../utils/goals";
@@ -26,9 +25,10 @@ const PROVIDERS = [
 const modelsFor = (p) => (PROVIDERS.find((x) => x.id === p)?.models ?? []);
 
 export default function Settings() {
-  const { profile, logout, updateProfile } = useProfile();
+  const { user, logout, updateUser } = useAuth();
   const navigate = useNavigate();
-  const [goalInput, setGoalInput] = useState(profile.calorie_goal ?? DEFAULT_CALORIE_GOAL);
+  const isAdmin = user.role === "admin";
+  const [goalInput, setGoalInput] = useState(user.calorie_goal ?? DEFAULT_CALORIE_GOAL);
   const [savingGoal, setSavingGoal] = useState(false);
   const [keySet, setKeySet] = useState(false);
   const [groqSet, setGroqSet] = useState(false);
@@ -37,11 +37,12 @@ export default function Settings() {
   const [provider, setProvider] = useState("groq");
   const [model, setModel] = useState("");
   const [savingModel, setSavingModel] = useState(false);
-  const [profiles, setProfiles] = useState([]);
   const [toast, setToast] = useState(null);
-  const [confirmDelete, setConfirmDelete] = useState(null);
 
+  // The /config endpoint (API keys, provider/model, nutrition source) is admin-only; only
+  // load it for admins. Non-admins don't see those sections at all.
   useEffect(() => {
+    if (!isAdmin) return;
     client.get("/config").then((r) => {
       setKeySet(r.data.gemini_api_key_set);
       setGroqSet(r.data.groq_api_key_set);
@@ -51,8 +52,7 @@ export default function Settings() {
       setProvider(p);
       setModel(r.data.vision_model || modelsFor(p)[0]?.model || "");
     });
-    client.get("/profiles").then((r) => setProfiles(r.data));
-  }, []);
+  }, [isAdmin]);
 
   const saveConfig = async (nextProvider, nextModel) => {
     setProvider(nextProvider);
@@ -102,9 +102,8 @@ export default function Settings() {
     }
   };
 
-  // Persist the daily calorie goal on the active profile. Energy-linked macro goals
-  // scale from it (see utils/goals.js). The Guest profile (id 0) has no DB row, so we
-  // skip the API call and only update local state.
+  // Persist the daily calorie goal on the signed-in user's account. Energy-linked macro
+  // goals scale from it (see utils/goals.js).
   const saveGoal = async () => {
     const kcal = Math.round(Number(goalInput));
     if (!Number.isFinite(kcal) || kcal < 500 || kcal > 10000) {
@@ -113,10 +112,8 @@ export default function Settings() {
     }
     setSavingGoal(true);
     try {
-      if (profile.id !== 0) {
-        await client.patch(`/profiles/${profile.id}`, { calorie_goal: kcal });
-      }
-      updateProfile({ calorie_goal: kcal });
+      await client.patch("/users/me", { calorie_goal: kcal });
+      updateUser({ calorie_goal: kcal });
       setGoalInput(kcal);
       setToast({ message: "Calorie goal updated!", type: "success" });
     } catch {
@@ -126,22 +123,14 @@ export default function Settings() {
     }
   };
 
-  const deleteProfile = async (id) => {
-    await client.delete(`/profiles/${id}`);
-    setProfiles((p) => p.filter((x) => x.id !== id));
-    if (profile.id === id) { logout(); navigate("/"); }
+  const handleLogout = async () => {
+    await logout();
+    navigate("/login");
   };
 
   return (
     <div className="pt-4 space-y-6 pb-4">
       {toast && <Toast message={toast.message} type={toast.type} onClose={() => setToast(null)} />}
-      <ConfirmModal
-        isOpen={!!confirmDelete}
-        message="Delete this profile and all its meals?"
-        confirmLabel="Delete"
-        onConfirm={() => { const id = confirmDelete; setConfirmDelete(null); deleteProfile(id); }}
-        onCancel={() => setConfirmDelete(null)}
-      />
 
       <h2 className="text-xl font-bold text-gray-900">Settings</h2>
 
@@ -185,159 +174,162 @@ export default function Settings() {
         </div>
       </SettingsSection>
 
-      <SettingsSection
-        title="AI Vision"
-        subtitle={`${(PROVIDERS.find((p) => p.id === provider)?.label || provider).split(" (")[0]} · ${(modelsFor(provider).find((m) => m.model === model)?.label || model).split(" — ")[0]}`}
-      >
-        <div className="py-4 first:pt-0 last:pb-0 space-y-3">
-          <p className="text-xs text-gray-500">
-            Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
-            {provider === "ollama"
-              ? " Ollama runs locally — no API key needed; make sure the Ollama app is running and the model is pulled."
-              : " The selected provider needs its API key set below."}
-          </p>
-          <div className="space-y-2">
-            <label className="block text-xs font-medium text-gray-600">Provider</label>
-            <select
-              value={provider}
-              onChange={(e) => onProviderChange(e.target.value)}
-              disabled={savingModel}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
-            >
-              {PROVIDERS.map((p) => (
-                <option key={p.id} value={p.id}>{p.label}</option>
-              ))}
-            </select>
-            <label className="block text-xs font-medium text-gray-600">Model</label>
-            <select
-              value={model}
-              onChange={(e) => onModelChange(e.target.value)}
-              disabled={savingModel}
-              className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
-            >
-              {modelsFor(provider).map((m) => (
-                <option key={m.model} value={m.model}>{m.label}</option>
-              ))}
-            </select>
-          </div>
-        </div>
-
-        <div className="py-4 first:pt-0 last:pb-0">
-          <ApiKeyCard
-            bare
-            title="Groq API Key"
-            active={provider === "groq"}
-            isSet={groqSet}
-            placeholder="gsk_..."
-            onSave={makeKeySaver("groq_api_key", setGroqSet, "Groq key saved!")}
-          >
-            Used by the Groq vision provider.{" "}
-            <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-green-600 underline">
-              Get a free key here
-            </a>
-          </ApiKeyCard>
-        </div>
-
-        <div className="py-4 first:pt-0 last:pb-0">
-          <ApiKeyCard
-            bare
-            title="Gemini API Key"
-            active={provider === "gemini"}
-            isSet={keySet}
-            placeholder="AIza..."
-            onSave={makeKeySaver("gemini_api_key", setKeySet, "API key saved!")}
-          >
-            Only needed for the Gemini fallback models.{" "}
-            <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-green-600 underline">
-              Get a free key here
-            </a>
-          </ApiKeyCard>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title="Nutrition Data"
-        subtitle={nutritionSource === "offline" ? "Local database" : "USDA API"}
-      >
-        <div className="py-4 first:pt-0 last:pb-0 space-y-3">
-          <p className="text-xs text-gray-500">
-            Where the real macro/micro numbers come from. The AI only identifies ingredients;
-            their nutrients are looked up in USDA FoodData Central — either from a local copy
-            (offline, no rate limits) or the live API.
-          </p>
-          <div className="grid grid-cols-2 gap-2">
-            {[
-              { id: "offline", label: "Local database", sub: "Offline · no limits" },
-              { id: "online", label: "USDA API", sub: "Live · needs key" },
-            ].map((opt) => (
-              <button
-                key={opt.id}
-                onClick={() => saveNutritionSource(opt.id)}
-                className={`rounded-xl border-2 px-3 py-2.5 text-left ${
-                  nutritionSource === opt.id
-                    ? "border-green-400 bg-green-50"
-                    : "border-gray-200 hover:bg-gray-50"
-                }`}
-              >
-                <span className="block text-sm font-medium text-gray-800">{opt.label}</span>
-                <span className="block text-xs text-gray-500">{opt.sub}</span>
-              </button>
-            ))}
-          </div>
-          {nutritionSource === "offline" && (
-            <p className="text-xs text-gray-400">
-              Built once from the bundled USDA dataset via{" "}
-              <span className="font-mono text-gray-500">python build_usda_db.py</span>. The USDA API
-              key below is only used in online mode.
+      {isAdmin && (
+        <SettingsSection
+          title="AI Vision"
+          subtitle={`${(PROVIDERS.find((p) => p.id === provider)?.label || provider).split(" (")[0]} · ${(modelsFor(provider).find((m) => m.model === model)?.label || model).split(" — ")[0]}`}
+        >
+          <div className="py-4 first:pt-0 last:pb-0 space-y-3">
+            <p className="text-xs text-gray-500">
+              Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
+              {provider === "ollama"
+                ? " Ollama runs locally — no API key needed; make sure the Ollama app is running and the model is pulled."
+                : " The selected provider needs its API key set below."}
             </p>
-          )}
-        </div>
-
-        <div className="py-4 first:pt-0 last:pb-0">
-          <ApiKeyCard
-            bare
-            title="USDA Food Database Key"
-            active={nutritionSource === "online"}
-            isSet={usdaSet}
-            unsetLabel="Using DEMO_KEY"
-            placeholder="USDA API key"
-            onSave={makeKeySaver("usda_api_key", setUsdaSet, "USDA key saved!")}
-          >
-            Used only when the nutrition source above is <strong>USDA API</strong>. Supplies the real
-            macro/micro numbers from USDA FoodData Central.{" "}
-            <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
-              Get a free key here
-            </a>.{" "}
-            <span className="text-yellow-700">Recommended:</span> the shared DEMO_KEY is
-            throttled to ~30/hr &amp; 50/day (a few meals exhaust it); a free signed key gives 1,000/hr.
-          </ApiKeyCard>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection
-        title="Account & Profiles"
-        subtitle={`${profiles.length} profile${profiles.length !== 1 ? "s" : ""}`}
-      >
-        <div className="py-4 first:pt-0 last:pb-0 space-y-3">
-          {profiles.map((p) => (
-            <div key={p.id} className="flex items-center gap-3">
-              <div
-                className="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
-                style={{ backgroundColor: p.avatar_color }}
+            <div className="space-y-2">
+              <label className="block text-xs font-medium text-gray-600">Provider</label>
+              <select
+                value={provider}
+                onChange={(e) => onProviderChange(e.target.value)}
+                disabled={savingModel}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
               >
-                {p.name.charAt(0).toUpperCase()}
-              </div>
-              <span className="flex-1 text-sm text-gray-700 font-medium">
-                {p.name} {p.id === profile.id && <span className="text-xs text-green-500">(you)</span>}
-              </span>
-              <button
-                onClick={() => setConfirmDelete(p.id)}
-                className="text-xs text-red-400 hover:text-red-500 px-2 py-1"
+                {PROVIDERS.map((p) => (
+                  <option key={p.id} value={p.id}>{p.label}</option>
+                ))}
+              </select>
+              <label className="block text-xs font-medium text-gray-600">Model</label>
+              <select
+                value={model}
+                onChange={(e) => onModelChange(e.target.value)}
+                disabled={savingModel}
+                className="w-full border border-gray-200 rounded-xl px-3 py-2.5 text-sm focus:outline-none focus:border-green-400 bg-white disabled:opacity-50"
               >
-                Delete
-              </button>
+                {modelsFor(provider).map((m) => (
+                  <option key={m.model} value={m.model}>{m.label}</option>
+                ))}
+              </select>
             </div>
-          ))}
+          </div>
+
+          <div className="py-4 first:pt-0 last:pb-0">
+            <ApiKeyCard
+              bare
+              title="Groq API Key"
+              active={provider === "groq"}
+              isSet={groqSet}
+              placeholder="gsk_..."
+              onSave={makeKeySaver("groq_api_key", setGroqSet, "Groq key saved!")}
+            >
+              Used by the Groq vision provider.{" "}
+              <a href="https://console.groq.com/keys" target="_blank" rel="noreferrer" className="text-green-600 underline">
+                Get a free key here
+              </a>
+            </ApiKeyCard>
+          </div>
+
+          <div className="py-4 first:pt-0 last:pb-0">
+            <ApiKeyCard
+              bare
+              title="Gemini API Key"
+              active={provider === "gemini"}
+              isSet={keySet}
+              placeholder="AIza..."
+              onSave={makeKeySaver("gemini_api_key", setKeySet, "API key saved!")}
+            >
+              Only needed for the Gemini fallback models.{" "}
+              <a href="https://aistudio.google.com/app/apikey" target="_blank" rel="noreferrer" className="text-green-600 underline">
+                Get a free key here
+              </a>
+            </ApiKeyCard>
+          </div>
+        </SettingsSection>
+      )}
+
+      {isAdmin && (
+        <SettingsSection
+          title="Nutrition Data"
+          subtitle={nutritionSource === "offline" ? "Local database" : "USDA API"}
+        >
+          <div className="py-4 first:pt-0 last:pb-0 space-y-3">
+            <p className="text-xs text-gray-500">
+              Where the real macro/micro numbers come from. The AI only identifies ingredients;
+              their nutrients are looked up in USDA FoodData Central — either from a local copy
+              (offline, no rate limits) or the live API.
+            </p>
+            <div className="grid grid-cols-2 gap-2">
+              {[
+                { id: "offline", label: "Local database", sub: "Offline · no limits" },
+                { id: "online", label: "USDA API", sub: "Live · needs key" },
+              ].map((opt) => (
+                <button
+                  key={opt.id}
+                  onClick={() => saveNutritionSource(opt.id)}
+                  className={`rounded-xl border-2 px-3 py-2.5 text-left ${
+                    nutritionSource === opt.id
+                      ? "border-green-400 bg-green-50"
+                      : "border-gray-200 hover:bg-gray-50"
+                  }`}
+                >
+                  <span className="block text-sm font-medium text-gray-800">{opt.label}</span>
+                  <span className="block text-xs text-gray-500">{opt.sub}</span>
+                </button>
+              ))}
+            </div>
+            {nutritionSource === "offline" && (
+              <p className="text-xs text-gray-400">
+                Built once from the bundled USDA dataset via{" "}
+                <span className="font-mono text-gray-500">python build_usda_db.py</span>. The USDA API
+                key below is only used in online mode.
+              </p>
+            )}
+          </div>
+
+          <div className="py-4 first:pt-0 last:pb-0">
+            <ApiKeyCard
+              bare
+              title="USDA Food Database Key"
+              active={nutritionSource === "online"}
+              isSet={usdaSet}
+              unsetLabel="Using DEMO_KEY"
+              placeholder="USDA API key"
+              onSave={makeKeySaver("usda_api_key", setUsdaSet, "USDA key saved!")}
+            >
+              Used only when the nutrition source above is <strong>USDA API</strong>. Supplies the real
+              macro/micro numbers from USDA FoodData Central.{" "}
+              <a href="https://fdc.nal.usda.gov/api-key-signup" target="_blank" rel="noreferrer" className="text-green-600 underline">
+                Get a free key here
+              </a>.{" "}
+              <span className="text-yellow-700">Recommended:</span> the shared DEMO_KEY is
+              throttled to ~30/hr &amp; 50/day (a few meals exhaust it); a free signed key gives 1,000/hr.
+            </ApiKeyCard>
+          </div>
+        </SettingsSection>
+      )}
+
+      <SettingsSection title="Account" subtitle={`@${user.username}`}>
+        <div className="py-4 first:pt-0 last:pb-0 space-y-3">
+          <div className="flex items-center gap-3">
+            <div
+              className="w-9 h-9 rounded-full flex items-center justify-center text-white font-bold text-sm flex-shrink-0"
+              style={{ backgroundColor: user.avatar_color }}
+            >
+              {user.name.charAt(0).toUpperCase()}
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm font-medium text-gray-800 truncate">{user.name}</p>
+              <p className="text-xs text-gray-400 truncate">
+                @{user.username}
+                {isAdmin && <span className="ml-1 text-green-500 font-medium">· admin</span>}
+              </p>
+            </div>
+          </div>
+          <button
+            onClick={() => navigate("/change-password")}
+            className="w-full py-2.5 rounded-xl border border-gray-200 text-sm text-gray-700 hover:bg-gray-50"
+          >
+            Change password
+          </button>
         </div>
 
         <div className="py-4 first:pt-0 last:pb-0">
@@ -356,10 +348,10 @@ export default function Settings() {
       </SettingsSection>
 
       <button
-        onClick={() => { logout(); navigate("/"); }}
+        onClick={handleLogout}
         className="w-full py-3 rounded-2xl border-2 border-gray-200 text-gray-600 text-sm font-medium hover:bg-gray-50"
       >
-        Switch Profile
+        Log out
       </button>
     </div>
   );

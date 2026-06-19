@@ -1,9 +1,9 @@
 import { useNavigate } from "react-router-dom";
-import { useProfile } from "../../context/ProfileContext";
+import { useAuth } from "../../context/AuthContext";
 import ProfileMenu from "./ProfileMenu";
 
 export default function TopBar() {
-  const { profile } = useProfile();
+  const { user } = useAuth();
   const navigate = useNavigate();
   const now = new Date();
   const greeting = now.getHours() < 12 ? "Good morning" : now.getHours() < 17 ? "Good afternoon" : "Good evening";
@@ -14,7 +14,7 @@ export default function TopBar() {
       <div className="max-w-md mx-auto px-4 py-3 flex items-center justify-between">
         <div>
           <p className="text-xs text-gray-500">{dateStr}</p>
-          <p className="text-sm font-semibold text-gray-800">{greeting}, {profile?.name}</p>
+          <p className="text-sm font-semibold text-gray-800">{greeting}, {user?.name}</p>
         </div>
         <div className="flex items-center gap-2">
           <button

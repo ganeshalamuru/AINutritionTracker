@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { useNavigate } from "react-router-dom";
-import { useProfile } from "../context/ProfileContext";
 import { useLogDraft } from "../context/LogDraftContext";
 import client from "../api/client";
 import Spinner from "../components/shared/Spinner";
@@ -149,7 +148,6 @@ async function downscaleImage(file, maxDim = 384, quality = 0.8) {
 }
 
 export default function LogMeal() {
-  const { profile } = useProfile();
   const navigate = useNavigate();
   const fileRef = useRef();
   // Photos live in a context above the router so the in-progress log survives switching tabs
@@ -191,7 +189,6 @@ export default function LogMeal() {
     try {
       const fd = new FormData();
       fd.append("image", await downscaleImage(file));
-      fd.append("profile_id", profile.id);
       if (hint.trim()) fd.append("user_note", hint.trim());
       const { data } = await client.post("/meals/analyze", fd, {
         headers: { "Content-Type": "multipart/form-data" },
@@ -292,7 +289,6 @@ export default function LogMeal() {
       if (ready.length === 1) {
         const p = ready[0];
         await client.post("/meals/log", {
-          profile_id: profile.id,
           meal_name: p.mealName,
           meal_type: p.mealType,
           notes: p.notes,
@@ -305,7 +301,6 @@ export default function LogMeal() {
         await client.post("/meals/log-group", {
           group_id: groupId,
           meals: ready.map((p) => ({
-            profile_id: profile.id,
             meal_name: p.mealName,
             meal_type: p.mealType,
             notes: p.notes,
@@ -422,29 +417,17 @@ export default function LogMeal() {
           {showLogSection && (
             <div className="space-y-3">
               {!atCapacity && <AddPhotoButton onClick={() => fileRef.current?.click()} />}
-              {profile.isGuest ? (
-                <div className="bg-green-50 border border-green-200 rounded-2xl p-4 text-center">
-                  <p className="text-sm text-green-800 font-medium mb-2">Create a profile to save meals</p>
-                  <button
-                    onClick={() => navigate("/")}
-                    className="bg-green-500 text-white px-6 py-2 rounded-xl text-sm font-medium hover:bg-green-600"
-                  >
-                    Create Profile
-                  </button>
-                </div>
-              ) : (
-                <button
-                  onClick={handleLog}
-                  disabled={logging}
-                  className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
-                >
-                  {logging
-                    ? "Logging..."
-                    : readyCount > 1
-                      ? `Log ${readyCount} meals as a group`
-                      : "Log this Meal"}
-                </button>
-              )}
+              <button
+                onClick={handleLog}
+                disabled={logging}
+                className="w-full py-4 bg-green-500 text-white font-semibold rounded-2xl hover:bg-green-600 disabled:opacity-50 transition-colors text-base"
+              >
+                {logging
+                  ? "Logging..."
+                  : readyCount > 1
+                    ? `Log ${readyCount} meals as a group`
+                    : "Log this Meal"}
+              </button>
             </div>
           )}
         </div>

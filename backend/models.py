@@ -6,18 +6,49 @@ from sqlalchemy.orm import relationship
 from core.database import Base
 
 
-class Profile(Base):
+class User(Base):
+    """A user account. The table is named `profiles` (and the Meal FK column stays
+    `profile_id`) for historical reasons — this row was the device-local "profile" before
+    real authentication; the class is `User` to read cleanly as the account it now is.
+    Login is by unique `username` + bcrypt `password_hash`; `role` is 'user' or 'admin'."""
+
     __tablename__ = "profiles"
 
     id = Column(Integer, primary_key=True, autoincrement=True)
-    name = Column(String, nullable=False)
-    pin = Column(String(4), nullable=False)
+    username = Column(String, nullable=False, unique=True, index=True)
+    name = Column(String, nullable=False)  # display name (defaults to username on signup)
+    password_hash = Column(String, nullable=False)
+    role = Column(String, nullable=False, default="user")  # 'user' | 'admin'
+    # Set on profiles migrated from the legacy PIN (their PIN became the temp password);
+    # the UI forces a password change while this is true.
+    must_change_password = Column(Boolean, nullable=False, default=False)
     avatar_color = Column(String, default="#22c55e")
     calorie_goal = Column(Integer, default=2000, nullable=False)
     created_at = Column(DateTime, default=lambda: datetime.now(UTC))
     is_active = Column(Boolean, default=True)
 
     meals = relationship("Meal", back_populates="profile", cascade="all, delete-orphan")
+    refresh_tokens = relationship(
+        "RefreshToken", back_populates="user", cascade="all, delete-orphan"
+    )
+
+
+class RefreshToken(Base):
+    """A minted refresh token, tracked so it can be rotated and revoked server-side.
+    We store the token's `jti` (not the token itself); a refresh validates the jti is
+    present and not revoked/expired, then rotates it (revokes the old, issues a new one),
+    which also gives reuse detection. Times are epoch ints (SQLite-timezone-safe)."""
+
+    __tablename__ = "refresh_tokens"
+
+    id = Column(Integer, primary_key=True, autoincrement=True)
+    jti = Column(String, nullable=False, unique=True, index=True)
+    user_id = Column(Integer, ForeignKey("profiles.id"), nullable=False, index=True)
+    expires_at = Column(Integer, nullable=False)  # epoch seconds
+    revoked = Column(Boolean, nullable=False, default=False)
+    created_at = Column(Integer, nullable=False)  # epoch seconds
+
+    user = relationship("User", back_populates="refresh_tokens")
 
 
 class Meal(Base):
@@ -32,7 +63,7 @@ class Meal(Base):
     logged_at = Column(DateTime, default=lambda: datetime.now(UTC))
     notes = Column(Text, nullable=True)
 
-    profile = relationship("Profile", back_populates="meals")
+    profile = relationship("User", back_populates="meals")
     nutrients = relationship(
         "Nutrients", back_populates="meal", uselist=False, cascade="all, delete-orphan"
     )

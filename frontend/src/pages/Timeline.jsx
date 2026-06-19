@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from "react";
-import { useProfile } from "../context/ProfileContext";
+import { useAuth } from "../context/AuthContext";
 import client from "../api/client";
 import MealCard from "../components/meal/MealCard";
 import GroupedMealCard from "../components/meal/GroupedMealCard";
@@ -21,7 +21,7 @@ function groupByDate(items) {
 }
 
 export default function Timeline() {
-  const { profile } = useProfile();
+  const { user } = useAuth();
   const [items, setItems] = useState([]);
   const [page, setPage] = useState(1);
   const [total, setTotal] = useState(0);
@@ -34,7 +34,7 @@ export default function Timeline() {
   const load = useCallback(async (p = 1) => {
     if (p === 1) setLoading(true); else setLoadingMore(true);
     try {
-      const { data } = await client.get(`/meals/timeline?profile_id=${profile.id}&page=${p}&limit=${LIMIT}`);
+      const { data } = await client.get(`/meals/timeline?page=${p}&limit=${LIMIT}`);
       setItems((prev) => p === 1 ? data.items : [...prev, ...data.items]);
       setTotal(data.total);
       setPage(p);
@@ -42,7 +42,7 @@ export default function Timeline() {
       setLoading(false);
       setLoadingMore(false);
     }
-  }, [profile.id]);
+  }, [user.id]);
 
   useEffect(() => { load(1); }, [load]);
 

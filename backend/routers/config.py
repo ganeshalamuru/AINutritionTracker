@@ -5,13 +5,15 @@ from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 
 from core import config
+from core.auth import get_current_admin
 from core.config import DEFAULT_MODEL, DEFAULT_NUTRITION_SOURCE, DEFAULT_PROVIDER
 from core.database import get_db
 from schemas import ConfigStatus, ConfigUpdate, OkResponse
 from services.usda_service import reload_client as reload_usda_client
 from services.vision_service import reload_clients
 
-router = APIRouter(prefix="/config", tags=["config"])
+# Config holds the provider API keys — admin-only. Every route requires an admin caller.
+router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(get_current_admin)])
 
 
 @router.get("", response_model=ConfigStatus, summary="Config status (no secret values)")
