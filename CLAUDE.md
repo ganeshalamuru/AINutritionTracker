@@ -15,6 +15,12 @@ Guidance for Claude Code when working in this repository.
 
 - Validate all food/dish nutrient data against actual USDA/FNDDS data before implementing aliases or normalization logic.
 
+## Safety / Destructive Operations
+
+- Never wipe or clear the live `food_cache` table to force re-resolution. Bump `CACHE_VERSION` in `core/config.py` instead — the lifespan purges the cache on a version change. Likewise never delete/overwrite the live `nutrition.db` (or PUT test data to the running app) to test; use a temp DB (see `backend/tests`).
+- Review `ruff --fix` / F401 autofixes before applying — they have stripped intentional re-exports (e.g. `CACHE_VERSION`) and crashed startup. The post-edit hook deliberately runs `ruff check` *without* `--fix`; when you do run `--fix`, eyeball the diff for removed re-exports.
+- Pause and confirm before any destructive (DB wipe, mass autofix) or expensive (heavy local-model run, USDA API probe) action, and propose a non-destructive alternative first.
+
 ## Codebase Navigation
 
 - When a README or pointer doc exists, read it first instead of broadly exploring the codebase.
