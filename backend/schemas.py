@@ -65,13 +65,21 @@ class ChangePassword(BaseModel):
     new_password: str = PasswordField
 
 
-class RefreshRequest(BaseModel):
-    refresh_token: str = Field(min_length=1)
-
-
 class TokenPair(BaseModel):
+    """Internal-only: the service mints both tokens together. The refresh token is never
+    serialized to the client — it's set as an HttpOnly cookie by the router; only the access
+    token reaches the response body (see AccessTokenResponse / AuthResponse)."""
+
     access_token: str
     refresh_token: str
+    token_type: Literal["bearer"] = "bearer"
+
+
+class AccessTokenResponse(BaseModel):
+    """Wire shape for /auth/refresh: just the in-memory access token (the rotated refresh
+    token rides back in the HttpOnly cookie, not the body)."""
+
+    access_token: str
     token_type: Literal["bearer"] = "bearer"
 
 
@@ -88,10 +96,12 @@ class UserOut(BaseModel):
 
 
 class AuthResponse(BaseModel):
-    """Returned by register/login: the user record plus a fresh token pair."""
+    """Returned by register/login: the user record plus the in-memory access token. The
+    refresh token is delivered out-of-band as an HttpOnly cookie, never in this body."""
 
     user: UserOut
-    tokens: TokenPair
+    access_token: str
+    token_type: Literal["bearer"] = "bearer"
 
 
 class GoalUpdate(BaseModel):

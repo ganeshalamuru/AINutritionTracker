@@ -312,11 +312,18 @@ persists with **no backend change to the log path**. All destructive actions on 
 shared `ConfirmModal` — never a browser `confirm()`.
 
 **Auth (`context/AuthContext.jsx`).** Username + password accounts with JWT access/refresh
-tokens. The **access token lives in memory** (inside `api/client.js`) and the **refresh token in
-`localStorage`**; on boot the app exchanges the refresh token for a fresh access token and
-reloads the user, so a reload keeps the session without re-login. `client.js` attaches the
-`Authorization: Bearer` header and, on a 401, transparently refreshes once (single-flight) and
-retries — dropping to the login screen only if the refresh itself fails. `ProtectedRoute` gates
+tokens. The **access token lives in memory** (inside `api/client.js`) and the **refresh token is
+an `HttpOnly` cookie** the browser holds and replays to `/api/auth` — invisible to JavaScript, so
+an XSS payload can't exfiltrate the long-lived renewable credential (the access token in memory is
+obscured from a standard browser API for the same reason). The cookie is `SameSite=Lax`, scoped to
+`Path=/api/auth` (sent only to refresh/logout, not on every call), and `Secure` only when
+`APP_ENV=production` — local/LAN runs serve over plain HTTP, where a `Secure` cookie would be
+dropped. On boot the app calls `/auth/refresh` (no body — the cookie rides along); on success it
+gets a fresh access token and reloads the user, so a reload keeps the session without re-login, and
+a 401 simply means "not logged in". `client.js` sends `withCredentials` + the `Authorization:
+Bearer` header and, on a 401, transparently refreshes once (single-flight) and retries — dropping
+to the login screen only if the refresh itself fails. Token bodies carry only the access token; the
+refresh token never appears in a response body. `ProtectedRoute` gates
 the app on a valid session and funnels accounts flagged `must_change_password` (admin-resets)
 to `ChangePassword`. The TopBar avatar opens **`AccountMenu`** — an
 account dropdown (username, **Change password**, **Log out**). API-key/provider settings appear
@@ -385,7 +392,9 @@ User 1──* RefreshToken                  food_cache(query, ...)  # USDA per-1
   username + password; the **first registered account is the admin**.
 - **`RefreshToken`** tracks issued JWT refresh tokens by `jti` so they can be **rotated and
   revoked** server-side (rotation on every `/auth/refresh`; reuse of a rotated token revokes
-  the whole chain). Access tokens are short-lived and stateless (never stored).
+  the whole chain). The token is delivered to the browser as an `HttpOnly` cookie (never in a
+  response body), so JavaScript can't read it. Access tokens are short-lived and stateless
+  (never stored), held only in memory by the SPA.
 - **Auth model.** Endpoints derive the caller from the `Authorization: Bearer <access>` token
   via the `core.auth` dependencies (`get_current_user` / `get_current_admin`) — never from a
   client-supplied id — so meal/nutrition data is owner-scoped and `/api/config` + `/api/admin`
@@ -551,10 +560,10 @@ the env vars above (at minimum `USDA_API_KEY` and a vision key, e.g. `GROQ_API_K
 
 ```
 # Auth — username + password accounts, JWT access/refresh (Authorization: Bearer <access>)
-POST   /api/auth/register         Create account {username, password, name?, avatar_color?} → {user, tokens}; 1st user = admin
-POST   /api/auth/login            {username, password} → {user, tokens} or 401
-POST   /api/auth/refresh          {refresh_token} → new {access,refresh} (rotated; reuse revokes the chain)
-POST   /api/auth/logout           {refresh_token} → revoke it
+POST   /api/auth/register         Create account {username, password, name?, avatar_color?} → {user, access_token} + Set-Cookie refresh; 1st user = admin
+POST   /api/auth/login            {username, password} → {user, access_token} + Set-Cookie refresh, or 401
+POST   /api/auth/refresh          (refresh token from HttpOnly cookie) → {access_token} + rotated Set-Cookie (reuse revokes the chain)
+POST   /api/auth/logout           (refresh token from HttpOnly cookie) → revoke it + clear the cookie
 GET    /api/auth/me               Current user (from the access token)
 POST   /api/auth/change-password  {current_password, new_password} (revokes the caller's refresh tokens)
 
@@ -703,7 +712,7 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
   table grows over time. A lifespan sweep (or periodic job) deleting rows where
   `expires_at < now()` (and old revoked ones) would keep it bounded.
 - **Multi-tab refresh grace window** — refresh rotation is strict: if two tabs (sharing the
-  `localStorage` refresh token) refresh concurrently, the second presents an already-rotated
+  `HttpOnly` refresh cookie) refresh concurrently, the second presents an already-rotated
   token and reuse-detection revokes the whole chain, logging both out. A short reuse grace
   window (accept the immediately-previous jti for a few seconds) or a per-tab refresh token
   would smooth this without giving up reuse detection.

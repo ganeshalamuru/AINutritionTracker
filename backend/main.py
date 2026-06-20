@@ -90,6 +90,7 @@ if _cors_origins:
     app.add_middleware(
         CORSMiddleware,
         allow_origins=_cors_origins,
+        allow_credentials=True,  # the refresh-token cookie must ride cross-origin when configured
         allow_methods=["*"],
         allow_headers=["*"],
     )

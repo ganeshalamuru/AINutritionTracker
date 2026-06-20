@@ -1,15 +1,15 @@
 import { createContext, useContext, useEffect, useState } from "react";
-import client, {
-  getRefreshToken,
-  setAccessToken,
-  setRefreshToken,
-  setOnAuthFailure,
-} from "../api/client";
+import client, { setAccessToken, setOnAuthFailure } from "../api/client";
 
-// Authenticated-user state. The access token lives in memory inside api/client (not here),
-// the refresh token in localStorage; on boot we exchange the refresh token for a fresh
-// access token and reload the user, so a page refresh keeps the session without re-login.
+// Authenticated-user state. The access token lives in memory inside api/client (not here); the
+// refresh token is an HttpOnly cookie the browser holds and replays to /api/auth (invisible to
+// JS). On boot we try to exchange that cookie for a fresh access token and reload the user, so a
+// page refresh keeps the session without re-login.
 const AuthContext = createContext(null);
+
+// Legacy cleanup: earlier builds kept the refresh token in localStorage. It's now a cookie, so
+// purge the stale key once (it's dead weight and we never read it again).
+localStorage.removeItem("nutriai_refresh");
 
 export function AuthProvider({ children }) {
   const [user, setUser] = useState(null);
@@ -17,21 +17,14 @@ export function AuthProvider({ children }) {
   // before we know whether there's a valid session.
   const [loading, setLoading] = useState(true);
 
-  const persistTokens = (tokens) => {
-    if (!tokens) return;
-    setAccessToken(tokens.access_token);
-    setRefreshToken(tokens.refresh_token);
-  };
-
-  const applyAuth = (u, tokens) => {
-    persistTokens(tokens);
+  const applyAuth = (u, accessToken) => {
+    setAccessToken(accessToken);
     localStorage.setItem("nutriai_uid", u.id);
     setUser(u);
   };
 
   const clearAuth = () => {
     setAccessToken(null);
-    setRefreshToken(null);
     localStorage.removeItem("nutriai_uid");
     setUser(null);
   };
@@ -42,19 +35,14 @@ export function AuthProvider({ children }) {
     setOnAuthFailure(clearAuth);
   }, []);
 
-  // Boot: re-establish the session from the stored refresh token, if any.
+  // Boot: try to re-establish the session from the refresh cookie. We can't see the cookie from
+  // JS, so we just attempt the refresh — a 401 (no/expired cookie) simply means "not logged in".
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!getRefreshToken()) {
-        setLoading(false);
-        return;
-      }
       try {
-        const { data } = await client.post("/auth/refresh", {
-          refresh_token: getRefreshToken(),
-        });
-        persistTokens(data);
+        const { data } = await client.post("/auth/refresh");
+        setAccessToken(data.access_token);
         const me = await client.get("/auth/me");
         if (!cancelled) {
           localStorage.setItem("nutriai_uid", me.data.id);
@@ -73,20 +61,19 @@ export function AuthProvider({ children }) {
 
   const login = async (username, password) => {
     const { data } = await client.post("/auth/login", { username, password });
-    applyAuth(data.user, data.tokens);
+    applyAuth(data.user, data.access_token);
     return data.user;
   };
 
   const register = async (payload) => {
     const { data } = await client.post("/auth/register", payload);
-    applyAuth(data.user, data.tokens);
+    applyAuth(data.user, data.access_token);
     return data.user;
   };
 
   const logout = async () => {
-    const rt = getRefreshToken();
     try {
-      if (rt) await client.post("/auth/logout", { refresh_token: rt });
+      await client.post("/auth/logout"); // backend reads + clears the refresh cookie
     } catch {
       // best-effort revoke; clear locally regardless
     }

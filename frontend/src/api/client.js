@@ -4,32 +4,29 @@ import axios from "axios";
 // This suits cloud requests (vision ~15s cap + a few USDA lookups). The /analyze call with
 // a LOCAL Ollama model can run much longer (vision up to ~120s — see OLLAMA_TIMEOUT), so it
 // overrides this with a longer per-request timeout in LogMeal.jsx.
-const client = axios.create({ baseURL: "/api", timeout: 45000 });
+// withCredentials so the browser sends/stores the HttpOnly refresh cookie (set by the backend
+// on login/refresh, scoped to /api/auth); same-origin serving means this is a no-op in normal
+// use but is required if the API is ever reached cross-origin (CORS_ORIGINS).
+const client = axios.create({ baseURL: "/api", timeout: 45000, withCredentials: true });
 
 // --- Auth token plumbing -------------------------------------------------
-// The access token lives in memory only (set by AuthContext) to limit XSS exposure; the
-// refresh token persists in localStorage so a reload can re-mint an access token. On a 401
-// we transparently refresh once (single-flight) and retry; if that fails we hand off to the
-// registered logout handler so the app drops to the login screen.
-const REFRESH_KEY = "nutriai_refresh";
-
+// The access token lives in memory only (set by AuthContext) to limit XSS exposure. The refresh
+// token is NOT handled here at all — it's an HttpOnly cookie the browser stores and replays to
+// /api/auth, invisible to JavaScript. On a 401 we transparently refresh once (single-flight, the
+// cookie rides along) and retry; if that fails we hand off to the registered logout handler so
+// the app drops to the login screen.
 let accessToken = null;
 let onAuthFailure = () => {};
 
 export const setAccessToken = (t) => {
   accessToken = t || null;
 };
-export const getRefreshToken = () => localStorage.getItem(REFRESH_KEY);
-export const setRefreshToken = (t) => {
-  if (t) localStorage.setItem(REFRESH_KEY, t);
-  else localStorage.removeItem(REFRESH_KEY);
-};
 export const setOnAuthFailure = (fn) => {
   onAuthFailure = fn || (() => {});
 };
 
 // A bare instance for the refresh call so it never recurses through the interceptors below.
-const bare = axios.create({ baseURL: "/api", timeout: 45000 });
+const bare = axios.create({ baseURL: "/api", timeout: 45000, withCredentials: true });
 
 client.interceptors.request.use((config) => {
   if (accessToken) config.headers["Authorization"] = `Bearer ${accessToken}`;
@@ -42,11 +39,10 @@ client.interceptors.request.use((config) => {
 let refreshPromise = null;
 
 async function refreshAccessToken() {
-  const rt = getRefreshToken();
-  if (!rt) throw new Error("no refresh token");
-  const { data } = await bare.post("/auth/refresh", { refresh_token: rt });
+  // No body: the refresh token is sent automatically as the HttpOnly cookie. A 401 here (no/expired
+  // cookie) rejects, which the interceptor below turns into a logout.
+  const { data } = await bare.post("/auth/refresh");
   setAccessToken(data.access_token);
-  setRefreshToken(data.refresh_token);
   return data.access_token;
 }
 
@@ -69,7 +65,6 @@ client.interceptors.response.use(
       } catch (e) {
         refreshPromise = null;
         setAccessToken(null);
-        setRefreshToken(null);
         onAuthFailure();
         return Promise.reject(error);
       }

@@ -70,6 +70,10 @@ class AuthTest(unittest.TestCase):
             "/api/auth/login", json={"username": username, "password": password}
         )
 
+    def _access(self, username, password="password123"):
+        """The in-memory access token from a login (the refresh token rides in a cookie now)."""
+        return self._login(username, password).json()["access_token"]
+
     # --- registration / roles -----------------------------------------------
 
     def test_01_first_user_is_admin_rest_are_users(self):
@@ -78,8 +82,14 @@ class AuthTest(unittest.TestCase):
         body = r.json()
         self.assertEqual(body["user"]["role"], "admin")
         self.assertEqual(body["user"]["username"], "alice")
-        self.assertTrue(body["tokens"]["access_token"])
-        self.assertTrue(body["tokens"]["refresh_token"])
+        self.assertTrue(body["access_token"])
+        # The refresh token must NOT be in the body — it's delivered as an HttpOnly cookie scoped
+        # to /api/auth, so JS (and an XSS payload) can't read it.
+        self.assertNotIn("refresh_token", body)
+        set_cookie = r.headers.get("set-cookie", "")
+        self.assertIn("nutriai_refresh=", set_cookie)
+        self.assertIn("HttpOnly", set_cookie)
+        self.assertIn("Path=/api/auth", set_cookie)
 
         r2 = self._register("bob")
         self.assertEqual(r2.status_code, 201)
@@ -103,7 +113,7 @@ class AuthTest(unittest.TestCase):
 
     def test_06_me_requires_and_returns_user(self):
         self.assertEqual(self.client.get("/api/auth/me").status_code, 401)
-        token = self._login("alice").json()["tokens"]["access_token"]
+        token = self._access("alice")
         r = self.client.get("/api/auth/me", headers=_auth(token))
         self.assertEqual(r.status_code, 200)
         self.assertEqual(r.json()["username"], "alice")
@@ -115,8 +125,8 @@ class AuthTest(unittest.TestCase):
         self.assertEqual(self.client.get("/api/nutrition/daily").status_code, 401)
 
     def test_08_meal_is_owner_scoped(self):
-        alice = self._login("alice").json()["tokens"]["access_token"]
-        bob = self._login("bob").json()["tokens"]["access_token"]
+        alice = self._access("alice")
+        bob = self._access("bob")
 
         logged = self.client.post(
             "/api/meals/log",
@@ -144,8 +154,8 @@ class AuthTest(unittest.TestCase):
     # --- admin authorization -------------------------------------------------
 
     def test_09_admin_only_endpoints(self):
-        alice = self._login("alice").json()["tokens"]["access_token"]  # admin
-        bob = self._login("bob").json()["tokens"]["access_token"]  # user
+        alice = self._access("alice")  # admin
+        bob = self._access("bob")  # user
 
         self.assertEqual(self.client.get("/api/users", headers=_auth(bob)).status_code, 403)
         self.assertEqual(self.client.get("/api/users", headers=_auth(alice)).status_code, 200)
@@ -156,27 +166,32 @@ class AuthTest(unittest.TestCase):
     # --- refresh-token rotation ----------------------------------------------
 
     def test_10_refresh_rotates_and_detects_reuse(self):
-        old_refresh = self._login("bob").json()["tokens"]["refresh_token"]
-        r = self.client.post("/api/auth/refresh", json={"refresh_token": old_refresh})
+        # A fresh client so the cookie jar is isolated from the other tests' logins.
+        c = TestClient(app)
+        c.post("/api/auth/login", json={"username": "bob", "password": "password123"})
+        old_refresh = c.cookies.get("nutriai_refresh")
+        self.assertTrue(old_refresh)
+
+        # Refresh sends the cookie (no body); the response carries only the access token.
+        r = c.post("/api/auth/refresh")
         self.assertEqual(r.status_code, 200)
-        new_refresh = r.json()["refresh_token"]
+        self.assertTrue(r.json()["access_token"])
+        new_refresh = c.cookies.get("nutriai_refresh")
         self.assertNotEqual(new_refresh, old_refresh)
 
-        # Reusing the rotated (now-revoked) token fails.
-        self.assertEqual(
-            self.client.post("/api/auth/refresh", json={"refresh_token": old_refresh}).status_code,
-            401,
-        )
+        # Reusing the rotated (now-revoked) token fails. Replant it as the only cookie.
+        c.cookies.clear()
+        c.cookies.set("nutriai_refresh", old_refresh)
+        self.assertEqual(c.post("/api/auth/refresh").status_code, 401)
         # Reuse triggers chain revocation, so the freshly issued one is now dead too.
-        self.assertEqual(
-            self.client.post("/api/auth/refresh", json={"refresh_token": new_refresh}).status_code,
-            401,
-        )
+        c.cookies.clear()
+        c.cookies.set("nutriai_refresh", new_refresh)
+        self.assertEqual(c.post("/api/auth/refresh").status_code, 401)
 
     # --- change password -----------------------------------------------------
 
     def test_11_change_password(self):
-        token = self._login("bob").json()["tokens"]["access_token"]
+        token = self._access("bob")
         # Wrong current password -> 400.
         bad = self.client.post(
             "/api/auth/change-password",
