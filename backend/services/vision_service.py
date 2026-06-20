@@ -384,6 +384,91 @@ def init_clients():
         logger.info("vision clients initialized (built once, never rebuilt): %s", ", ".join(built))
 
 
+def _build_prompt(user_note: str) -> str:
+    """The base NUTRITION_PROMPT plus any per-photo user context. Pure — no I/O, easy to unit test."""
+    prompt = NUTRITION_PROMPT
+    if user_note and user_note.strip():
+        prompt += f"\n\nAdditional context from the user: {user_note.strip()}"
+    return prompt
+
+
+def _resolve_provider(provider: str) -> tuple[str, VisionProvider]:
+    """Resolve a provider name to (normalized_name, impl) together, so the log line names the
+    provider we actually run and the client wiring + the model call can never disagree on it: an
+    unknown/blank name falls back to DEFAULT_PROVIDER for BOTH halves. Pure — no I/O."""
+    name = provider if provider in PROVIDERS else DEFAULT_PROVIDER
+    return name, PROVIDERS[name]
+
+
+def _call_with_retries(
+    impl: VisionProvider,
+    client,
+    image_bytes: bytes,
+    prompt: str,
+    model: str,
+    provider: str,
+) -> dict:
+    """Own the attempt loop for an already-opened client: per-call timing, retry-once-with-backoff,
+    daily-quota fast-fail, and all response/retry/error logging. Returns the parsed result or
+    re-raises the last error. Knows nothing about client lifecycle (the caller owns open/close) or
+    prompt/provider resolution — those are settled before we get here."""
+    last_err = None
+    for attempt in range(MAX_RETRIES + 1):
+        start = time.monotonic()
+        try:
+            result, raw = impl.analyze(client, image_bytes, prompt, model)
+            elapsed = time.monotonic() - start
+            logger.info(
+                "response <- provider=%s model=%s | %.2fs | raw=%s",
+                provider,
+                model,
+                elapsed,
+                # Flatten any pretty-printed/multi-line model JSON onto one physical line so
+                # the whole response stays on a single prefixed log record. Without this, only
+                # the first line carries the timestamp/req prefix and line-oriented log tooling
+                # silently drops the bare continuation lines (looks like missing ingredients).
+                " ".join((raw or "").split()),
+            )
+            return result
+        except Exception as e:
+            elapsed = time.monotonic() - start
+            last_err = e
+            # Daily quota won't recover within this request — fail fast.
+            if _is_quota_error(str(e)):
+                logger.error(
+                    "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
+                    provider,
+                    model,
+                    elapsed,
+                    type(e).__name__,
+                    e,
+                )
+                raise
+            # Timeout / per-minute rate / transient — retry once with a short backoff.
+            if attempt < MAX_RETRIES:
+                logger.warning(
+                    "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
+                    attempt + 1,
+                    MAX_RETRIES,
+                    provider,
+                    model,
+                    elapsed,
+                    type(e).__name__,
+                    e,
+                )
+                time.sleep(1.5)
+                continue
+            logger.error(
+                "error <- provider=%s model=%s | %.2fs | %s: %s",
+                provider,
+                model,
+                elapsed,
+                type(e).__name__,
+                e,
+            )
+            raise last_err from None
+
+
 def analyze_meal_image(
     image_bytes: bytes,
     user_note: str = "",
@@ -391,19 +476,15 @@ def analyze_meal_image(
     provider: str = DEFAULT_PROVIDER,
     api_key: str = "",
 ) -> dict:
+    """Orchestrate Stage 1: short-circuit mocks, build the prompt, resolve the provider, open a
+    ready-to-call client, then run the (retrying) model call and release the client. The real work
+    lives in the focused helpers above; this body is just the sequence and the client lifecycle."""
     if os.environ.get("MOCK_GEMINI", "").lower() in ("1", "true"):
         logger.info("request -> provider=mock model=mock (returning canned response)")
         return MOCK_RESPONSE
 
-    prompt = NUTRITION_PROMPT
-    if user_note and user_note.strip():
-        prompt += f"\n\nAdditional context from the user: {user_note.strip()}"
-
-    provider = provider or DEFAULT_PROVIDER
-    impl = PROVIDERS.get(provider) or PROVIDERS[DEFAULT_PROVIDER]
-    # Normalize so the log line names the provider we actually run (an unknown provider falls back
-    # to DEFAULT_PROVIDER for BOTH the client and the call — they can't disagree now).
-    provider = provider if provider in PROVIDERS else DEFAULT_PROVIDER
+    prompt = _build_prompt(user_note)
+    provider, impl = _resolve_provider(provider)
     # Resolve the ready-to-call client once (Gemini's is built per request here and reused across
     # retries); impl.close() releases it afterwards — a no-op for the pooled Groq/Ollama clients,
     # client.close() for the per-request Gemini one.
@@ -417,61 +498,7 @@ def analyze_meal_image(
         (user_note or "")[:120],
     )
 
-    last_err = None
     try:
-        for attempt in range(MAX_RETRIES + 1):
-            start = time.monotonic()
-            try:
-                result, raw = impl.analyze(client, image_bytes, prompt, model)
-                elapsed = time.monotonic() - start
-                logger.info(
-                    "response <- provider=%s model=%s | %.2fs | raw=%s",
-                    provider,
-                    model,
-                    elapsed,
-                    # Flatten any pretty-printed/multi-line model JSON onto one physical line so
-                    # the whole response stays on a single prefixed log record. Without this, only
-                    # the first line carries the timestamp/req prefix and line-oriented log tooling
-                    # silently drops the bare continuation lines (looks like missing ingredients).
-                    " ".join((raw or "").split()),
-                )
-                return result
-            except Exception as e:
-                elapsed = time.monotonic() - start
-                last_err = e
-                # Daily quota won't recover within this request — fail fast.
-                if _is_quota_error(str(e)):
-                    logger.error(
-                        "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
-                        provider,
-                        model,
-                        elapsed,
-                        type(e).__name__,
-                        e,
-                    )
-                    raise
-                # Timeout / per-minute rate / transient — retry once with a short backoff.
-                if attempt < MAX_RETRIES:
-                    logger.warning(
-                        "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
-                        attempt + 1,
-                        MAX_RETRIES,
-                        provider,
-                        model,
-                        elapsed,
-                        type(e).__name__,
-                        e,
-                    )
-                    time.sleep(1.5)
-                    continue
-                logger.error(
-                    "error <- provider=%s model=%s | %.2fs | %s: %s",
-                    provider,
-                    model,
-                    elapsed,
-                    type(e).__name__,
-                    e,
-                )
-                raise last_err from None
+        return _call_with_retries(impl, client, image_bytes, prompt, model, provider)
     finally:
         impl.close(client)
