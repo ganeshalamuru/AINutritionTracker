@@ -445,9 +445,19 @@ midnight land on the right day regardless of timezone.
 - **`core` depends on nothing above it.** If `core` needs something from `services`, move the
   shared piece down into `core`. (The lifespan's startup call into `vision_service.reload_clients`
   is a deliberate exception via a local import.)
-- **Expensive clients are built once and reused, never per request.** Vision provider clients are
-  built in the lifespan and rebuilt only on a key/model change (`PUT /api/config` →
-  `reload_clients`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` + a
+- **Expensive clients are built once and reused, never per request.** The vision lifecycle is
+  split so it's explicit which clients rebuild: `vision_service.init_clients()` builds the
+  **never-rebuilt** pools once at startup (the Groq httpx pool + keyless Ollama client), and
+  `reload_clients(db)` **rebuilds only the Gemini model** on a key/model change (`PUT /api/config`).
+  The **Groq** key is *not* cached on the client and never appears in `reload_clients`: the SDK
+  sends it as an `Authorization: Bearer` header it reads per request, so each `/analyze` injects
+  the configured key via `client.with_options(api_key=…)` (a copy that reuses the pooled httpx
+  client) — config stays the single source of truth for the key (`meal_service` fetches it with
+  `config.get_api_key`). **Gemini** must rebuild on a key/model change: `google-generativeai` 0.8.3
+  keys via process-global `genai.configure` (no per-request header, and re-configuring resets the
+  cached gRPC transport), so per-call init would rebuild the channel every request — moving it to
+  per-request keying needs the newer object-scoped `google-genai` SDK. Ollama is keyless. The USDA
+  client (`usda_service.UsdaClient` — a pooled `requests.Session` + a
   `ThreadPoolExecutor`) is built **once** and reused for the process lifetime; both pools are
   key-independent, so a key change (`reload_client` / `configure`) only updates the Session's
   `X-Api-Key` header — nothing is rebuilt. The key lives only on that header (lookups take no

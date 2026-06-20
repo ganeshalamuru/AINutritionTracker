@@ -28,23 +28,41 @@ logger = logging.getLogger("nutriai.vision")
 
 # --- shared vision clients ---
 #
-# A vision client carries its own HTTP connection pool, so we build it ONCE per process
-# and reuse it across every /analyze. Following FastAPI's documented pattern for shared
-# resources, the registry is populated in the app lifespan (core.lifespan calls
-# reload_clients at startup) and rebuilt only when a key/provider/model changes in
-# config (routers.config calls reload_clients after PUT /api/config). The lock serializes
-# those rare rebuilds; the request hot path (_groq_analyze / _gemini_analyze / _ollama_analyze)
-# just reads the global, which is atomic under the GIL — no per-call lock or key comparison.
+# A vision client carries its own HTTP connection pool, so we build it ONCE per process and
+# reuse it across every /analyze. Following FastAPI's documented pattern for shared resources,
+# the clients live in module globals. Lifecycle is split into two functions so it's explicit
+# which clients are rebuilt and which are not:
+#
+#   init_clients()    — built ONCE, NEVER rebuilt: the Groq httpx pool + the keyless Ollama
+#                       client. Both are key/config-independent. (core.lifespan, at startup.)
+#   reload_clients(db)— applies config on a key/model change: REBUILDS only the Gemini model.
+#
+# Groq's key is NOT cached on the client and never appears in reload_clients: the SDK sends it
+# as an `Authorization: Bearer` header it reads *per request*, so each /analyze injects the
+# configured key with `client.with_options(api_key=...)` (a lightweight copy that reuses the
+# pooled httpx client). Config stays the single source of truth for the key. Gemini is the
+# exception that must rebuild: google-generativeai 0.8.3 has no per-request key — `genai.configure`
+# mutates process-global state and resets the cached gRPC transport, so "init per call" would
+# rebuild the gRPC channel every request. Object-scoped keying there needs the newer google-genai
+# SDK. Ollama is keyless.
+#
+# The lock serializes the rare Gemini rebuild; the request hot path (_groq_analyze /
+# _gemini_analyze / _ollama_analyze) just reads the global, which is atomic under the GIL —
+# no per-call lock.
 _lock = threading.Lock()
-_groq_client = None  # built from groq_api_key
+_groq_client = None  # pooled groq.Groq, built once; key swapped on .api_key per config change
 _gemini_model = None  # built from (gemini_api_key, vision_model)
 _ollama_client = None  # official ollama.Client (local daemon, no key)
 
 
-def _build_groq(api_key: str):
+def _build_groq():
+    """One pooled Groq client for the process. The key is NOT baked in — each /analyze injects
+    the configured key with `client.with_options(api_key=...)` (a copy that reuses this client's
+    httpx pool), so the pool is built once and the key stays in config (its single source of
+    truth). The SDK only rejects a None key, so the empty-string placeholder constructs fine."""
     from groq import Groq  # lazy: keep the module importable without the SDK installed
 
-    return Groq(api_key=api_key)
+    return Groq(api_key="")  # placeholder; real key injected per request via with_options
 
 
 def _build_gemini(api_key: str, model: str):
@@ -63,25 +81,46 @@ def _build_ollama():
     return Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
 
 
+def init_clients():
+    """Build the process-lifetime vision clients that are **built once and NEVER rebuilt**:
+    the Groq httpx connection pool (the key is injected per request via with_options, never
+    baked in) and the keyless Ollama client (a fixed local HTTP endpoint). Idempotent — only
+    builds what's missing, so it's a cheap no-op once warm. No DB access (these don't depend
+    on config). Called at startup (core.lifespan), and defensively by reload_clients so the
+    config-change path can't run before the pools exist."""
+    built = []
+    with _lock:
+        global _groq_client, _ollama_client
+        if _groq_client is None:
+            _groq_client = _build_groq()
+            built.append("groq_pool")
+        if _ollama_client is None:
+            _ollama_client = _build_ollama()
+            built.append("ollama")
+    if built:
+        logger.info("vision clients initialized (built once, never rebuilt): %s", ", ".join(built))
+
+
 def reload_clients(db):
-    """(Re)build the vision provider clients from current config. Called once at startup
-    (core.lifespan) and again after every PUT /api/config. A keyed client is built for each
-    provider that has a key; the keyless Ollama client is always built (it's just a local
-    HTTP endpoint), so switching provider in Settings is ready immediately. The lock
-    serializes rebuilds; dispatch reads the resulting globals without locking."""
+    """Rebuild the only config-dependent vision client: the **Gemini** model. The Groq pool
+    and Ollama client are built once by init_clients and never appear here — Groq's key is
+    injected per request (the SDK reads it per call, and meal_service already fetches the key
+    via config.get_api_key), and Ollama is keyless. Gemini is the exception: google-generativeai
+    0.8.3 bakes the key+model into the client and has no per-request key (`genai.configure` is
+    process-global and resets the cached gRPC transport), so it's torn down and rebuilt on a
+    key/model change.
+
+    Called once at startup (core.lifespan) and after every PUT /api/config (routers.config).
+    The lock serializes the rare rebuild; the dispatch hot path reads the globals lock-free."""
+    init_clients()  # ensure the build-once pools exist (idempotent; no-op once warm)
     _, model = config.get_vision_config(db)
-    groq_key = config.get_value(db, "groq_api_key")
     gemini_key = config.get_value(db, "gemini_api_key")
     with _lock:
-        global _groq_client, _gemini_model, _ollama_client
-        _groq_client = _build_groq(groq_key) if groq_key else None
+        global _gemini_model
         _gemini_model = _build_gemini(gemini_key, model) if gemini_key else None
-        _ollama_client = _build_ollama()
     logger.info(
-        "vision clients reloaded (groq=%s, gemini=%s, ollama=%s, model=%s)",
-        _groq_client is not None,
+        "vision config applied (gemini=%s [rebuilt], model=%s)",
         _gemini_model is not None,
-        _ollama_client is not None,
         model,
     )
 
@@ -244,11 +283,13 @@ def _parse_compact(text: str) -> dict:
     }
 
 
-# Provider functions return (parsed_result, raw_response_text) so the caller can
-# log the model's raw output uniformly. They read the shared client built by
-# reload_clients (no per-call construction) — `model` is passed through for logging/Groq;
-# the Gemini model is already baked into _gemini_model at build time.
-def _gemini_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+# Provider functions return (parsed_result, raw_response_text) so the caller can log the
+# model's raw output uniformly. They share a fixed signature
+# (image_bytes, prompt, model, api_key) for uniform dispatch. The pooled client is built once
+# (init_clients / reload_clients) — no per-call construction. `api_key` is the per-request key
+# for Groq (the SDK keys via an Authorization header it reads per call); Gemini bakes its key
+# into _gemini_model at build time and Ollama is keyless, so both ignore it.
+def _gemini_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
     gen_model = _gemini_model
     if gen_model is None:
         raise RuntimeError("Gemini client not initialized — set the Gemini API key in Settings.")
@@ -261,12 +302,17 @@ def _gemini_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, 
     return _parse_compact(raw), raw
 
 
-def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+def _groq_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
     client = _groq_client
     if client is None:
-        raise RuntimeError("Groq client not initialized — set the Groq API key in Settings.")
+        raise RuntimeError("Groq client not initialized.")
+    if not api_key:
+        raise RuntimeError("Groq API key not set — set the Groq API key in Settings.")
     b64 = base64.b64encode(image_bytes).decode()
-    response = client.chat.completions.create(
+    # Inject the key per request: with_options returns a lightweight copy that REUSES the
+    # pooled httpx client (only the auth header differs), so the connection pool is never
+    # rebuilt and the key never lives on the shared global client.
+    response = client.with_options(api_key=api_key).chat.completions.create(
         model=model,
         messages=[
             {
@@ -286,7 +332,7 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, st
     return _parse_compact(raw), raw
 
 
-def _ollama_analyze(image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+def _ollama_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
     """Local vision via the official Ollama client (no API key). Mirrors _groq_analyze:
     the image is passed as raw bytes (the client base64-encodes it), `format="json"` is
     plain JSON mode like Groq's response_format — the current qwen3-vl models keep our
@@ -318,6 +364,7 @@ def analyze_meal_image(
     user_note: str = "",
     model: str = DEFAULT_MODEL,
     provider: str = DEFAULT_PROVIDER,
+    api_key: str = "",
 ) -> dict:
     if os.environ.get("MOCK_GEMINI", "").lower() in ("1", "true"):
         logger.info("request -> provider=mock model=mock (returning canned response)")
@@ -341,7 +388,7 @@ def analyze_meal_image(
     for attempt in range(MAX_RETRIES + 1):
         start = time.monotonic()
         try:
-            result, raw = analyze(image_bytes, prompt, model)
+            result, raw = analyze(image_bytes, prompt, model, api_key)
             elapsed = time.monotonic() - start
             logger.info(
                 "response <- provider=%s model=%s | %.2fs | raw=%s",

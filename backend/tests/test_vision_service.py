@@ -118,13 +118,43 @@ class ParseCompactTest(unittest.TestCase):
         self.assertEqual(out["dishes"], [{"name": "a", "grams": 10, "items": []}])
 
 
-class ReloadClientsTest(unittest.TestCase):
-    """reload_clients builds a client only for a provider that has a key configured.
-    Offline: constructing the Groq client makes no network call, and config access is
-    stubbed so no DB is touched."""
+class InitClientsTest(unittest.TestCase):
+    """init_clients builds the build-once / never-rebuilt pools (Groq httpx pool + keyless
+    Ollama client) and is idempotent. Offline: constructing the Groq client makes no network
+    call, and _build_ollama is stubbed so the test stays hermetic."""
 
-    def _reload(self, groq_key, gemini_key=""):
-        values = {"groq_api_key": groq_key, "gemini_api_key": gemini_key}
+    def tearDown(self):
+        gs._groq_client = None
+        gs._ollama_client = None
+
+    def test_builds_both_pools_once_and_is_idempotent(self):
+        with patch.object(gs, "_build_ollama", return_value=object()) as build_ollama:
+            gs.init_clients()
+            groq, ollama = gs._groq_client, gs._ollama_client
+            self.assertIsNotNone(groq)
+            self.assertIsNotNone(ollama)
+            # A second call must not rebuild — same objects, _build_ollama not called again.
+            gs.init_clients()
+            self.assertIs(gs._groq_client, groq)
+            self.assertIs(gs._ollama_client, ollama)
+            build_ollama.assert_called_once()
+
+
+class ReloadClientsTest(unittest.TestCase):
+    """reload_clients rebuilds ONLY the Gemini model on a config change; the build-once
+    Groq/Ollama pools (init_clients) are reused, never rebuilt, and the Groq key is NOT cached
+    here (it's injected per request in _groq_analyze). Offline: constructing Groq makes no
+    network call, _build_gemini/_build_ollama are stubbed, and config access is stubbed."""
+
+    def setUp(self):
+        self.gemini_builds = 0
+
+    def _fake_build_gemini(self, api_key, model):
+        self.gemini_builds += 1
+        return ("gemini", api_key, model)
+
+    def _reload(self, gemini_key=""):
+        values = {"groq_api_key": "ignored-here", "gemini_api_key": gemini_key}
         with (
             patch.object(gs.config, "get_vision_config", return_value=("groq", "some-model")),
             patch.object(
@@ -132,8 +162,8 @@ class ReloadClientsTest(unittest.TestCase):
                 "get_value",
                 side_effect=lambda db, key, default="": values.get(key, default),
             ),
-            # The keyless Ollama client is always built; stub it so the test stays hermetic.
             patch.object(gs, "_build_ollama", return_value=object()),
+            patch.object(gs, "_build_gemini", side_effect=self._fake_build_gemini),
         ):
             gs.reload_clients(db=None)
 
@@ -142,13 +172,78 @@ class ReloadClientsTest(unittest.TestCase):
         gs._gemini_model = None
         gs._ollama_client = None
 
-    def test_groq_client_built_when_key_present(self):
-        self._reload(groq_key="test-key")
-        self.assertIsNotNone(gs._groq_client)
+    def test_pools_built_once_and_reused_not_rebuilt(self):
+        self._reload()
+        groq, ollama = gs._groq_client, gs._ollama_client
+        self.assertIsNotNone(groq)
+        self.assertIsNotNone(ollama)
+        # The Groq key is never cached on the shared client — left empty; injected per request.
+        self.assertEqual(groq.api_key, "")
+        # A second reload must NOT rebuild the pools — same object identity proves it.
+        self._reload()
+        self.assertIs(gs._groq_client, groq)
+        self.assertIs(gs._ollama_client, ollama)
 
-    def test_no_groq_client_when_key_blank(self):
-        self._reload(groq_key="")
-        self.assertIsNone(gs._groq_client)
+    def test_gemini_rebuilt_every_reload(self):
+        self._reload(gemini_key="g1")
+        self.assertEqual(gs._gemini_model, ("gemini", "g1", "some-model"))
+        self._reload(gemini_key="g2")
+        self.assertEqual(gs._gemini_model, ("gemini", "g2", "some-model"))
+        self.assertEqual(self.gemini_builds, 2)  # torn down + rebuilt each time
+
+    def test_no_gemini_when_key_blank(self):
+        self._reload(gemini_key="")
+        self.assertIsNone(gs._gemini_model)
+        self.assertEqual(self.gemini_builds, 0)
+
+
+class GroqAnalyzeTest(unittest.TestCase):
+    """_groq_analyze injects the per-request key via with_options (a copy that reuses the
+    pooled client) rather than reading a cached key, and guards on the supplied key. No
+    network: the client is a fake that records what it was called with."""
+
+    def tearDown(self):
+        gs._groq_client = None
+
+    def _fake_client(self, content):
+        test = self
+
+        class Completions:
+            def create(self, **kwargs):
+                test.create_kwargs = kwargs
+                msg = type("M", (), {"content": content})
+                choice = type("C", (), {"message": msg})
+                return type("R", (), {"choices": [choice]})
+
+        class Scoped:
+            chat = type("Chat", (), {"completions": Completions()})
+
+        class Client:
+            def with_options(self, **kwargs):
+                test.with_options_kwargs = kwargs
+                return Scoped()
+
+        return Client()
+
+    def test_injects_key_per_request_via_with_options(self):
+        content = '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":[]}'
+        gs._groq_client = self._fake_client(content)
+        result, raw = gs._groq_analyze(b"\xff\xd8img", "PROMPT", "scout-model", "secret-key")
+        # The configured key is passed per request, not pulled from a cached client attribute.
+        self.assertEqual(self.with_options_kwargs, {"api_key": "secret-key"})
+        self.assertEqual(self.create_kwargs["model"], "scout-model")
+        self.assertEqual(raw, content)
+        self.assertEqual(result["meal_name"], "Lunch")
+
+    def test_raises_when_key_missing(self):
+        gs._groq_client = self._fake_client("{}")
+        with self.assertRaises(RuntimeError):
+            gs._groq_analyze(b"img", "PROMPT", "scout-model", "")
+
+    def test_raises_when_client_not_built(self):
+        gs._groq_client = None
+        with self.assertRaises(RuntimeError):
+            gs._groq_analyze(b"img", "PROMPT", "scout-model", "key")
 
 
 class OllamaAnalyzeTest(unittest.TestCase):
@@ -179,7 +274,8 @@ class OllamaAnalyzeTest(unittest.TestCase):
                 return resp
 
         gs._ollama_client = FakeClient()
-        result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
+        # api_key is accepted for a uniform dispatch signature but ignored (Ollama is keyless).
+        result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct", "")
 
         self.assertEqual(raw, content)
         self.assertEqual(
