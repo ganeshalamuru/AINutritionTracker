@@ -120,37 +120,39 @@ class ParseCompactTest(unittest.TestCase):
 
 class InitClientsTest(unittest.TestCase):
     """init_clients builds the build-once / never-rebuilt pools (Groq httpx pool + keyless
-    Ollama client) and is idempotent. Offline: constructing the Groq client makes no network
-    call, and _build_ollama is stubbed so the test stays hermetic."""
+    Ollama client), each owned by its provider, and is idempotent. Offline: constructing the
+    Groq client makes no network call, and _build_ollama is stubbed so the test stays hermetic."""
 
     def tearDown(self):
-        gs._groq_client = None
-        gs._ollama_client = None
+        gs.PROVIDERS["groq"]._pool = None
+        gs.PROVIDERS["ollama"]._pool = None
 
     def test_builds_both_pools_once_and_is_idempotent(self):
         with patch.object(gs, "_build_ollama", return_value=object()) as build_ollama:
             gs.init_clients()
-            groq, ollama = gs._groq_client, gs._ollama_client
+            groq = gs.PROVIDERS["groq"]._pool
+            ollama = gs.PROVIDERS["ollama"]._pool
             self.assertIsNotNone(groq)
             self.assertIsNotNone(ollama)
             # A second call must not rebuild — same objects, _build_ollama not called again.
             gs.init_clients()
-            self.assertIs(gs._groq_client, groq)
-            self.assertIs(gs._ollama_client, ollama)
+            self.assertIs(gs.PROVIDERS["groq"]._pool, groq)
+            self.assertIs(gs.PROVIDERS["ollama"]._pool, ollama)
             build_ollama.assert_called_once()
 
 
-class ClientForTest(unittest.TestCase):
-    """_client_for resolves the ready-to-call client for a request plus a cleanup hook. Groq
-    returns the build-once pool with the key injected via with_options (a copy reusing the pool)
-    + a no-op cleanup; Ollama returns the pooled client + a no-op cleanup; Gemini builds a fresh
-    keyed genai.Client per request + its close as cleanup. Offline: genai.Client is patched."""
+class ProviderOpenCloseTest(unittest.TestCase):
+    """Each provider owns both halves: open() resolves the ready-to-call client for a request and
+    close() releases it. Groq returns the build-once pool with the key injected via with_options (a
+    copy reusing the pool) + a no-op close; Ollama returns the pooled client + a no-op close; Gemini
+    builds a fresh keyed genai.Client per request and close() shuts it down. Offline: genai.Client
+    is patched."""
 
     def tearDown(self):
-        gs._groq_client = None
-        gs._ollama_client = None
+        gs.PROVIDERS["groq"]._pool = None
+        gs.PROVIDERS["ollama"]._pool = None
 
-    def test_groq_injects_key_and_no_op_cleanup(self):
+    def test_groq_open_injects_key_and_close_is_no_op(self):
         sentinel = object()
 
         class FakeGroq:
@@ -158,39 +160,43 @@ class ClientForTest(unittest.TestCase):
                 self.with_options_kwargs = kwargs
                 return sentinel
 
-        gs._groq_client = FakeGroq()
-        client, close = gs._client_for("groq", "secret-key")
+        pool = FakeGroq()
+        gs.PROVIDERS["groq"]._pool = pool
+        client = gs.PROVIDERS["groq"].open("secret-key")
         self.assertIs(client, sentinel)  # the key-injected copy, not the shared pool
-        self.assertEqual(gs._groq_client.with_options_kwargs, {"api_key": "secret-key"})
-        self.assertIs(close, gs._noop)  # never close the shared pool
+        self.assertEqual(pool.with_options_kwargs, {"api_key": "secret-key"})
+        # close must NOT tear down the shared pool — the base no-op leaves it intact.
+        gs.PROVIDERS["groq"].close(client)
+        self.assertIs(gs.PROVIDERS["groq"]._pool, pool)
 
-    def test_groq_raises_when_pool_not_built(self):
-        gs._groq_client = None
+    def test_groq_open_raises_when_pool_not_built(self):
+        gs.PROVIDERS["groq"]._pool = None
         with self.assertRaises(RuntimeError):
-            gs._client_for("groq", "key")
+            gs.PROVIDERS["groq"].open("key")
 
-    def test_ollama_returns_pool_and_no_op_cleanup(self):
-        gs._ollama_client = object()
-        client, close = gs._client_for("ollama", "")
-        self.assertIs(client, gs._ollama_client)
-        self.assertIs(close, gs._noop)
+    def test_ollama_open_returns_pool(self):
+        pool = object()
+        gs.PROVIDERS["ollama"]._pool = pool
+        self.assertIs(gs.PROVIDERS["ollama"].open(""), pool)
 
-    def test_ollama_raises_when_pool_not_built(self):
-        gs._ollama_client = None
+    def test_ollama_open_raises_when_pool_not_built(self):
+        gs.PROVIDERS["ollama"]._pool = None
         with self.assertRaises(RuntimeError):
-            gs._client_for("ollama", "")
+            gs.PROVIDERS["ollama"].open("")
 
-    def test_gemini_builds_per_request_client_and_returns_close(self):
-        fake = type("FakeGenaiClient", (), {"close": lambda self: None})()
+    def test_gemini_open_builds_per_request_client_and_close_shuts_it_down(self):
+        closed = []
+        fake = type("FakeGenaiClient", (), {"close": lambda self: closed.append(True)})()
         with patch.object(gs.genai, "Client", return_value=fake) as ctor:
-            client, close = gs._client_for("gemini", "g-key")
+            client = gs.PROVIDERS["gemini"].open("g-key")
+            gs.PROVIDERS["gemini"].close(client)
         ctor.assert_called_once_with(api_key="g-key")  # object-scoped key, per request
         self.assertIs(client, fake)
-        self.assertEqual(close, fake.close)  # cleanup closes the per-request httpx connection
+        self.assertEqual(closed, [True])  # close shuts down the per-request httpx connection
 
 
 class GroqAnalyzeTest(unittest.TestCase):
-    """_groq_analyze takes the ready-to-call client (key already injected by _client_for) and
+    """GroqProvider.analyze takes the ready-to-call client (key already injected by open()) and
     parses the chat completion. No network: the client is a fake that records its call."""
 
     def test_calls_completions_and_parses(self):
@@ -205,14 +211,14 @@ class GroqAnalyzeTest(unittest.TestCase):
                 return type("R", (), {"choices": [choice]})
 
         client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})})()
-        result, raw = gs._groq_analyze(client, b"\xff\xd8img", "PROMPT", "scout-model")
+        result, raw = gs.PROVIDERS["groq"].analyze(client, b"\xff\xd8img", "PROMPT", "scout-model")
         self.assertEqual(self.create_kwargs["model"], "scout-model")
         self.assertEqual(raw, content)
         self.assertEqual(result["meal_name"], "Lunch")
 
 
 class GeminiAnalyzeTest(unittest.TestCase):
-    """_gemini_analyze takes the per-request keyed genai.Client (built by _client_for) and parses
+    """GeminiProvider.analyze takes the per-request keyed genai.Client (built by open()) and parses
     response.text. No network: the client is a fake recording its generate_content call."""
 
     def test_calls_generate_content_and_parses(self):
@@ -228,16 +234,14 @@ class GeminiAnalyzeTest(unittest.TestCase):
                 return type("R", (), {"text": content})
 
         client = type("Client", (), {"models": Models()})()
-        result, raw = gs._gemini_analyze(client, b"\xff\xd8img", "PROMPT", "gemini-x")
+        result, raw = gs.PROVIDERS["gemini"].analyze(client, b"\xff\xd8img", "PROMPT", "gemini-x")
 
         self.assertEqual(raw, content)
         self.assertEqual(self.gen_kwargs["model"], "gemini-x")
         # contents = [prompt, image part]; the prompt is forwarded verbatim.
         self.assertEqual(self.gen_kwargs["contents"][0], "PROMPT")
         # Per-request timeout is set in milliseconds (CALL_TIMEOUT seconds * 1000).
-        self.assertEqual(
-            self.gen_kwargs["config"].http_options.timeout, gs.CALL_TIMEOUT * 1000
-        )
+        self.assertEqual(self.gen_kwargs["config"].http_options.timeout, gs.CALL_TIMEOUT * 1000)
         self.assertEqual(
             result["dishes"],
             [
@@ -251,7 +255,7 @@ class GeminiAnalyzeTest(unittest.TestCase):
 
 
 class OllamaAnalyzeTest(unittest.TestCase):
-    """_ollama_analyze takes the pooled client (passed in by _client_for) and parses
+    """OllamaProvider.analyze takes the pooled client (returned by open()) and parses
     message.content via _parse_compact. No network: the client is a fake."""
 
     def test_calls_client_and_parses_dish_list(self):
@@ -275,7 +279,9 @@ class OllamaAnalyzeTest(unittest.TestCase):
                 return resp
 
         client = FakeClient()
-        result, raw = gs._ollama_analyze(client, b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
+        result, raw = gs.PROVIDERS["ollama"].analyze(
+            client, b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct"
+        )
 
         self.assertEqual(raw, content)
         self.assertEqual(
@@ -308,6 +314,29 @@ class MockResponseTest(unittest.TestCase):
             self.assertIn("name", d)
             self.assertIn("grams", d)
             self.assertTrue(all("food" in it and "grams" in it for it in d["items"]))
+
+
+class UnknownProviderFallbackTest(unittest.TestCase):
+    """An unknown provider must resolve to DEFAULT_PROVIDER for BOTH the client and the call, so
+    open() and analyze() can never come from different providers (the pre-refactor bug, where the
+    client fell through to groq while the analyze fn fell through to gemini)."""
+
+    def test_unknown_provider_routes_entirely_through_default(self):
+        default = gs.PROVIDERS[gs.DEFAULT_PROVIDER]
+        sentinel_client = object()
+        parsed = {"meal_name": "x", "meal_type": "snack", "confidence": "medium", "dishes": []}
+        with (
+            patch.dict(gs.os.environ, {"MOCK_GEMINI": ""}),
+            patch.object(default, "open", return_value=sentinel_client) as open_,
+            patch.object(default, "analyze", return_value=(parsed, "{}")) as analyze_,
+            patch.object(default, "close") as close_,
+        ):
+            out = gs.analyze_meal_image(b"\xff\xd8img", provider="bogus", api_key="k")
+        open_.assert_called_once_with("k")
+        # analyze got the SAME client open() produced — no cross-provider mismatch.
+        self.assertIs(analyze_.call_args.args[0], sentinel_client)
+        close_.assert_called_once_with(sentinel_client)
+        self.assertEqual(out, parsed)
 
 
 if __name__ == "__main__":

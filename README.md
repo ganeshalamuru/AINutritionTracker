@@ -445,19 +445,22 @@ midnight land on the right day regardless of timezone.
 - **`core` depends on nothing above it.** If `core` needs something from `services`, move the
   shared piece down into `core`. (The lifespan's startup call into `vision_service.init_clients`
   is a deliberate exception via a local import.)
-- **Expensive clients are built once and reused; every provider keys per request.**
-  `vision_service.init_clients()` builds the **never-rebuilt** pools once at startup (the Groq
-  httpx pool + keyless Ollama client); no key is ever baked onto a process-global client, so a
-  key/provider/model change needs **no** vision-client rebuild. The orchestrator
-  (`analyze_meal_image`) resolves the ready-to-call client per request via
-  `_client_for(provider, api_key)` and passes it into the provider function — none of the provider
-  functions read a global or re-key. **Groq** injects the key via
-  `_groq_client.with_options(api_key=…)` (a copy that reuses the pooled httpx client). **Gemini**
-  is built fresh per request as `genai.Client(api_key=…)` and closed afterwards — the newer
-  object-scoped `google-genai` SDK keys at the client (no process-global `genai.configure`, no
-  cached transport to reset), so there's no Gemini rebuild/reload step at all. **Ollama** is
-  keyless. Config stays the single source of truth for the key (`meal_service` fetches it with
-  `config.get_api_key`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` +
+- **Expensive clients are built once and reused; every provider keys per request.** Each vision
+  provider is a `VisionProvider` strategy object (`GeminiProvider`/`GroqProvider`/`OllamaProvider`,
+  registered by name in `PROVIDERS`) that owns **both** halves of a request — getting a ready-to-call
+  client for the key (`open`/`close` + any build-once pool) and calling the model (`analyze`).
+  `vision_service.init_clients()` iterates `PROVIDERS` calling each `.init()` to build the
+  **never-rebuilt** pools once at startup (the Groq httpx pool + keyless Ollama client); no key is
+  ever baked onto a pooled client, so a key/provider/model change needs **no** vision-client rebuild.
+  The orchestrator (`analyze_meal_image`) resolves **one** provider object and uses it for both
+  halves — `client = impl.open(api_key)`, then `impl.analyze(client, …)` — so the client wiring and
+  the model call can never disagree on provider (an unknown provider falls back to `DEFAULT_PROVIDER`
+  for both). **Groq** injects the key via `self._pool.with_options(api_key=…)` (a copy that reuses the
+  pooled httpx client). **Gemini** is built fresh per request as `genai.Client(api_key=…)` and closed
+  afterwards — the newer object-scoped `google-genai` SDK keys at the client (no process-global
+  `genai.configure`, no cached transport to reset), so there's no Gemini rebuild/reload step at all.
+  **Ollama** is keyless. Config stays the single source of truth for the key (`meal_service` fetches
+  it with `config.get_api_key`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` +
   a `ThreadPoolExecutor`) is likewise built **once** and reused for the process lifetime; its pools
   are key-independent, so a key change (`reload_client`) only updates the Session's `X-Api-Key`
   header — nothing is rebuilt. The key lives only on that header (lookups take no `api_key` argument
@@ -656,7 +659,8 @@ python -m unittest discover -s tests  # equivalent, no extra deps
 ```
 
 `test_vision_service.py` covers Stage-1 dish parsing, the build-once pools (`init_clients`), and
-per-request client resolution (`_client_for` + the Groq/Gemini/Ollama dispatch); `test_usda_service.py`
+per-request provider `open`/`close`/`analyze` (the Groq/Gemini/Ollama strategy objects + the
+unknown-provider fallback); `test_usda_service.py`
 covers aliasing, matching, the cache (incl. negative caching), the lookup cap, the curated
 dish-lookup gate, transient-timeout retries, and rate-limit propagation. `test_auth.py` covers
 the auth flow end-to-end (register/first-user-admin, login, ownership scoping on meals,
