@@ -164,8 +164,8 @@ class ProviderOpenCloseTest(unittest.TestCase):
         gs.PROVIDERS["groq"]._pool = pool
         client = gs.PROVIDERS["groq"].open("secret-key")
         self.assertIs(client, sentinel)  # the key-injected copy, not the shared pool
-        # open() also hands the SDK the retry budget so Groq retries internally (the app loop
-        # is then a no-op for Groq — app_retries == 0).
+        # open() also hands the SDK the retry budget so Groq retries internally (the app makes no
+        # retry of its own).
         self.assertEqual(
             pool.with_options_kwargs, {"api_key": "secret-key", "max_retries": gs.MAX_RETRIES}
         )
@@ -197,17 +197,6 @@ class ProviderOpenCloseTest(unittest.TestCase):
         ctor.assert_called_once_with(api_key="g-key")  # object-scoped key, per request
         self.assertIs(client, fake)
         self.assertEqual(closed, [True])  # close shuts down the per-request httpx connection
-
-
-class AppRetriesTest(unittest.TestCase):
-    """The orchestrator's app-level retry budget is per provider: Groq/Gemini delegate retries to
-    their SDK (so they must NOT also loop here, else attempts multiply), while Ollama's SDK has no
-    retry and keeps one app-level attempt."""
-
-    def test_sdk_backed_providers_dont_app_retry_but_ollama_does(self):
-        self.assertEqual(gs.PROVIDERS["groq"].app_retries, 0)
-        self.assertEqual(gs.PROVIDERS["gemini"].app_retries, 0)
-        self.assertEqual(gs.PROVIDERS["ollama"].app_retries, gs.MAX_RETRIES)
 
 
 class GroqAnalyzeTest(unittest.TestCase):

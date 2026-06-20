@@ -78,14 +78,14 @@ def _build_ollama():
     return Client(host=OLLAMA_HOST, timeout=OLLAMA_TIMEOUT)
 
 
-# Per-call timeout (seconds) and retry budget. The app used to hang forever when
-# the model never responded — cap each call and retry at most once. The retry is delegated
-# to the official SDK where one exists: Groq runs it via with_options(max_retries=MAX_RETRIES)
-# and Gemini via HttpRetryOptions(attempts=MAX_RETRIES + 1), both with proper exponential
-# backoff + Retry-After handling. Only Ollama (whose SDK has no retry) loops at the app level
-# (see VisionProvider.app_retries / _call_with_retries).
+# Per-call timeout (seconds) and retry budget. The app used to hang forever when the model never
+# responded — cap each call (timeout) and retry at most once. Retries are delegated to the official
+# SDK where one exists: Groq runs it via with_options(max_retries=MAX_RETRIES) and Gemini via
+# HttpRetryOptions(attempts=MAX_RETRIES + 1), both with proper exponential backoff + Retry-After
+# handling. Ollama's SDK has no retry, so it makes a single attempt — we don't hand-roll one (the
+# timeout still bounds a hung call). MAX_RETRIES is therefore consumed only by Groq/Gemini.
 CALL_TIMEOUT = 15
-MAX_RETRIES = 1  # one extra attempt after the first failure
+MAX_RETRIES = 1  # one extra attempt after the first failure (Groq/Gemini SDK retry budget)
 
 # Local Ollama needs its own, much longer budget: the first /analyze after startup
 # pays a one-time model load into VRAM, and a local vision model is slower than a
@@ -234,11 +234,6 @@ def _parse_compact(text: str) -> dict:
 # provider. analyze() returns (parsed_result, raw_response_text) so the caller can log the model's
 # raw output uniformly; it never constructs or closes the client (open/close own its lifecycle).
 class VisionProvider(ABC):
-    # App-level retry budget (extra attempts after the first) the orchestrator loops over.
-    # Default 0: Groq/Gemini delegate retries to their SDK, so the app must NOT also loop
-    # (that would multiply attempts). Ollama overrides this (its SDK has no retry).
-    app_retries = 0
-
     def init(self) -> bool:
         """Build the process-lifetime pool, if any. Idempotent; called under the module _lock by
         init_clients. Returns True if it built something (for startup logging). Default: no pool
@@ -341,7 +336,6 @@ class OllamaProvider(VisionProvider):
     daemon, built once and reused (open() ignores the key)."""
 
     _pool = None  # official ollama.Client (local daemon, no key), built once by init()
-    app_retries = 1  # the ollama SDK has no retry, so the orchestrator loops one extra attempt
 
     def init(self) -> bool:
         if self._pool is None:
@@ -406,7 +400,7 @@ def _resolve_provider(provider: str) -> tuple[str, VisionProvider]:
     return name, PROVIDERS[name]
 
 
-def _call_with_retries(
+def _call_and_log(
     impl: VisionProvider,
     client,
     image_bytes: bytes,
@@ -414,57 +408,38 @@ def _call_with_retries(
     model: str,
     provider: str,
 ) -> dict:
-    """Own the attempt loop for an already-opened client: per-call timing, the app-level
-    retry-with-backoff (only for providers whose SDK can't retry — see impl.app_retries; Groq/Gemini
-    retry inside the SDK and loop zero extra times here), and all response/retry/error logging.
-    Returns the parsed result or re-raises the last error. Knows nothing about client lifecycle (the
-    caller owns open/close) or prompt/provider resolution — those are settled before we get here."""
-    last_err = None
-    for attempt in range(impl.app_retries + 1):
-        start = time.monotonic()
-        try:
-            result, raw = impl.analyze(client, image_bytes, prompt, model)
-            elapsed = time.monotonic() - start
-            logger.info(
-                "response <- provider=%s model=%s | %.2fs | raw=%s",
-                provider,
-                model,
-                elapsed,
-                # Flatten any pretty-printed/multi-line model JSON onto one physical line so
-                # the whole response stays on a single prefixed log record. Without this, only
-                # the first line carries the timestamp/req prefix and line-oriented log tooling
-                # silently drops the bare continuation lines (looks like missing ingredients).
-                " ".join((raw or "").split()),
-            )
-            return result
-        except Exception as e:
-            elapsed = time.monotonic() - start
-            last_err = e
-            # Transient (timeout / connection blip) — retry with a short backoff. Only reachable
-            # for app-retry providers (Ollama); Groq/Gemini have app_retries == 0 and already
-            # exhausted their SDK retries before raising here.
-            if attempt < impl.app_retries:
-                logger.warning(
-                    "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
-                    attempt + 1,
-                    impl.app_retries,
-                    provider,
-                    model,
-                    elapsed,
-                    type(e).__name__,
-                    e,
-                )
-                time.sleep(1.5)
-                continue
-            logger.error(
-                "error <- provider=%s model=%s | %.2fs | %s: %s",
-                provider,
-                model,
-                elapsed,
-                type(e).__name__,
-                e,
-            )
-            raise last_err from None
+    """Make ONE timed model call on an already-opened client and log it: the parsed result on
+    success, the error (re-raised) on failure. No app-level retry — retries are the SDK's job where
+    one exists (Groq/Gemini); Ollama's SDK has none, so it gets a single attempt. Knows nothing about
+    client lifecycle (the caller owns open/close) or prompt/provider resolution — those are settled
+    before we get here."""
+    start = time.monotonic()
+    try:
+        result, raw = impl.analyze(client, image_bytes, prompt, model)
+        elapsed = time.monotonic() - start
+        logger.info(
+            "response <- provider=%s model=%s | %.2fs | raw=%s",
+            provider,
+            model,
+            elapsed,
+            # Flatten any pretty-printed/multi-line model JSON onto one physical line so
+            # the whole response stays on a single prefixed log record. Without this, only
+            # the first line carries the timestamp/req prefix and line-oriented log tooling
+            # silently drops the bare continuation lines (looks like missing ingredients).
+            " ".join((raw or "").split()),
+        )
+        return result
+    except Exception as e:
+        elapsed = time.monotonic() - start
+        logger.error(
+            "error <- provider=%s model=%s | %.2fs | %s: %s",
+            provider,
+            model,
+            elapsed,
+            type(e).__name__,
+            e,
+        )
+        raise
 
 
 def analyze_meal_image(
@@ -475,17 +450,16 @@ def analyze_meal_image(
     api_key: str = "",
 ) -> dict:
     """Orchestrate Stage 1: short-circuit mocks, build the prompt, resolve the provider, open a
-    ready-to-call client, then run the (retrying) model call and release the client. The real work
-    lives in the focused helpers above; this body is just the sequence and the client lifecycle."""
+    ready-to-call client, then run the model call and release the client. The real work lives in the
+    focused helpers above; this body is just the sequence and the client lifecycle."""
     if os.environ.get("MOCK_GEMINI", "").lower() in ("1", "true"):
         logger.info("request -> provider=mock model=mock (returning canned response)")
         return MOCK_RESPONSE
 
     prompt = _build_prompt(user_note)
     provider, impl = _resolve_provider(provider)
-    # Resolve the ready-to-call client once (Gemini's is built per request here and reused across
-    # retries); impl.close() releases it afterwards — a no-op for the pooled Groq/Ollama clients,
-    # client.close() for the per-request Gemini one.
+    # Resolve the ready-to-call client once; impl.close() releases it afterwards — a no-op for the
+    # pooled Groq/Ollama clients, client.close() for the per-request Gemini one.
     client = impl.open(api_key)
 
     logger.info(
@@ -497,6 +471,6 @@ def analyze_meal_image(
     )
 
     try:
-        return _call_with_retries(impl, client, image_bytes, prompt, model, provider)
+        return _call_and_log(impl, client, image_bytes, prompt, model, provider)
     finally:
         impl.close(client)

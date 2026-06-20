@@ -470,8 +470,9 @@ midnight land on the right day regardless of timezone.
   SDK where one exists** — Groq via `with_options(max_retries=MAX_RETRIES)` and Gemini via
   `HttpRetryOptions(attempts=MAX_RETRIES + 1)`, both with proper exponential backoff (+ `Retry-After`
   for Groq) over timeouts/connection errors and transient HTTP (incl. **429** — a throttled vision
-  call is now retried by the SDK, then surfaced, rather than fast-failed). Only **Ollama** (whose SDK
-  has no retry) loops one extra attempt at the app level (`VisionProvider.app_retries`). USDA still
+  call is now retried by the SDK, then surfaced, rather than fast-failed). **Ollama** makes a
+  **single attempt** — its SDK has no retry and we don't hand-roll one (the timeout still bounds a
+  hung call). USDA still
   retries explicitly: `(3.05s connect, 10s read)` + one retry on a transient
   `Timeout`/`ConnectionError` **or** a transient HTTP status (`USDA_TRANSIENT_STATUS` = 404/5xx —
   USDA's gateway intermittently serves an HTML error page instead of JSON); USDA **rate limits
