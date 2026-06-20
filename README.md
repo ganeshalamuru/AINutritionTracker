@@ -466,10 +466,16 @@ midnight land on the right day regardless of timezone.
   header — nothing is rebuilt. The key lives only on that header (lookups take no `api_key` argument
   and it never appears in request URLs/logs). The DB engine is pooled.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded** (vision:
-  Groq/Gemini 15s, local Ollama 120s — each + one retry; USDA: `(3.05s connect, 10s read)` +
-  one retry on a transient `Timeout`/`ConnectionError` **or** a transient HTTP status
-  (`USDA_TRANSIENT_STATUS` = 404/5xx — USDA's gateway intermittently serves an HTML error page
-  instead of JSON)). Rate limits (429/403) surface as HTTP 429 and fail fast, never silent zeros.
+  Groq/Gemini 15s per attempt, local Ollama 120s). **Vision retries are delegated to the official
+  SDK where one exists** — Groq via `with_options(max_retries=MAX_RETRIES)` and Gemini via
+  `HttpRetryOptions(attempts=MAX_RETRIES + 1)`, both with proper exponential backoff (+ `Retry-After`
+  for Groq) over timeouts/connection errors and transient HTTP (incl. **429** — a throttled vision
+  call is now retried by the SDK, then surfaced, rather than fast-failed). Only **Ollama** (whose SDK
+  has no retry) loops one extra attempt at the app level (`VisionProvider.app_retries`). USDA still
+  retries explicitly: `(3.05s connect, 10s read)` + one retry on a transient
+  `Timeout`/`ConnectionError` **or** a transient HTTP status (`USDA_TRANSIENT_STATUS` = 404/5xx —
+  USDA's gateway intermittently serves an HTML error page instead of JSON); USDA **rate limits
+  (429/403) fail fast** as HTTP 429, never silent zeros.
 - **`MOCK_GEMINI=1`** short-circuits *both* stages (canned dish list + canned totals, no network).
   The name is historical — it is provider-agnostic, not Gemini-only.
 - **Logging** is timestamped, thread-named, and **request-correlated** (`core.logging_config`).

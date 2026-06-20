@@ -164,7 +164,11 @@ class ProviderOpenCloseTest(unittest.TestCase):
         gs.PROVIDERS["groq"]._pool = pool
         client = gs.PROVIDERS["groq"].open("secret-key")
         self.assertIs(client, sentinel)  # the key-injected copy, not the shared pool
-        self.assertEqual(pool.with_options_kwargs, {"api_key": "secret-key"})
+        # open() also hands the SDK the retry budget so Groq retries internally (the app loop
+        # is then a no-op for Groq — app_retries == 0).
+        self.assertEqual(
+            pool.with_options_kwargs, {"api_key": "secret-key", "max_retries": gs.MAX_RETRIES}
+        )
         # close must NOT tear down the shared pool — the base no-op leaves it intact.
         gs.PROVIDERS["groq"].close(client)
         self.assertIs(gs.PROVIDERS["groq"]._pool, pool)
@@ -193,6 +197,17 @@ class ProviderOpenCloseTest(unittest.TestCase):
         ctor.assert_called_once_with(api_key="g-key")  # object-scoped key, per request
         self.assertIs(client, fake)
         self.assertEqual(closed, [True])  # close shuts down the per-request httpx connection
+
+
+class AppRetriesTest(unittest.TestCase):
+    """The orchestrator's app-level retry budget is per provider: Groq/Gemini delegate retries to
+    their SDK (so they must NOT also loop here, else attempts multiply), while Ollama's SDK has no
+    retry and keeps one app-level attempt."""
+
+    def test_sdk_backed_providers_dont_app_retry_but_ollama_does(self):
+        self.assertEqual(gs.PROVIDERS["groq"].app_retries, 0)
+        self.assertEqual(gs.PROVIDERS["gemini"].app_retries, 0)
+        self.assertEqual(gs.PROVIDERS["ollama"].app_retries, gs.MAX_RETRIES)
 
 
 class GroqAnalyzeTest(unittest.TestCase):
@@ -242,6 +257,10 @@ class GeminiAnalyzeTest(unittest.TestCase):
         self.assertEqual(self.gen_kwargs["contents"][0], "PROMPT")
         # Per-request timeout is set in milliseconds (CALL_TIMEOUT seconds * 1000).
         self.assertEqual(self.gen_kwargs["config"].http_options.timeout, gs.CALL_TIMEOUT * 1000)
+        # The SDK owns the retry: attempts counts the first call, so MAX_RETRIES + 1 attempts.
+        self.assertEqual(
+            self.gen_kwargs["config"].http_options.retry_options.attempts, gs.MAX_RETRIES + 1
+        )
         self.assertEqual(
             result["dishes"],
             [

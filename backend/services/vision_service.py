@@ -79,7 +79,11 @@ def _build_ollama():
 
 
 # Per-call timeout (seconds) and retry budget. The app used to hang forever when
-# the model never responded — cap each call and retry at most once.
+# the model never responded — cap each call and retry at most once. The retry is delegated
+# to the official SDK where one exists: Groq runs it via with_options(max_retries=MAX_RETRIES)
+# and Gemini via HttpRetryOptions(attempts=MAX_RETRIES + 1), both with proper exponential
+# backoff + Retry-After handling. Only Ollama (whose SDK has no retry) loops at the app level
+# (see VisionProvider.app_retries / _call_with_retries).
 CALL_TIMEOUT = 15
 MAX_RETRIES = 1  # one extra attempt after the first failure
 
@@ -140,18 +144,6 @@ Guidelines:
 3. Only list components you can actually see in the photo. Do not guess ingredients that are not visible.
 4. For each component also give "usda_name": a simple, generic, singular English food name a nutrition database (USDA) would list — no brand or regional terms, no fancy adjectives; include a basic cooked/raw state when it matters. Examples: jeera rice -> cooked white rice; bhindi -> okra; dahi -> plain yogurt; paneer -> paneer cheese. If "item" is already a generic English name, repeat it.
 5. Ensure the sum of component grams logically matches the total_grams."""
-
-
-def _is_quota_error(err: str) -> bool:
-    """Daily-quota exhaustion — not worth retrying (won't recover within the call)."""
-    err = err.lower()
-    return (
-        "quota" in err
-        or "daily" in err
-        or "resource_exhausted" in err
-        or "per_day" in err
-        or "requests_per_day" in err
-    )
 
 
 def _is_number(v) -> bool:
@@ -242,6 +234,11 @@ def _parse_compact(text: str) -> dict:
 # provider. analyze() returns (parsed_result, raw_response_text) so the caller can log the model's
 # raw output uniformly; it never constructs or closes the client (open/close own its lifecycle).
 class VisionProvider(ABC):
+    # App-level retry budget (extra attempts after the first) the orchestrator loops over.
+    # Default 0: Groq/Gemini delegate retries to their SDK, so the app must NOT also loop
+    # (that would multiply attempts). Ollama overrides this (its SDK has no retry).
+    app_retries = 0
+
     def init(self) -> bool:
         """Build the process-lifetime pool, if any. Idempotent; called under the module _lock by
         init_clients. Returns True if it built something (for startup logging). Default: no pool
@@ -282,7 +279,13 @@ class GeminiProvider(VisionProvider):
                 temperature=0,
                 # google-genai's HttpOptions.timeout is in MILLISECONDS (the field's own docstring
                 # says so), unlike our seconds-based CALL_TIMEOUT — hence the * 1000.
-                http_options=types.HttpOptions(timeout=CALL_TIMEOUT * 1000),
+                # retry_options delegates the retry to the SDK (tenacity-based: exponential-jitter
+                # backoff over APIError 408/429/5xx + httpx timeout/connect errors). attempts counts
+                # the first call, so MAX_RETRIES + 1 == "first try plus one retry".
+                http_options=types.HttpOptions(
+                    timeout=CALL_TIMEOUT * 1000,
+                    retry_options=types.HttpRetryOptions(attempts=MAX_RETRIES + 1),
+                ),
             ),
         )
         raw = response.text
@@ -304,7 +307,9 @@ class GroqProvider(VisionProvider):
     def open(self, api_key: str):
         if self._pool is None:
             raise RuntimeError("Groq client not initialized.")
-        return self._pool.with_options(api_key=api_key)
+        # max_retries delegates the retry to the SDK (exponential backoff honoring Retry-After
+        # over 408/409/429/5xx + connection errors); a copy that reuses the pooled httpx client.
+        return self._pool.with_options(api_key=api_key, max_retries=MAX_RETRIES)
 
     def analyze(self, client, image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
         b64 = base64.b64encode(image_bytes).decode()
@@ -336,6 +341,7 @@ class OllamaProvider(VisionProvider):
     daemon, built once and reused (open() ignores the key)."""
 
     _pool = None  # official ollama.Client (local daemon, no key), built once by init()
+    app_retries = 1  # the ollama SDK has no retry, so the orchestrator loops one extra attempt
 
     def init(self) -> bool:
         if self._pool is None:
@@ -408,12 +414,13 @@ def _call_with_retries(
     model: str,
     provider: str,
 ) -> dict:
-    """Own the attempt loop for an already-opened client: per-call timing, retry-once-with-backoff,
-    daily-quota fast-fail, and all response/retry/error logging. Returns the parsed result or
-    re-raises the last error. Knows nothing about client lifecycle (the caller owns open/close) or
-    prompt/provider resolution — those are settled before we get here."""
+    """Own the attempt loop for an already-opened client: per-call timing, the app-level
+    retry-with-backoff (only for providers whose SDK can't retry — see impl.app_retries; Groq/Gemini
+    retry inside the SDK and loop zero extra times here), and all response/retry/error logging.
+    Returns the parsed result or re-raises the last error. Knows nothing about client lifecycle (the
+    caller owns open/close) or prompt/provider resolution — those are settled before we get here."""
     last_err = None
-    for attempt in range(MAX_RETRIES + 1):
+    for attempt in range(impl.app_retries + 1):
         start = time.monotonic()
         try:
             result, raw = impl.analyze(client, image_bytes, prompt, model)
@@ -433,23 +440,14 @@ def _call_with_retries(
         except Exception as e:
             elapsed = time.monotonic() - start
             last_err = e
-            # Daily quota won't recover within this request — fail fast.
-            if _is_quota_error(str(e)):
-                logger.error(
-                    "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
-                    provider,
-                    model,
-                    elapsed,
-                    type(e).__name__,
-                    e,
-                )
-                raise
-            # Timeout / per-minute rate / transient — retry once with a short backoff.
-            if attempt < MAX_RETRIES:
+            # Transient (timeout / connection blip) — retry with a short backoff. Only reachable
+            # for app-retry providers (Ollama); Groq/Gemini have app_retries == 0 and already
+            # exhausted their SDK retries before raising here.
+            if attempt < impl.app_retries:
                 logger.warning(
                     "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
                     attempt + 1,
-                    MAX_RETRIES,
+                    impl.app_retries,
                     provider,
                     model,
                     elapsed,
