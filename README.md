@@ -443,15 +443,25 @@ midnight land on the right day regardless of timezone.
   `FOOD_ALIASES`/`DISH_ALIASES`, validate with `check_aliases.py`, then bump `CACHE_VERSION`
   (`core/config.py`) so the cached misses are purged and re-resolved.
 - **`core` depends on nothing above it.** If `core` needs something from `services`, move the
-  shared piece down into `core`. (The lifespan's startup call into `vision_service.reload_clients`
+  shared piece down into `core`. (The lifespan's startup call into `vision_service.init_clients`
   is a deliberate exception via a local import.)
-- **Expensive clients are built once and reused, never per request.** Vision provider clients are
-  built in the lifespan and rebuilt only on a key/model change (`PUT /api/config` →
-  `reload_clients`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` + a
-  `ThreadPoolExecutor`) is built **once** and reused for the process lifetime; both pools are
-  key-independent, so a key change (`reload_client` / `configure`) only updates the Session's
-  `X-Api-Key` header — nothing is rebuilt. The key lives only on that header (lookups take no
-  `api_key` argument and it never appears in request URLs/logs). The DB engine is pooled.
+- **Expensive clients are built once and reused; every provider keys per request.**
+  `vision_service.init_clients()` builds the **never-rebuilt** pools once at startup (the Groq
+  httpx pool + keyless Ollama client); no key is ever baked onto a process-global client, so a
+  key/provider/model change needs **no** vision-client rebuild. The orchestrator
+  (`analyze_meal_image`) resolves the ready-to-call client per request via
+  `_client_for(provider, api_key)` and passes it into the provider function — none of the provider
+  functions read a global or re-key. **Groq** injects the key via
+  `_groq_client.with_options(api_key=…)` (a copy that reuses the pooled httpx client). **Gemini**
+  is built fresh per request as `genai.Client(api_key=…)` and closed afterwards — the newer
+  object-scoped `google-genai` SDK keys at the client (no process-global `genai.configure`, no
+  cached transport to reset), so there's no Gemini rebuild/reload step at all. **Ollama** is
+  keyless. Config stays the single source of truth for the key (`meal_service` fetches it with
+  `config.get_api_key`). The USDA client (`usda_service.UsdaClient` — a pooled `requests.Session` +
+  a `ThreadPoolExecutor`) is likewise built **once** and reused for the process lifetime; its pools
+  are key-independent, so a key change (`reload_client`) only updates the Session's `X-Api-Key`
+  header — nothing is rebuilt. The key lives only on that header (lookups take no `api_key` argument
+  and it never appears in request URLs/logs). The DB engine is pooled.
 - **External calls are off the event loop** (`asyncio.to_thread`) and **time-bounded** (vision:
   Groq/Gemini 15s, local Ollama 120s — each + one retry; USDA: `(3.05s connect, 10s read)` +
   one retry on a transient `Timeout`/`ConnectionError` **or** a transient HTTP status
@@ -481,9 +491,10 @@ midnight land on the right day regardless of timezone.
 ## Config & secrets
 
 API keys (`groq_api_key`, `gemini_api_key`, `usda_api_key`) and the vision provider/model live in
-the `app_config` table, editable via Settings (`PUT /api/config`, which also calls
-`vision_service.reload_clients` and `usda_service.reload_client` so a key change takes effect
-immediately) or seeded from env vars on first launch by `core.config.seed_defaults`.
+the `app_config` table, editable via Settings (`PUT /api/config`, which calls
+`usda_service.reload_client` so a key change takes effect immediately; the vision providers all key
+per request and read provider/model from config on each `/analyze`, so they need no rebuild) or
+seeded from env vars on first launch by `core.config.seed_defaults`.
 `GET /api/config` reports only whether each key is set — never the values, and it (with
 `PUT /api/config`) is **admin-only**. **Authentication** uses JWT access/refresh tokens signed
 with `JWT_SECRET` (HS256); if `JWT_SECRET` is unset a random secret is generated once and
@@ -644,7 +655,8 @@ uv run pytest                         # what CI runs (pytest config in pyproject
 python -m unittest discover -s tests  # equivalent, no extra deps
 ```
 
-`test_vision_service.py` covers Stage-1 dish parsing and `reload_clients`; `test_usda_service.py`
+`test_vision_service.py` covers Stage-1 dish parsing, the build-once pools (`init_clients`), and
+per-request client resolution (`_client_for` + the Groq/Gemini/Ollama dispatch); `test_usda_service.py`
 covers aliasing, matching, the cache (incl. negative caching), the lookup cap, the curated
 dish-lookup gate, transient-timeout retries, and rate-limit propagation. `test_auth.py` covers
 the auth flow end-to-end (register/first-user-admin, login, ownership scoping on meals,

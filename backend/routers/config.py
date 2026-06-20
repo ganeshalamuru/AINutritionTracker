@@ -10,7 +10,6 @@ from core.config import DEFAULT_MODEL, DEFAULT_NUTRITION_SOURCE, DEFAULT_PROVIDE
 from core.database import get_db
 from schemas import ConfigStatus, ConfigUpdate, OkResponse
 from services.usda_service import reload_client as reload_usda_client
-from services.vision_service import reload_clients
 
 # Config holds the provider API keys — admin-only. Every route requires an admin caller.
 router = APIRouter(prefix="/config", tags=["config"], dependencies=[Depends(get_current_admin)])
@@ -42,8 +41,8 @@ def update_config(data: ConfigUpdate, db: Session = Depends(get_db)):
         if value is not None:
             config.set_value(db, key, value)
     db.commit()
-    # A key/provider/model may have changed — rebuild the vision clients and the USDA
-    # client so the next /analyze uses the new credentials without restarting the app.
-    reload_clients(db)
+    # The vision providers all key per request and read provider/model from config on each
+    # /analyze, so a key/provider/model change needs no vision-client rebuild. The USDA client
+    # keys on a persistent session header, so refresh it (and its offline/online backend).
     reload_usda_client(db)
     return {"ok": True}

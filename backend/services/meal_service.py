@@ -73,10 +73,11 @@ def _map_vision_error(e: Exception) -> HTTPException:
 
 async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) -> AnalyzeResponse:
     provider, model = config.get_vision_config(db)
-    # Guard only: raises 503 "set your key" if the provider's key isn't configured. The
-    # vision client itself is built once at startup / on config change (vision_service),
-    # so the key no longer flows into the call.
-    config.get_api_key(db, provider)
+    # Raises 503 "set your key" if the provider's key isn't configured (no-op for keyless
+    # Ollama, which returns ""). The pooled vision client is built once (vision_service), and
+    # the key is injected per request — so it flows into the call rather than being cached on
+    # the client. Config stays the single source of truth for the key.
+    api_key = config.get_api_key(db, provider)
 
     token = str(uuid.uuid4())
     temp_path = os.path.join(UPLOADS_DIR, f"{token}.jpg")
@@ -86,7 +87,7 @@ async def analyze_image(db: Session, image_bytes: bytes, user_note: str | None) 
     # Stage 1: vision model identifies each dish + its base-ingredient fallback (no nutrients).
     try:
         result = await asyncio.to_thread(
-            analyze_meal_image, image_bytes, user_note or "", model, provider
+            analyze_meal_image, image_bytes, user_note or "", model, provider, api_key
         )
     except Exception as e:
         # Guard cleanup so a missing temp file can't mask the original vision error.
