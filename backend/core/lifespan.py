@@ -33,13 +33,13 @@ async def lifespan(app: FastAPI):
         config.seed_defaults(db)
         # Build the vision provider clients and the USDA HTTP client once, now that config
         # is seeded. Imported locally to keep core's import graph free of services.
-        # init_clients builds the never-rebuilt pools (Groq httpx pool, Ollama); reload_clients
-        # then builds the keyed Gemini model (the Groq key is injected per request, not cached).
+        # init_clients builds the build-once vision pools (Groq httpx pool, Ollama); every
+        # provider keys per request, so there's no per-config vision rebuild. The USDA client
+        # still applies the configured key/backend via reload_client.
         from services.usda_service import reload_client as reload_usda_client
-        from services.vision_service import init_clients, reload_clients
+        from services.vision_service import init_clients
 
         init_clients()
-        reload_clients(db)
         reload_usda_client(db)
     finally:
         db.close()

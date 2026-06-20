@@ -15,9 +15,9 @@ import re
 import threading
 import time
 
-import google.generativeai as genai
+from google import genai
+from google.genai import types
 
-from core import config
 from core.config import DEFAULT_MODEL, DEFAULT_PROVIDER
 from core.logging_config import configure_logging
 
@@ -28,30 +28,30 @@ logger = logging.getLogger("nutriai.vision")
 
 # --- shared vision clients ---
 #
-# A vision client carries its own HTTP connection pool, so we build it ONCE per process and
-# reuse it across every /analyze. Following FastAPI's documented pattern for shared resources,
-# the clients live in module globals. Lifecycle is split into two functions so it's explicit
-# which clients are rebuilt and which are not:
+# Every provider keys per request — no key is ever baked onto a process-global client. The two
+# key-independent clients that DO carry an HTTP connection pool (Groq, Ollama) are built ONCE per
+# process by init_clients and reused across every /analyze; Gemini is built fresh per request
+# from the configured key (see _client_for). Following FastAPI's shared-resource pattern, the
+# pooled clients live in module globals, behind a lock that serializes the one-time build:
 #
-#   init_clients()    — built ONCE, NEVER rebuilt: the Groq httpx pool + the keyless Ollama
-#                       client. Both are key/config-independent. (core.lifespan, at startup.)
-#   reload_clients(db)— applies config on a key/model change: REBUILDS only the Gemini model.
+#   init_clients()  — builds the build-once pools: the Groq httpx pool + the keyless Ollama
+#                     client. Both are key/config-independent. Idempotent. (core.lifespan.)
+#   _client_for()   — per request: resolves the ready-to-call client for the chosen provider
+#                     (Groq key injected, Gemini constructed, Ollama pooled) + a cleanup hook.
 #
-# Groq's key is NOT cached on the client and never appears in reload_clients: the SDK sends it
-# as an `Authorization: Bearer` header it reads *per request*, so each /analyze injects the
-# configured key with `client.with_options(api_key=...)` (a lightweight copy that reuses the
-# pooled httpx client). Config stays the single source of truth for the key. Gemini is the
-# exception that must rebuild: google-generativeai 0.8.3 has no per-request key — `genai.configure`
-# mutates process-global state and resets the cached gRPC transport, so "init per call" would
-# rebuild the gRPC channel every request. Object-scoped keying there needs the newer google-genai
-# SDK. Ollama is keyless.
+# How each provider keys, all per request, so config stays the single source of truth:
+#   - Groq:   the SDK reads an `Authorization: Bearer` header per call, so _client_for injects
+#             the key with `_groq_client.with_options(api_key=...)` — a lightweight copy that
+#             reuses the pooled httpx client (the key never lands on the shared global).
+#   - Gemini: google-genai keys at the client object (no genai.configure global state), so
+#             _client_for builds a fresh genai.Client(api_key=...) per request and closes it
+#             after. (This is why there's no _build_gemini / cached model / reload step.)
+#   - Ollama: keyless local daemon.
 #
-# The lock serializes the rare Gemini rebuild; the request hot path (_groq_analyze /
-# _gemini_analyze / _ollama_analyze) just reads the global, which is atomic under the GIL —
-# no per-call lock.
+# The request hot path reads the build-once pools lock-free (a global read is atomic under the
+# GIL); only the rare first build takes the lock.
 _lock = threading.Lock()
-_groq_client = None  # pooled groq.Groq, built once; key swapped on .api_key per config change
-_gemini_model = None  # built from (gemini_api_key, vision_model)
+_groq_client = None  # pooled groq.Groq, built once; key injected per request via with_options
 _ollama_client = None  # official ollama.Client (local daemon, no key)
 
 
@@ -63,14 +63,6 @@ def _build_groq():
     from groq import Groq  # lazy: keep the module importable without the SDK installed
 
     return Groq(api_key="")  # placeholder; real key injected per request via with_options
-
-
-def _build_gemini(api_key: str, model: str):
-    genai.configure(api_key=api_key)  # process-global key (matches the one-key reality)
-    return genai.GenerativeModel(
-        model,
-        generation_config={"max_output_tokens": 1024, "temperature": 0},
-    )
 
 
 def _build_ollama():
@@ -86,8 +78,8 @@ def init_clients():
     the Groq httpx connection pool (the key is injected per request via with_options, never
     baked in) and the keyless Ollama client (a fixed local HTTP endpoint). Idempotent — only
     builds what's missing, so it's a cheap no-op once warm. No DB access (these don't depend
-    on config). Called at startup (core.lifespan), and defensively by reload_clients so the
-    config-change path can't run before the pools exist."""
+    on config). Called at startup (core.lifespan); a key/model change needs no rebuild, since
+    every provider keys per request (see _client_for)."""
     built = []
     with _lock:
         global _groq_client, _ollama_client
@@ -101,28 +93,35 @@ def init_clients():
         logger.info("vision clients initialized (built once, never rebuilt): %s", ", ".join(built))
 
 
-def reload_clients(db):
-    """Rebuild the only config-dependent vision client: the **Gemini** model. The Groq pool
-    and Ollama client are built once by init_clients and never appear here — Groq's key is
-    injected per request (the SDK reads it per call, and meal_service already fetches the key
-    via config.get_api_key), and Ollama is keyless. Gemini is the exception: google-generativeai
-    0.8.3 bakes the key+model into the client and has no per-request key (`genai.configure` is
-    process-global and resets the cached gRPC transport), so it's torn down and rebuilt on a
-    key/model change.
+def _noop():
+    """Cleanup hook for the pooled clients: they outlive the request, so there's nothing to
+    release (closing Groq's copy would tear down the shared httpx pool)."""
 
-    Called once at startup (core.lifespan) and after every PUT /api/config (routers.config).
-    The lock serializes the rare rebuild; the dispatch hot path reads the globals lock-free."""
-    init_clients()  # ensure the build-once pools exist (idempotent; no-op once warm)
-    _, model = config.get_vision_config(db)
-    gemini_key = config.get_value(db, "gemini_api_key")
-    with _lock:
-        global _gemini_model
-        _gemini_model = _build_gemini(gemini_key, model) if gemini_key else None
-    logger.info(
-        "vision config applied (gemini=%s [rebuilt], model=%s)",
-        _gemini_model is not None,
-        model,
-    )
+
+def _client_for(provider: str, api_key: str):
+    """Resolve the ready-to-call vision client for one request, plus a cleanup callable. This
+    is the single place client/key wiring lives — the orchestrator passes the returned client
+    straight into the provider function, so no provider function reads a global or re-keys:
+
+      - groq:   the build-once pool with the key injected via with_options (a copy that reuses
+                the pooled httpx client); cleanup is a no-op (must NOT close the shared pool).
+      - gemini: a fresh genai.Client(api_key=...) per request (google-genai keys per client,
+                no process-global state); cleanup closes its httpx connection.
+      - ollama: the build-once keyless client; cleanup is a no-op.
+
+    The Groq/gemini key is guaranteed non-empty here (config.get_api_key in meal_service raises
+    503 first). Raises if init_clients never ran for a pooled provider."""
+    if provider == "gemini":
+        client = genai.Client(api_key=api_key)
+        return client, client.close
+    if provider == "ollama":
+        if _ollama_client is None:
+            raise RuntimeError("Ollama client not initialized.")
+        return _ollama_client, _noop
+    # groq (and the default): the pooled client with the per-request key injected.
+    if _groq_client is None:
+        raise RuntimeError("Groq client not initialized.")
+    return _groq_client.with_options(api_key=api_key), _noop
 
 
 # Per-call timeout (seconds) and retry budget. The app used to hang forever when
@@ -284,35 +283,29 @@ def _parse_compact(text: str) -> dict:
 
 
 # Provider functions return (parsed_result, raw_response_text) so the caller can log the
-# model's raw output uniformly. They share a fixed signature
-# (image_bytes, prompt, model, api_key) for uniform dispatch. The pooled client is built once
-# (init_clients / reload_clients) — no per-call construction. `api_key` is the per-request key
-# for Groq (the SDK keys via an Authorization header it reads per call); Gemini bakes its key
-# into _gemini_model at build time and Ollama is keyless, so both ignore it.
-def _gemini_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
-    gen_model = _gemini_model
-    if gen_model is None:
-        raise RuntimeError("Gemini client not initialized — set the Gemini API key in Settings.")
-    image_part = {"mime_type": "image/jpeg", "data": image_bytes}
-    response = gen_model.generate_content(
-        [prompt, image_part],
-        request_options={"timeout": CALL_TIMEOUT},
+# model's raw output uniformly. They share a fixed signature (client, image_bytes, prompt,
+# model): the orchestrator resolves the ready-to-call `client` via _client_for (Groq key already
+# injected, Gemini freshly constructed, Ollama pooled) and passes it in, so none of these read a
+# global or re-key. They never construct or close the client — _client_for owns its lifecycle.
+def _gemini_analyze(client, image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
+    response = client.models.generate_content(
+        model=model,
+        contents=[prompt, types.Part.from_bytes(data=image_bytes, mime_type="image/jpeg")],
+        config=types.GenerateContentConfig(
+            max_output_tokens=1024,
+            temperature=0,
+            # google-genai's HttpOptions.timeout is in MILLISECONDS (the field's own docstring
+            # says so), unlike our seconds-based CALL_TIMEOUT — hence the * 1000.
+            http_options=types.HttpOptions(timeout=CALL_TIMEOUT * 1000),
+        ),
     )
     raw = response.text
     return _parse_compact(raw), raw
 
 
-def _groq_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
-    client = _groq_client
-    if client is None:
-        raise RuntimeError("Groq client not initialized.")
-    if not api_key:
-        raise RuntimeError("Groq API key not set — set the Groq API key in Settings.")
+def _groq_analyze(client, image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
     b64 = base64.b64encode(image_bytes).decode()
-    # Inject the key per request: with_options returns a lightweight copy that REUSES the
-    # pooled httpx client (only the auth header differs), so the connection pool is never
-    # rebuilt and the key never lives on the shared global client.
-    response = client.with_options(api_key=api_key).chat.completions.create(
+    response = client.chat.completions.create(
         model=model,
         messages=[
             {
@@ -332,15 +325,12 @@ def _groq_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> 
     return _parse_compact(raw), raw
 
 
-def _ollama_analyze(image_bytes: bytes, prompt: str, model: str, api_key: str) -> tuple[dict, str]:
+def _ollama_analyze(client, image_bytes: bytes, prompt: str, model: str) -> tuple[dict, str]:
     """Local vision via the official Ollama client (no API key). Mirrors _groq_analyze:
     the image is passed as raw bytes (the client base64-encodes it), `format="json"` is
     plain JSON mode like Groq's response_format — the current qwen3-vl models keep our
     {meal_name,type,confidence,dishes:[...]} shape from the prompt alone (verified on the
     4B and 8B), so no explicit JSON schema is needed; temperature 0 for determinism."""
-    client = _ollama_client
-    if client is None:
-        raise RuntimeError("Ollama client not initialized.")
     response = client.chat(
         model=model,
         messages=[{"role": "user", "content": prompt, "images": [image_bytes]}],
@@ -374,7 +364,12 @@ def analyze_meal_image(
     if user_note and user_note.strip():
         prompt += f"\n\nAdditional context from the user: {user_note.strip()}"
 
-    analyze = PROVIDERS.get(provider or DEFAULT_PROVIDER, _gemini_analyze)
+    provider = provider or DEFAULT_PROVIDER
+    analyze = PROVIDERS.get(provider, _gemini_analyze)
+    # Resolve the ready-to-call client once (Gemini's is built per request here and reused
+    # across retries); close() releases it afterwards — a no-op for the pooled Groq/Ollama
+    # clients, client.close() for the per-request Gemini one.
+    client, close = _client_for(provider, api_key)
 
     logger.info(
         "request -> provider=%s model=%s | image=%dB | note=%r",
@@ -385,57 +380,60 @@ def analyze_meal_image(
     )
 
     last_err = None
-    for attempt in range(MAX_RETRIES + 1):
-        start = time.monotonic()
-        try:
-            result, raw = analyze(image_bytes, prompt, model, api_key)
-            elapsed = time.monotonic() - start
-            logger.info(
-                "response <- provider=%s model=%s | %.2fs | raw=%s",
-                provider,
-                model,
-                elapsed,
-                # Flatten any pretty-printed/multi-line model JSON onto one physical line so
-                # the whole response stays on a single prefixed log record. Without this, only
-                # the first line carries the timestamp/req prefix and line-oriented log tooling
-                # silently drops the bare continuation lines (looks like missing ingredients).
-                " ".join((raw or "").split()),
-            )
-            return result
-        except Exception as e:
-            elapsed = time.monotonic() - start
-            last_err = e
-            # Daily quota won't recover within this request — fail fast.
-            if _is_quota_error(str(e)):
+    try:
+        for attempt in range(MAX_RETRIES + 1):
+            start = time.monotonic()
+            try:
+                result, raw = analyze(client, image_bytes, prompt, model)
+                elapsed = time.monotonic() - start
+                logger.info(
+                    "response <- provider=%s model=%s | %.2fs | raw=%s",
+                    provider,
+                    model,
+                    elapsed,
+                    # Flatten any pretty-printed/multi-line model JSON onto one physical line so
+                    # the whole response stays on a single prefixed log record. Without this, only
+                    # the first line carries the timestamp/req prefix and line-oriented log tooling
+                    # silently drops the bare continuation lines (looks like missing ingredients).
+                    " ".join((raw or "").split()),
+                )
+                return result
+            except Exception as e:
+                elapsed = time.monotonic() - start
+                last_err = e
+                # Daily quota won't recover within this request — fail fast.
+                if _is_quota_error(str(e)):
+                    logger.error(
+                        "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
+                        provider,
+                        model,
+                        elapsed,
+                        type(e).__name__,
+                        e,
+                    )
+                    raise
+                # Timeout / per-minute rate / transient — retry once with a short backoff.
+                if attempt < MAX_RETRIES:
+                    logger.warning(
+                        "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
+                        attempt + 1,
+                        MAX_RETRIES,
+                        provider,
+                        model,
+                        elapsed,
+                        type(e).__name__,
+                        e,
+                    )
+                    time.sleep(1.5)
+                    continue
                 logger.error(
-                    "error <- provider=%s model=%s | %.2fs | quota: %s: %s",
+                    "error <- provider=%s model=%s | %.2fs | %s: %s",
                     provider,
                     model,
                     elapsed,
                     type(e).__name__,
                     e,
                 )
-                raise
-            # Timeout / per-minute rate / transient — retry once with a short backoff.
-            if attempt < MAX_RETRIES:
-                logger.warning(
-                    "retry %d/%d <- provider=%s model=%s | %.2fs | %s: %s",
-                    attempt + 1,
-                    MAX_RETRIES,
-                    provider,
-                    model,
-                    elapsed,
-                    type(e).__name__,
-                    e,
-                )
-                time.sleep(1.5)
-                continue
-            logger.error(
-                "error <- provider=%s model=%s | %.2fs | %s: %s",
-                provider,
-                model,
-                elapsed,
-                type(e).__name__,
-                e,
-            )
-            raise last_err from None
+                raise last_err from None
+    finally:
+        close()

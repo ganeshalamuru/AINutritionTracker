@@ -140,72 +140,61 @@ class InitClientsTest(unittest.TestCase):
             build_ollama.assert_called_once()
 
 
-class ReloadClientsTest(unittest.TestCase):
-    """reload_clients rebuilds ONLY the Gemini model on a config change; the build-once
-    Groq/Ollama pools (init_clients) are reused, never rebuilt, and the Groq key is NOT cached
-    here (it's injected per request in _groq_analyze). Offline: constructing Groq makes no
-    network call, _build_gemini/_build_ollama are stubbed, and config access is stubbed."""
-
-    def setUp(self):
-        self.gemini_builds = 0
-
-    def _fake_build_gemini(self, api_key, model):
-        self.gemini_builds += 1
-        return ("gemini", api_key, model)
-
-    def _reload(self, gemini_key=""):
-        values = {"groq_api_key": "ignored-here", "gemini_api_key": gemini_key}
-        with (
-            patch.object(gs.config, "get_vision_config", return_value=("groq", "some-model")),
-            patch.object(
-                gs.config,
-                "get_value",
-                side_effect=lambda db, key, default="": values.get(key, default),
-            ),
-            patch.object(gs, "_build_ollama", return_value=object()),
-            patch.object(gs, "_build_gemini", side_effect=self._fake_build_gemini),
-        ):
-            gs.reload_clients(db=None)
+class ClientForTest(unittest.TestCase):
+    """_client_for resolves the ready-to-call client for a request plus a cleanup hook. Groq
+    returns the build-once pool with the key injected via with_options (a copy reusing the pool)
+    + a no-op cleanup; Ollama returns the pooled client + a no-op cleanup; Gemini builds a fresh
+    keyed genai.Client per request + its close as cleanup. Offline: genai.Client is patched."""
 
     def tearDown(self):
         gs._groq_client = None
-        gs._gemini_model = None
         gs._ollama_client = None
 
-    def test_pools_built_once_and_reused_not_rebuilt(self):
-        self._reload()
-        groq, ollama = gs._groq_client, gs._ollama_client
-        self.assertIsNotNone(groq)
-        self.assertIsNotNone(ollama)
-        # The Groq key is never cached on the shared client — left empty; injected per request.
-        self.assertEqual(groq.api_key, "")
-        # A second reload must NOT rebuild the pools — same object identity proves it.
-        self._reload()
-        self.assertIs(gs._groq_client, groq)
-        self.assertIs(gs._ollama_client, ollama)
+    def test_groq_injects_key_and_no_op_cleanup(self):
+        sentinel = object()
 
-    def test_gemini_rebuilt_every_reload(self):
-        self._reload(gemini_key="g1")
-        self.assertEqual(gs._gemini_model, ("gemini", "g1", "some-model"))
-        self._reload(gemini_key="g2")
-        self.assertEqual(gs._gemini_model, ("gemini", "g2", "some-model"))
-        self.assertEqual(self.gemini_builds, 2)  # torn down + rebuilt each time
+        class FakeGroq:
+            def with_options(self, **kwargs):
+                self.with_options_kwargs = kwargs
+                return sentinel
 
-    def test_no_gemini_when_key_blank(self):
-        self._reload(gemini_key="")
-        self.assertIsNone(gs._gemini_model)
-        self.assertEqual(self.gemini_builds, 0)
+        gs._groq_client = FakeGroq()
+        client, close = gs._client_for("groq", "secret-key")
+        self.assertIs(client, sentinel)  # the key-injected copy, not the shared pool
+        self.assertEqual(gs._groq_client.with_options_kwargs, {"api_key": "secret-key"})
+        self.assertIs(close, gs._noop)  # never close the shared pool
+
+    def test_groq_raises_when_pool_not_built(self):
+        gs._groq_client = None
+        with self.assertRaises(RuntimeError):
+            gs._client_for("groq", "key")
+
+    def test_ollama_returns_pool_and_no_op_cleanup(self):
+        gs._ollama_client = object()
+        client, close = gs._client_for("ollama", "")
+        self.assertIs(client, gs._ollama_client)
+        self.assertIs(close, gs._noop)
+
+    def test_ollama_raises_when_pool_not_built(self):
+        gs._ollama_client = None
+        with self.assertRaises(RuntimeError):
+            gs._client_for("ollama", "")
+
+    def test_gemini_builds_per_request_client_and_returns_close(self):
+        fake = type("FakeGenaiClient", (), {"close": lambda self: None})()
+        with patch.object(gs.genai, "Client", return_value=fake) as ctor:
+            client, close = gs._client_for("gemini", "g-key")
+        ctor.assert_called_once_with(api_key="g-key")  # object-scoped key, per request
+        self.assertIs(client, fake)
+        self.assertEqual(close, fake.close)  # cleanup closes the per-request httpx connection
 
 
 class GroqAnalyzeTest(unittest.TestCase):
-    """_groq_analyze injects the per-request key via with_options (a copy that reuses the
-    pooled client) rather than reading a cached key, and guards on the supplied key. No
-    network: the client is a fake that records what it was called with."""
+    """_groq_analyze takes the ready-to-call client (key already injected by _client_for) and
+    parses the chat completion. No network: the client is a fake that records its call."""
 
-    def tearDown(self):
-        gs._groq_client = None
-
-    def _fake_client(self, content):
+    def test_calls_completions_and_parses(self):
+        content = '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":[]}'
         test = self
 
         class Completions:
@@ -215,43 +204,55 @@ class GroqAnalyzeTest(unittest.TestCase):
                 choice = type("C", (), {"message": msg})
                 return type("R", (), {"choices": [choice]})
 
-        class Scoped:
-            chat = type("Chat", (), {"completions": Completions()})
-
-        class Client:
-            def with_options(self, **kwargs):
-                test.with_options_kwargs = kwargs
-                return Scoped()
-
-        return Client()
-
-    def test_injects_key_per_request_via_with_options(self):
-        content = '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":[]}'
-        gs._groq_client = self._fake_client(content)
-        result, raw = gs._groq_analyze(b"\xff\xd8img", "PROMPT", "scout-model", "secret-key")
-        # The configured key is passed per request, not pulled from a cached client attribute.
-        self.assertEqual(self.with_options_kwargs, {"api_key": "secret-key"})
+        client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})})()
+        result, raw = gs._groq_analyze(client, b"\xff\xd8img", "PROMPT", "scout-model")
         self.assertEqual(self.create_kwargs["model"], "scout-model")
         self.assertEqual(raw, content)
         self.assertEqual(result["meal_name"], "Lunch")
 
-    def test_raises_when_key_missing(self):
-        gs._groq_client = self._fake_client("{}")
-        with self.assertRaises(RuntimeError):
-            gs._groq_analyze(b"img", "PROMPT", "scout-model", "")
 
-    def test_raises_when_client_not_built(self):
-        gs._groq_client = None
-        with self.assertRaises(RuntimeError):
-            gs._groq_analyze(b"img", "PROMPT", "scout-model", "key")
+class GeminiAnalyzeTest(unittest.TestCase):
+    """_gemini_analyze takes the per-request keyed genai.Client (built by _client_for) and parses
+    response.text. No network: the client is a fake recording its generate_content call."""
+
+    def test_calls_generate_content_and_parses(self):
+        content = (
+            '{"meal_name":"Lunch","type":"lunch","confidence":"high","dishes":['
+            '{"name":"dosa","total_grams":120,"components":[{"item":"rice","grams":80}]}]}'
+        )
+        test = self
+
+        class Models:
+            def generate_content(self, **kwargs):
+                test.gen_kwargs = kwargs
+                return type("R", (), {"text": content})
+
+        client = type("Client", (), {"models": Models()})()
+        result, raw = gs._gemini_analyze(client, b"\xff\xd8img", "PROMPT", "gemini-x")
+
+        self.assertEqual(raw, content)
+        self.assertEqual(self.gen_kwargs["model"], "gemini-x")
+        # contents = [prompt, image part]; the prompt is forwarded verbatim.
+        self.assertEqual(self.gen_kwargs["contents"][0], "PROMPT")
+        # Per-request timeout is set in milliseconds (CALL_TIMEOUT seconds * 1000).
+        self.assertEqual(
+            self.gen_kwargs["config"].http_options.timeout, gs.CALL_TIMEOUT * 1000
+        )
+        self.assertEqual(
+            result["dishes"],
+            [
+                {
+                    "name": "dosa",
+                    "grams": 120,
+                    "items": [{"food": "rice", "grams": 80, "usda_name": "rice"}],
+                }
+            ],
+        )
 
 
 class OllamaAnalyzeTest(unittest.TestCase):
-    """_ollama_analyze calls the official ollama client's chat() and parses
+    """_ollama_analyze takes the pooled client (passed in by _client_for) and parses
     message.content via _parse_compact. No network: the client is a fake."""
-
-    def tearDown(self):
-        gs._ollama_client = None
 
     def test_calls_client_and_parses_dish_list(self):
         content = (
@@ -273,9 +274,8 @@ class OllamaAnalyzeTest(unittest.TestCase):
                 resp.message.content = content
                 return resp
 
-        gs._ollama_client = FakeClient()
-        # api_key is accepted for a uniform dispatch signature but ignored (Ollama is keyless).
-        result, raw = gs._ollama_analyze(b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct", "")
+        client = FakeClient()
+        result, raw = gs._ollama_analyze(client, b"\xff\xd8jpegbytes", "PROMPT", "qwen3-vl:8b-instruct")
 
         self.assertEqual(raw, content)
         self.assertEqual(
@@ -290,7 +290,7 @@ class OllamaAnalyzeTest(unittest.TestCase):
         )
         # Called with the model, plain JSON mode (like Groq — no explicit schema), the raw
         # image bytes (the client base64-encodes them), and the capped num_ctx.
-        kwargs = gs._ollama_client.calls[0]
+        kwargs = client.calls[0]
         self.assertEqual(kwargs["model"], "qwen3-vl:8b-instruct")
         self.assertEqual(kwargs["format"], "json")
         self.assertFalse(kwargs["stream"])

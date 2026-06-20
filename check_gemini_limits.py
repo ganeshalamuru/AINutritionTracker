@@ -13,10 +13,10 @@ import sys
 import os
 
 try:
-    import google.generativeai as genai
+    from google import genai
 except ImportError:
-    print("ERROR: google-generativeai not installed.")
-    print("Run: pip install google-generativeai")
+    print("ERROR: google-genai not installed.")
+    print("Run: pip install google-genai")
     sys.exit(1)
 
 
@@ -48,20 +48,21 @@ def short_name(full_name: str) -> str:
 
 
 def check(api_key: str):
-    genai.configure(api_key=api_key)
+    client = genai.Client(api_key=api_key)
 
     print("\n=== Fetching available models... ===\n")
     try:
-        all_models = list(genai.list_models())
+        all_models = list(client.models.list())
     except Exception as e:
         print(f"ERROR: Could not list models — {e}")
         print("Check that your API key is correct.")
         sys.exit(1)
 
-    # Filter to models that support generateContent
+    # Filter to models that support generateContent (google-genai exposes this as
+    # `supported_actions`, replacing the old SDK's `supported_generation_methods`).
     generative = [
         m for m in all_models
-        if "generateContent" in (m.supported_generation_methods or [])
+        if "generateContent" in (m.supported_actions or [])
     ]
 
     # Sort: highlighted models first, then alphabetical
@@ -97,8 +98,9 @@ def check(api_key: str):
     # Quick connectivity test
     print(f"=== Testing key with {APP_MODEL}... ===\n")
     try:
-        model = genai.GenerativeModel(APP_MODEL)
-        resp = model.generate_content("Reply with just the word: OK")
+        resp = client.models.generate_content(
+            model=APP_MODEL, contents="Reply with just the word: OK"
+        )
         print(f"  Response: {resp.text.strip()}")
         print(f"  API key is valid and {APP_MODEL} is reachable.\n")
     except Exception as e:
@@ -128,7 +130,7 @@ if __name__ == "__main__":
                 for line in f:
                     if line.startswith("GEMINI_API_KEY="):
                         key = line.split("=", 1)[1].strip().strip('"').strip("'")
-                        print(f"(Using key from backend/.env)")
+                        print("(Using key from backend/.env)")
                         break
 
     if not key:

@@ -6,6 +6,7 @@ annotated-types==0.7.0
     # via pydantic
 anyio==4.13.0
     # via
+    #   google-genai
     #   groq
     #   httpx
     #   starlette
@@ -27,62 +28,34 @@ click==8.4.1
 colorama==0.4.6 ; sys_platform == 'win32'
     # via
     #   click
-    #   tqdm
     #   uvicorn
 cryptography==49.0.0
     # via google-auth
 distro==1.9.0
-    # via groq
+    # via
+    #   google-genai
+    #   groq
 fastapi==0.115.0
     # via
     #   nutriai-backend
     #   sentry-sdk
-google-ai-generativelanguage==0.6.10
-    # via google-generativeai
-google-api-core==2.25.2
-    # via
-    #   google-ai-generativelanguage
-    #   google-api-python-client
-    #   google-generativeai
-google-api-python-client==2.197.0
-    # via google-generativeai
-google-auth==2.54.0
-    # via
-    #   google-ai-generativelanguage
-    #   google-api-core
-    #   google-api-python-client
-    #   google-auth-httplib2
-    #   google-generativeai
-google-auth-httplib2==0.4.0
-    # via google-api-python-client
-google-generativeai==0.8.3
+google-auth==2.55.0
+    # via google-genai
+google-genai==2.9.0
     # via nutriai-backend
-googleapis-common-protos==1.75.0
-    # via
-    #   google-api-core
-    #   grpcio-status
 groq==1.4.0
     # via nutriai-backend
-grpcio==1.81.1
-    # via
-    #   google-api-core
-    #   grpcio-status
-grpcio-status==1.71.2
-    # via google-api-core
 h11==0.16.0
     # via
     #   httpcore
     #   uvicorn
 httpcore==1.0.9
     # via httpx
-httplib2==0.31.2
-    # via
-    #   google-api-python-client
-    #   google-auth-httplib2
 httptools==0.8.0
     # via uvicorn
 httpx==0.28.1
     # via
+    #   google-genai
     #   groq
     #   ollama
 idna==3.18
@@ -96,18 +69,6 @@ prometheus-client==0.25.0
     # via prometheus-fastapi-instrumentator
 prometheus-fastapi-instrumentator==7.0.0
     # via nutriai-backend
-proto-plus==1.28.0
-    # via
-    #   google-ai-generativelanguage
-    #   google-api-core
-protobuf==5.29.6
-    # via
-    #   google-ai-generativelanguage
-    #   google-api-core
-    #   google-generativeai
-    #   googleapis-common-protos
-    #   grpcio-status
-    #   proto-plus
 pyasn1==0.6.3
     # via pyasn1-modules
 pyasn1-modules==0.4.2
@@ -117,15 +78,13 @@ pycparser==3.0 ; implementation_name != 'PyPy' and platform_python_implementatio
 pydantic==2.13.4
     # via
     #   fastapi
-    #   google-generativeai
+    #   google-genai
     #   groq
     #   ollama
 pydantic-core==2.46.4
     # via pydantic
 pyjwt==2.13.0
     # via nutriai-backend
-pyparsing==3.3.2
-    # via httplib2
 python-dotenv==1.0.1
     # via
     #   nutriai-backend
@@ -136,36 +95,36 @@ pyyaml==6.0.3
     # via uvicorn
 requests==2.32.3
     # via
-    #   google-api-core
+    #   google-auth
+    #   google-genai
     #   nutriai-backend
 scalar-fastapi==1.8.2
     # via nutriai-backend
 sentry-sdk==2.19.2
     # via nutriai-backend
 sniffio==1.3.1
-    # via groq
+    # via
+    #   google-genai
+    #   groq
 sqlalchemy==2.0.35
     # via nutriai-backend
 starlette==0.38.6
     # via
     #   fastapi
     #   prometheus-fastapi-instrumentator
-tqdm==4.68.2
-    # via google-generativeai
+tenacity==9.1.4
+    # via google-genai
 typing-extensions==4.15.0
     # via
     #   fastapi
-    #   google-generativeai
+    #   google-genai
     #   groq
-    #   grpcio
     #   pydantic
     #   pydantic-core
     #   sqlalchemy
     #   typing-inspection
 typing-inspection==0.4.2
     # via pydantic
-uritemplate==4.2.0
-    # via google-api-python-client
 urllib3==2.7.0
     # via
     #   requests
@@ -177,4 +136,6 @@ uvloop==0.22.1 ; platform_python_implementation != 'PyPy' and sys_platform != 'c
 watchfiles==1.2.0
     # via uvicorn
 websockets==16.0
-    # via uvicorn
+    # via
+    #   google-genai
+    #   uvicorn
