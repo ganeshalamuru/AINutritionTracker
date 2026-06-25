@@ -215,8 +215,12 @@ class GroqAnalyzeTest(unittest.TestCase):
                 return type("R", (), {"choices": [choice]})
 
         client = type("Client", (), {"chat": type("Chat", (), {"completions": Completions()})})()
-        result, raw = gs.PROVIDERS["groq"].analyze(client, b"\xff\xd8img", "PROMPT", "scout-model")
-        self.assertEqual(self.create_kwargs["model"], "scout-model")
+        result, raw = gs.PROVIDERS["groq"].analyze(client, b"\xff\xd8img", "PROMPT", "vision-model")
+        self.assertEqual(self.create_kwargs["model"], "vision-model")
+        self.assertEqual(self.create_kwargs["response_format"], {"type": "json_object"})
+        # Reasoning is disabled: Groq's vision model (qwen3.6-27b) is a reasoning model whose
+        # <think> tokens otherwise break json_object mode (400 json_validate_failed).
+        self.assertEqual(self.create_kwargs["reasoning_effort"], "none")
         self.assertEqual(raw, content)
         self.assertEqual(result["meal_name"], "Lunch")
 

@@ -765,5 +765,24 @@ class NutritionDbTest(unittest.TestCase):
         self.assertAlmostEqual(totals["calories"], 430.0)  # rice 130 + alpha 300, beta excluded
 
 
+class ExtractPer100gClampTest(unittest.TestCase):
+    """USDA computes 'carbohydrate by difference', which rounds slightly negative for some lean
+    meats/cheeses (e.g. raw chicken carbs_g = -0.475). _extract_per_100g must clamp every nutrient
+    to >= 0 so a negative never reaches the ge=0 schema (an unclamped negative 500'd /analyze)."""
+
+    def test_negative_carb_is_clamped_to_zero(self):
+        # 1005 = carbohydrate by difference, 1003 = protein, 1008 = energy (kcal).
+        rec = food(
+            "Foundation", "Chicken, drumstick, raw", 1, {1005: -0.475, 1003: 18.36, 1008: 125}
+        )
+        out = nd._extract_per_100g(rec)
+        self.assertEqual(out["carbs_g"], 0.0)
+        # Positive values pass through untouched.
+        self.assertEqual(out["protein_g"], 18.36)
+        self.assertEqual(out["calories"], 125)
+        # The clamp is blanket: no tracked nutrient is ever negative.
+        self.assertFalse(any(v < 0 for v in out.values()))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -31,6 +31,11 @@ async def lifespan(app: FastAPI):
     db = SessionLocal()
     try:
         config.seed_defaults(db)
+        # Move existing installs off a vision model the provider has retired (e.g. Groq's
+        # Llama 4 Scout, decommissioned 2026-07-17) before clients are built; seed_defaults
+        # only fills missing keys, so a stored deprecated value would otherwise persist.
+        if config.migrate_deprecated_vision_model(db):
+            logger.info("vision_model migrated off a retired model -> %s", config.DEFAULT_MODEL)
         # Build the vision provider clients and the USDA HTTP client once, now that config
         # is seeded. Imported locally to keep core's import graph free of services.
         # init_clients builds the build-once vision pools (Groq httpx pool, Ollama); every

@@ -11,7 +11,7 @@ import { computeGoals, DEFAULT_CALORIE_GOAL } from "../utils/goals";
 // model dropdown lists that group's `models`.
 const PROVIDERS = [
   { id: "groq", label: "Groq (cloud)", models: [
-    { model: "meta-llama/llama-4-scout-17b-16e-instruct", label: "Llama 4 Scout — fast, ~1k/day" },
+    { model: "qwen/qwen3.6-27b", label: "Qwen 3.6 27B — fast vision, ~1k/day" },
   ]},
   { id: "gemini", label: "Gemini (cloud)", models: [
     { model: "gemini-2.5-flash", label: "2.5 Flash — reliable, ~20/day" },
@@ -181,7 +181,7 @@ export default function Settings() {
         >
           <div className="py-4 first:pt-0 last:pb-0 space-y-3">
             <p className="text-xs text-gray-500">
-              Model used to analyze meal photos. Groq · Llama 4 Scout is fastest with the highest free daily limit.
+              Model used to analyze meal photos. Groq · Qwen 3.6 27B is fast with the highest free daily limit.
               {provider === "ollama"
                 ? " Ollama runs locally — no API key needed; make sure the Ollama app is running and the model is pulled."
                 : " The selected provider needs its API key set below."}

@@ -325,6 +325,12 @@ class GroqProvider(VisionProvider):
             temperature=0,
             max_tokens=1024,
             response_format={"type": "json_object"},
+            # Groq's only vision model (qwen/qwen3.6-27b) is also a *reasoning* model: left on, its
+            # <think> tokens either break json_object validation or exhaust max_tokens before any
+            # JSON is emitted -> 400 json_validate_failed (failed_generation: ''). Disable thinking
+            # so it answers in JSON directly, fast, within the 15s/1024-token budget. (Verified
+            # against the live API; non-reasoning Groq models ignore the field.)
+            reasoning_effort="none",
             timeout=CALL_TIMEOUT,
         )
         raw = response.choices[0].message.content or ""

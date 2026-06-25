@@ -21,10 +21,16 @@ DIST_DIR = os.path.join(BACKEND_DIR, "..", "frontend", "dist")
 
 # Default vision provider/model (seeded into app_config on first launch and used as
 # the fallback when a request doesn't specify one). Groq's free tier gives
-# ~1,000 RPD / 6K TPM — far more usable than Google's ~20 RPD on Flash. Llama 4
-# Scout is natively multimodal.
+# ~1,000 RPD / 6K TPM — far more usable than Google's ~20 RPD on Flash. Qwen 3.6 27B
+# is natively multimodal — one of Groq's two vision models (the other, Llama 4 Scout,
+# is decommissioned 2026-07-17; see DEPRECATED_VISION_MODELS).
 DEFAULT_PROVIDER = "groq"
-DEFAULT_MODEL = "meta-llama/llama-4-scout-17b-16e-instruct"
+DEFAULT_MODEL = "qwen/qwen3.6-27b"
+
+# Vision models retired upstream. A stored vision_model pointing at one of these is rewritten
+# to DEFAULT_MODEL on startup (migrate_deprecated_vision_model) so existing installs don't break
+# when the provider stops serving it. Groq decommissions Llama 4 Scout on 2026-07-17.
+DEPRECATED_VISION_MODELS = {"meta-llama/llama-4-scout-17b-16e-instruct"}
 
 DEFAULT_USDA_KEY = "DEMO_KEY"
 
@@ -36,7 +42,7 @@ DEFAULT_NUTRITION_SOURCE = "offline"
 # Version of the USDA food-cache contents. BUMP THIS whenever the matching/alias logic
 # (services/usda_service.py + services/nutrition_data/) changes, so stale cached lookups
 # are discarded. core/lifespan.py purges food_cache on startup when the stored version differs.
-CACHE_VERSION = "12"
+CACHE_VERSION = "13"
 
 
 def get_value(db: Session, key: str, default: str = "") -> str:
@@ -74,6 +80,17 @@ def get_vision_config(db: Session) -> tuple[str, str]:
         get_value(db, "vision_provider", DEFAULT_PROVIDER),
         get_value(db, "vision_model", DEFAULT_MODEL),
     )
+
+
+def migrate_deprecated_vision_model(db: Session) -> bool:
+    """Rewrite a stored vision_model that points at a retired model (DEPRECATED_VISION_MODELS)
+    to DEFAULT_MODEL. Idempotent — a no-op once migrated and on fresh installs. Returns whether
+    it changed anything so the caller can log it."""
+    if get_value(db, "vision_model") in DEPRECATED_VISION_MODELS:
+        set_value(db, "vision_model", DEFAULT_MODEL)
+        db.commit()
+        return True
+    return False
 
 
 def get_usda_key(db: Session) -> str:

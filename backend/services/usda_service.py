@@ -197,7 +197,13 @@ def _extract_per_100g(food: dict) -> dict:
                 break
     # Omega-3 (EPA + DHA) is the sum of two USDA nutrients; the id->key map can't sum.
     per_100g["omega3_g"] = sum(float(raw[nid]) for nid in OMEGA3_IDS if nid in raw)
-    return per_100g
+    # Clamp to >= 0. USDA computes "carbohydrate by difference" (100 - protein - fat - water -
+    # ash - alcohol), which rounds slightly NEGATIVE for some lean meats/cheeses (e.g. raw
+    # chicken: carbs_g = -0.475). A negative nutrient is a data artifact, is physically
+    # meaningless, and violates the schema's ge=0 guard — an unclamped negative 500'd /analyze
+    # (IngredientBreakdown validation). Clamping here keeps every scaled/summed value downstream
+    # non-negative (scale factors and sums of non-negatives stay non-negative).
+    return {k: v if v > 0 else 0.0 for k, v in per_100g.items()}
 
 
 # --- cache (food name -> per-100g nutrient profile) ---

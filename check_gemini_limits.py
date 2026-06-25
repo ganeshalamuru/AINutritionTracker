@@ -1,7 +1,7 @@
 """
 Check Gemini API key: available models, token limits, and connectivity.
 
-NOTE: The app now defaults to the Groq provider (Llama 4 Scout) for meal analysis.
+NOTE: The app now defaults to the Groq provider (Qwen 3.6 27B) for meal analysis.
 This script only covers the Gemini *fallback* models, not Groq.
 
 Usage:

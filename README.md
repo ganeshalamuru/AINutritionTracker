@@ -22,7 +22,7 @@ request flows, and conventions. (Session-by-session history lives in `git log`.)
 |---|---|
 | Backend | Python 3.14 + FastAPI + SQLAlchemy (deps managed with **uv**) |
 | Database | SQLite (`backend/nutrition.db`, WAL) — persists across restarts |
-| AI vision | **Provider-configurable.** Default **Groq · Llama 4 Scout** (`meta-llama/llama-4-scout-17b-16e-instruct`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct` / `qwen3-vl:8b-instruct`) selectable. Identifies dishes/ingredients only. |
+| AI vision | **Provider-configurable.** Default **Groq · Qwen 3.6 27B** (`qwen/qwen3.6-27b`); Gemini/Gemma or **local Ollama** (`qwen3-vl:4b-instruct` / `qwen3-vl:8b-instruct`) selectable. Identifies dishes/ingredients only. |
 | Nutrient data | **USDA FoodData Central**, two interchangeable backends (Settings → *Nutrition Data Source*, `nutrition_source`): **offline** (default) — local SQLite **FTS5** index `backend/usda_local.db` built by `build_usda_db.py`, no network/limits; **online** — the FDC API (`usda_api_key`, default `DEMO_KEY`). Both feed the same matching code; results cached in SQLite `food_cache`. |
 | Frontend | React 18 + Tailwind CSS (Vite build) |
 | Serving | FastAPI serves the React `dist/` as static files on port 8000 |
@@ -167,7 +167,10 @@ The core design splits **perception** (LLM) from **facts** (USDA):
   before the strict `AnalyzeResponse`. All three providers reach the model through their official
   client (Groq / Gemini / **`ollama`**) in **plain JSON mode** (`format="json"` / `response_format`)
   — the prompt alone carries the shape, and the current `qwen3-vl` models keep the wrapper without a
-  hard JSON schema (verified on the 4B and 8B).
+  hard JSON schema (verified on the 4B and 8B). Groq's vision model (`qwen/qwen3.6-27b`) is *also a
+  reasoning model*, so the call passes **`reasoning_effort="none"`**: with thinking on, its `<think>`
+  tokens break `json_object` validation (400 `json_validate_failed`) or exhaust `max_tokens` before
+  any JSON is emitted.
 - **Stage 2 — nutrient lookup** (`usda_service`) is **dish-first**: it looks the whole dish up in
   USDA's **FNDDS** database (which carries composite dishes, including Indian ones like
   idli/dosa/sambar — and sweets such as ladoo/barfi natively, or via a close proxy where FNDDS
@@ -725,7 +728,7 @@ dev deps; see [How to run](#how-to-run)). `ruff` and `pytest` are installed by `
   **threshold-gated lookup on a miss only** (a local CPU embedding model to stay no-network, USDA
   corpus embedded in `build_usda_db.py`, vectors via `sqlite-vec` or a flat numpy/FAISS file),
   justified by measurement — chiefly the weaker local Ollama 4B, which normalizes regional names
-  worse than Groq/Llama-4-Scout.
+  worse than Groq/Qwen-3.6-27B.
 - **Email-based auth flows** — password reset and email verification are deferred (no SMTP);
   accounts are username + password only, and a forgotten password is reset by an admin
   (`POST /api/users/{id}/reset-password`). The schema leaves room to add email later.
